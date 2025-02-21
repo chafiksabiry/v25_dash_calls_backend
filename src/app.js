@@ -19,6 +19,8 @@ connectDB();
 
 const app = express();
 
+app.use(express.urlencoded({ extended: true }));
+
 // Body parser
 app.use(express.json());
 
