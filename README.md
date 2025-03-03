@@ -1,4 +1,5 @@
-# V25_Dashboard_Backend
+
+# V25_Dash_Calls_Backend README.md
 
 
 
@@ -15,14 +16,22 @@ Already a pro? Just edit this README.md and make it your own. Want to make it ea
 
 ```
 cd existing_repo
+<<<<<<< README.md
 git remote add origin https://gitlab.com/h3763/v25_dashboard_backend.git
+=======
+git remote add origin https://gitlab.com/h3763/v25_dash_calls_backend.git
+>>>>>>> README.md
 git branch -M main
 git push -uf origin main
 ```
 
 ## Integrate with your tools
 
+<<<<<<< README.md
 - [ ] [Set up project integrations](https://gitlab.com/h3763/v25_dashboard_backend/-/settings/integrations)
+=======
+- [ ] [Set up project integrations](https://gitlab.com/h3763/v25_dash_calls_backend/-/settings/integrations)
+>>>>>>> README.md
 
 ## Collaborate with your team
 
@@ -36,7 +45,11 @@ git push -uf origin main
 
 Use the built-in continuous integration in GitLab.
 
+<<<<<<< README.md
 - [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
+=======
+- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
+>>>>>>> README.md
 - [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
 - [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
 - [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
