@@ -20,9 +20,9 @@ console.log("router",router);
 
 
 
-/* router.route('/')
+router.route('/')
  .get(getCalls)
-  .post(createCall); */
+  .post(createCall);
 
 //router.get('/fetch-recording/:recordingUrl', callController.fetchRecording);
  
@@ -36,12 +36,12 @@ console.log("router",router);
 
 
 /* router.route('/initiate')
-  .post(initiateCall);
+  .post(initiateCall);*/
 
 router.route('/:id')
   .get(getCall)
   .put(updateCall);
-
+/*
 router.route('/:id/end')
   .post(endCall);
 
