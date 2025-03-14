@@ -1,9 +1,8 @@
-
 const { CallService } = require('../services/CallService');
 const ovhService= require('../services/integrations/ovh');
 const twilioService= require('../services/integrations/twilio');
 const callService = new CallService();
-
+const qalqulService = require('../services/integrations/qaqlulService');
 // @desc    Get all calls
 // @route   GET /api/calls
 // @access  Private
@@ -339,53 +338,70 @@ exports.handleVoice = async (req, res) => {
 
 
 exports.initiateCall = async (req, res) => {
-  const { to } = req.body;
+  const { to, userId } = req.body;
   
-  await twilioService.makeCall(to)
-      .then(callSid => {
-          res.status(200).json({ message: 'Call initiated', callSid });
-      })
-      .catch(err => {
-          console.error('Error:', err);
-          res.status(500).json({ message: 'Failed to initiate call', error: err });
-      });
+  if (!userId) {
+    return res.status(400).json({ message: 'User ID is required' });
+  }
+
+  try {
+    const callSid = await twilioService.makeCall(to, userId);
+    res.status(200).json({ message: 'Call initiated', callSid });
+  } catch (err) {
+    console.error('Error:', err);
+    res.status(500).json({ message: 'Failed to initiate call', error: err.message });
+  }
 };
 // Contrôleur pour suivre l'état de l'appel
 exports.trackCallStatus = async (req, res) => {
-  console.log('in controller');
   const callSid = req.params.callSid;
-  console.log('callsid in controller',callSid);
+  const { userId } = req.body;
 
-  // Vérifier que le callSid est fourni
-  if (!callSid) {
-      return res.status(400).json({ message: 'Call SID requis' });
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
   }
 
-  // Appel au service Twilio pour obtenir l'état de l'appel
-  await twilioService.trackCallStatus(callSid)
-      .then(callStatus => {
-          res.status(200).json({ callSid, status: callStatus });
-      })
-      .catch(err => {
-          console.error('Erreur lors du suivi de l\'appel:', err);
-          res.status(500).json({ message: 'Impossible de suivre l\'état de l\'appel', error: err });
-      });
+  try {
+    const callStatus = await twilioService.trackCallStatus(callSid, userId);
+    res.status(200).json({ callSid, status: callStatus });
+  } catch (err) {
+    console.error('Error tracking call:', err);
+    res.status(500).json({ message: 'Failed to track call status', error: err.message });
+  }
 };
 
 exports.hangUpCall = async (req, res) => {
   const callSid = req.params.callSid;
+  const { userId } = req.body;
   
-  // Verify callSid is provided
-  if (!callSid) {
-      return res.status(400).json({ message: 'Call SID is required' });
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
   }
 
   try {
-      const call = await twilioService.hangUpCall(callSid);
-      res.status(200).json({ message: 'Call ended', callSid: call.sid, status: call.status });
+    const call = await twilioService.hangUpCall(callSid, userId);
+    res.status(200).json({ message: 'Call ended', callSid: call.sid, status: call.status });
   } catch (err) {
-      console.error('Error hanging up call:', err);
-      res.status(500).json({ message: 'Failed to hang up call', error: err });
+    console.error('Error hanging up call:', err);
+    res.status(500).json({ message: 'Failed to hang up call', error: err.message });
+  }
+};
+
+exports.getTwilioToken1 = async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ message: 'User ID is required' });
+  }
+
+  try {
+    console.log("userId:", userId);
+    const token = await twilioService.generateTwilioToken('platform-user', userId);
+    console.log("token:", token);
+    res.json({ token });
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
   }
 };
 
@@ -403,6 +419,9 @@ exports.getTwilioToken = async (req, res) => {
   }
 };
 
+
+
+
 exports.endCall= async (req, res) => {
   const callSid = req.body.CallSid;
   const callStatus = req.body.CallStatus;
@@ -414,53 +433,66 @@ exports.endCall= async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  console.log("in the controller here");
-  const {CallSid,agentId,leadId,call,cloudinaryrecord} = req.body;
-console.log("CallSid",CallSid);
-  if (!CallSid) {
-    return res.status(400).send('CallSid is required');
+  const { CallSid, agentId, leadId, call, cloudinaryrecord, userId } = req.body;
+
+  if (!CallSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
   }
 
   try {
-    // Fetch the call details from the service
-    const callDetails = await twilioService.saveCallToDB(CallSid,agentId,leadId,call,cloudinaryrecord);
+    const callDetails = await twilioService.saveCallToDB(CallSid, agentId, leadId, call, cloudinaryrecord);
     res.json(callDetails);
   } catch (error) {
-    console.error('Error in controller:', error);
-    res.status(500).send('Error fetching call details');
+    console.error('Error saving call:', error);
+    res.status(500).json({ message: 'Failed to save call details', error: error.message });
   }
 };
 
 
 exports.fetchRecording = async (req, res) => {
-  const { recordingUrl } = req.body;
-console.log("recordingUrl",recordingUrl);
-  try {
-    const recording = await twilioService.fetchTwilioRecording(recordingUrl);
+  const { recordingUrl, userId } = req.body;
 
+  if (!recordingUrl || !userId) {
+    return res.status(400).json({ message: 'Recording URL and User ID are required' });
+  }
+
+  try {
+    const recording = await twilioService.fetchTwilioRecording(recordingUrl, userId);
     if (!recording) {
       return res.status(500).json({ message: 'Error fetching the recording' });
     }
-
-    res.set('Content-Type', 'audio/mpeg');
-    res.send(recording);
+    res.json({ url: recording });
   } catch (error) {
-    console.error('Error in fetchRecording controller:', error);
+    console.error('Error fetching recording:', error);
     res.status(500).json({ message: 'Error fetching the recording' });
   }
 };
 
 exports.getCallDetails = async (req, res) => {
-  const { callSid } = req.body;
+  const { callSid, userId } = req.body;
 
-  if (!callSid) {
-      return res.status(400).json({ success: false, error: "Missing callSid parameter" });
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
   }
 
   try {
-      const callDetails = await twilioService.getCallDetails(callSid);
-      return res.status(200).json({ success: true, data: callDetails });
+    const callDetails = await twilioService.getCallDetails(callSid, userId);
+    return res.status(200).json({ success: true, data: callDetails });
   } catch (error) {
-      return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
+
+
+//@qalqul logic
+
+exports.storeCallsInDBatStartingCall = async (req, res) => {
+  const { storeCall } = req.body;
+  
+  try {
+    const callDetails = await qalqulService.storeCallsInDBatStartingCall(storeCall);
+    res.json(callDetails);
+  } catch (error) {
+    console.error('Error storing call:', error);
+    res.status(500).json({ message: 'Failed to store call details', error: error.message });
+}};
