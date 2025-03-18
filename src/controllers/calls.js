@@ -488,11 +488,40 @@ exports.getCallDetails = async (req, res) => {
 
 exports.storeCallsInDBatStartingCall = async (req, res) => {
   const { storeCall } = req.body;
-  
+  console.log("storeCall from qalqul:", storeCall);
   try {
     const callDetails = await qalqulService.storeCallsInDBatStartingCall(storeCall);
-    res.json(callDetails);
+    
+    // Return a properly formatted response
+    res.status(200).json({
+      success: true,
+      data: callDetails
+    });
   } catch (error) {
     console.error('Error storing call:', error);
-    res.status(500).json({ message: 'Failed to store call details', error: error.message });
-}};
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to store call details', 
+      error: error.message 
+    });
+  }
+};
+
+exports.storeCallsInDBatEndingCall = async (req, res) => {
+  const { phoneNumber, callSid } = req.body;
+  console.log("callSid from qalqul:", callSid);
+  try {
+    const callDetails = await qalqulService.storeCallsInDBatEndingCall(phoneNumber, callSid);
+    res.status(200).json({
+      success: true,
+      data: callDetails
+    });
+  } catch (error) {
+    console.error('Error storing call:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to store call details', 
+      error: error.message 
+    });
+  }
+};

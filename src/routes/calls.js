@@ -81,5 +81,5 @@ router.post('/call-details', callController.getCallDetails);
 //@qalqul logic
 
 router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatStartingCall)
-
+router.post('/store-call-in-db-at-end-call', callController.storeCallsInDBatEndingCall)
 module.exports = router;
