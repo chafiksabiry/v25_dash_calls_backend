@@ -1,3 +1,4 @@
+const { Call } = require('../models/Call');
 const { CallService } = require('../services/CallService');
 const ovhService= require('../services/integrations/ovh');
 const twilioService= require('../services/integrations/twilio');

@@ -67,6 +67,24 @@ const callSchema = new mongoose.Schema({
     min: 0,
     max: 100,
   },
+  ai_call_score: {
+    "Agent fluency": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    },
+    "Sentiment analysis": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    },
+    "Fraud detection": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    },
+    "overall": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    }
+  },
   childCalls: [String], // Liste des appels enfants (SID)
   createdAt: {
     type: Date,
