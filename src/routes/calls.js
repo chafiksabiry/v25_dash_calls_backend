@@ -1,4 +1,3 @@
-
 const express = require('express');
 const { protect } = require('../middleware/auth');
 const callController =require('../controllers/calls');
@@ -80,6 +79,7 @@ router.post('/call-details', callController.getCallDetails);
 
 //@qalqul logic
 
-router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatStartingCall)
-router.post('/store-call-in-db-at-end-call', callController.storeCallsInDBatEndingCall)
+router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatStartingCall);
+router.post('/store-call-in-db-at-end-call', callController.storeCallsInDBatEndingCall);
+router.post('/ai-assist', callController.getAIAssistance);
 module.exports = router;

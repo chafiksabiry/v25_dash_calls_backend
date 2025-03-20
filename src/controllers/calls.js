@@ -3,6 +3,22 @@ const ovhService= require('../services/integrations/ovh');
 const twilioService= require('../services/integrations/twilio');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
+const OpenAI = require('openai');
+const { VertexAI } = require('@google-cloud/vertexai');
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+
+// Initialize Vertex AI
+const vertex_ai = new VertexAI({
+  project: process.env.GOOGLE_CLOUD_PROJECT,
+  location: process.env.GOOGLE_CLOUD_LOCATION,
+});
+
+// Initialize the model
+const model = 'gemini-pro';
+
 // @desc    Get all calls
 // @route   GET /api/calls
 // @access  Private
@@ -522,6 +538,66 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
       success: false,
       message: 'Failed to store call details', 
       error: error.message 
+    });
+  }
+};
+
+exports.getAIAssistance = async (req, res) => {
+  try {
+    const { transcription, context } = req.body;
+    
+    if (!transcription) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transcription is required'
+      });
+    }
+
+    // Initialize the generative model
+    const generativeModel = vertex_ai.preview.getGenerativeModel({
+      model: model,
+      generation_config: {
+        max_output_tokens: 256,
+        temperature: 0.7,
+      },
+    });
+
+    // Prepare the prompt
+    let prompt = `You are an AI assistant helping with a phone call.
+    Your tasks:
+    1. Analyze customer sentiment
+    2. Suggest appropriate responses
+    3. Provide relevant product/service information
+    4. Help maintain professional communication
+    Keep responses brief and actionable.
+
+    Current conversation:
+    ${context && Array.isArray(context) ? context.map(msg => `${msg.role}: ${msg.content}`).join('\n') : ''}
+    Customer: ${transcription}
+
+    Please provide a brief, helpful response:`;
+
+    console.log('Sending prompt to Vertex AI:', prompt);
+
+    // Generate response
+    const result = await generativeModel.generateContent(prompt);
+    const response = await result.response;
+    
+    // Access the text content from the response parts
+    const responseText = response.candidates[0].content.parts[0].text;
+
+    console.log('Received response from Vertex AI:', responseText);
+
+    res.json({
+      success: true,
+      suggestion: responseText
+    });
+  } catch (error) {
+    console.error('Error getting AI assistance:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get AI assistance',
+      error: error.message
     });
   }
 };
