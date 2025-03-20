@@ -36,7 +36,7 @@ ENV CLOUDINARY_API_KEY=981166483223979
 ENV CLOUDINARY_API_SECRET=i3nxRvfOF1jjfLzMHKE8mP4aXVM
 
 #integration twilio
-ENV INTEGRATIONS_SERVICE_URL=http://localhost:5009
+ENV INTEGRATIONS_SERVICE_URL=http://38.242.208.242:5009
 
 #qalqul
 ENV QALQUL_API=https://digital-works.qalqul.io/discovery/v1/calls
