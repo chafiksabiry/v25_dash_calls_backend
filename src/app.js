@@ -3,6 +3,8 @@ const cors = require('cors');
 const { config } = require('./config/env');
 const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
+const http = require('http');
+const setupSpeechToTextWebSocket = require('./websocket/speechToText');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -42,6 +44,13 @@ app.use('/api/dashboard', dashboard);
 
 const PORT = config.PORT;
 
- app.listen(PORT, () => {
+// Create HTTP server
+const server = http.createServer(app);
+
+// Set up WebSocket handler for speech-to-text
+setupSpeechToTextWebSocket(server);
+
+// Listen on server instead of app
+server.listen(PORT, () => {
   console.log(`Server running in ${config.NODE_ENV} mode on port ${PORT}`);
 }); 
