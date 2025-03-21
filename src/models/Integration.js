@@ -1,29 +1,23 @@
 const mongoose = require('mongoose');
 
-const integrationSchema = new mongoose.Schema({
-  name: {
+const IntegrationSchema = new mongoose.Schema({
+  userId: {
     type: String,
-    required: [true, 'Please add a name'],
-    unique: true
+    required: true
   },
-  description: {
+  type: {
     type: String,
-    required: [true, 'Please add a description']
+    required: true,
+    enum: ['twilio', 'whatsapp', 'telegram', 'gmail'] // Add other integration types as needed
   },
-  category: {
-    type: String,
-    required: [true, 'Please add a category'],
-    enum: ['crm', 'chat', 'communication', 'phone', 'email', 'ticketing', 'authentication']
+  credentials: {
+    type: mongoose.Schema.Types.Mixed,
+    required: true
   },
   status: {
     type: String,
-    enum: ['connected', 'error', 'pending'],
-    default: 'pending'
-  },
-  icon_url: String,
-  config: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
+    enum: ['connected', 'disconnected', 'error'],
+    default: 'disconnected'
   },
   createdAt: {
     type: Date,
@@ -35,11 +29,10 @@ const integrationSchema = new mongoose.Schema({
   }
 });
 
-integrationSchema.pre('save', function(next) {
-  this.updatedAt = new Date();
+// Update the updatedAt timestamp before saving
+IntegrationSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
   next();
 });
 
-const Integration = mongoose.model('Integration', integrationSchema);
-
-module.exports = { Integration };
+module.exports = mongoose.model('Integration', IntegrationSchema);
