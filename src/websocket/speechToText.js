@@ -6,6 +6,7 @@ function setupSpeechToTextWebSocket(server) {
     server,
     path: '/speech-to-text'
   });
+  console.log("wss",wss);
 
   wss.on('connection', async (ws) => {
     console.log('Client connected to speech-to-text WebSocket');
