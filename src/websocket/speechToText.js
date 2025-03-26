@@ -1,15 +1,22 @@
 const WebSocket = require('ws');
 const vertexAIService = require('../services/vertexai.service');
+const { config } = require('../config/env');
 
 function setupSpeechToTextWebSocket(server) {
   const wss = new WebSocket.Server({ 
     server,
-    path: '/speech-to-text'
+    path: '/speech-to-text',
+    perMessageDeflate: false,
+    maxPayload: 104857600,
+    clientTracking: true
   });
-  console.log("wss",wss);
+
+  wss.on('error', (error) => {
+    console.error('WebSocket Server Error:', error);
+  });
 
   wss.on('connection', async (ws) => {
-    console.log('Client connected to speech-to-text WebSocket');
+    console.log('New WebSocket connection established');
     let recognizeStream = null;
     let isStreamActive = false;
     
@@ -85,12 +92,12 @@ function setupSpeechToTextWebSocket(server) {
       };
       
       ws.on('close', () => {
-        console.log('Client disconnected from speech-to-text WebSocket');
+        console.log('Client disconnected');
         cleanupStream();
       });
       
       ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
+        console.error('WebSocket Error:', error);
         cleanupStream();
       });
       
@@ -101,6 +108,8 @@ function setupSpeechToTextWebSocket(server) {
       }
     }
   });
+
+  console.log('WebSocket server initialized');
 }
 
 module.exports = setupSpeechToTextWebSocket; 
