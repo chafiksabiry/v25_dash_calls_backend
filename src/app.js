@@ -50,7 +50,7 @@ console.log("server",server);
 // Set up WebSocket handler for speech-to-text
 setupSpeechToTextWebSocket(server);
 
-// Listen on server
+// Listen on server instead of app
 server.listen(PORT, () => {
   console.log(`Server running in ${config.NODE_ENV} mode on port ${PORT}`);
 }); 
