@@ -46,7 +46,7 @@ const PORT = config.PORT;
 
 // Create HTTP server
 const server = http.createServer(app);
-
+console.log("server",server);
 // Set up WebSocket handler for speech-to-text
 setupSpeechToTextWebSocket(server);
 
