@@ -563,20 +563,31 @@ exports.getAIAssistance = async (req, res) => {
       },
     });
 
-    // Prepare the prompt
+    // Enhanced prompt with automated message detection
     let prompt = `You are an AI assistant helping with a phone call.
-    Your tasks:
-    1. Analyze customer sentiment
-    2. Suggest appropriate responses
-    3. Provide relevant product/service information
-    4. Help maintain professional communication
-    Keep responses brief and actionable.
+    Your primary tasks:
+    1. First, determine if this is an automated message/voicemail system by analyzing these patterns:
+       - Standard voicemail greetings ("please leave a message", "we're not available")
+       - Automated menu options ("press 1 for", "for X, press Y")
+       - Out-of-office or business hours messages
+       - Repetitive or pre-recorded message patterns
+    2. If an automated system is detected:
+       - Alert the agent immediately
+       - Suggest appropriate actions (leave message, press specific numbers, wait for operator)
+       - Recommend whether to continue or end the call
+    3. If it's a real person:
+       - Analyze customer sentiment
+       - Suggest appropriate responses
+       - Provide relevant product/service information
+       - Help maintain professional communication
+
+    Keep responses brief, clear, and actionable. Prioritize automated system detection first.
 
     Current conversation:
     ${context && Array.isArray(context) ? context.map(msg => `${msg.role}: ${msg.content}`).join('\n') : ''}
-    Customer: ${transcription}
+    Latest transcription: ${transcription}
 
-    Please provide a brief, helpful response:`;
+    Please provide a brief, helpful response, starting with [AUTOMATED] if you detect an automated system or [HUMAN] if you detect a real person:`;
 
     console.log('Sending prompt to Vertex AI:', prompt);
 
