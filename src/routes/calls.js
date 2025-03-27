@@ -1,6 +1,6 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
-const callController =require('../controllers/calls');
+const callController = require('../controllers/calls');
 const {
   getCalls,
   getCall,
@@ -19,27 +19,29 @@ const router = express.Router();
 
 //@twilio logic
 
- router.route('/')
- .get(getCalls)
-  .post(createCall); 
+router.route('/')
+  .get(getCalls)
+  .post(createCall);
+
+router.get('/agent/:agentId', callController.getCallsByAgent);
+
+  
+router.post('/token', (req, res, next) => {
+  console.log('Requête reçue sur la route');
+  next();
+}, callController.getTwilioToken);
 
 
-  router.post('/token', (req, res, next) => {
-    console.log('Requête reçue sur la route');
-    next();
-  }, callController.getTwilioToken);
+router.get('/token', (req, res, next) => {
+  console.log('Requête reçue sur la route');
+  next();
+}, callController.getTwilioToken);
 
 
-  router.get('/token', (req, res, next) => {
-    console.log('Requête reçue sur la route');
-    next();
-  }, callController.getTwilioToken);
+router.post('/store-call', callController.saveCallToDB);
 
 
-  router.post('/store-call', callController.saveCallToDB);
-
-
- router.route('/initiate')
+router.route('/initiate')
   .post(initiateCall);
 
 router.route('/:id')
@@ -53,7 +55,7 @@ router.route('/:id/notes')
   .post(addNote);
 
 router.route('/:id/quality-score')
-  .put(updateQualityScore); 
+  .put(updateQualityScore);
 
 // Route pour créer un Dialplan
 router.post('/dialplan', callController.createDialplan);
