@@ -1,7 +1,7 @@
 const { Call } = require('../models/Call');
 const { CallService } = require('../services/CallService');
-const ovhService= require('../services/integrations/ovh');
-const twilioService= require('../services/integrations/twilio');
+const ovhService = require('../services/integrations/ovh');
+const twilioService = require('../services/integrations/twilio');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const OpenAI = require('openai');
@@ -38,6 +38,42 @@ exports.getCalls = async (req, res) => {
     res.status(400).json({
       success: false,
       error: err.message
+    });
+  }
+};
+
+
+// @desc    Get all calls for a specific agent
+// @route   GET /api/calls/agent/:agentId
+// @access  Private
+// @param   {string} agentId - The ID of the agent to get calls for
+exports.getCallsByAgent = async (req, res) => {
+  try {
+    const agentId = req.params.agentId; // Fixed incorrect destructuring
+
+    if (!agentId) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Agent ID est requis" 
+      });
+    }
+
+    const calls = await Call.find({ agent: agentId })
+      .populate('agent')
+      .populate('lead')
+      .sort({ createdAt: -1 }); // Sort by most recent first
+
+    res.status(200).json({
+      success: true,
+      count: calls.length,
+      data: calls
+    });
+  } catch (error) {
+    console.error("Erreur lors de la récupération des appels :", error);
+    res.status(500).json({ 
+      success: false,
+      message: "Erreur serveur",
+      error: error.message 
     });
   }
 };
@@ -249,15 +285,15 @@ exports.createDialplan = async (req, res) => {
   const { callerNumber, calleeNumber } = req.body;
 
   if (!callerNumber || !calleeNumber) {
-      return res.status(400).json({ error: 'callerNumber et calleeNumber sont requis' });
+    return res.status(400).json({ error: 'callerNumber et calleeNumber sont requis' });
   }
 
   try {
-      const result = await ovhService.createDialplan(callerNumber, calleeNumber);
-      res.status(200).json({ message: 'Dialplan créé avec succès', result });
+    const result = await ovhService.createDialplan(callerNumber, calleeNumber);
+    res.status(200).json({ message: 'Dialplan créé avec succès', result });
   } catch (error) {
-      console.error('Erreur dans createDialplan Controller:', error);
-      res.status(500).json({ error: 'Erreur lors de la création du Dialplan' });
+    console.error('Erreur dans createDialplan Controller:', error);
+    res.status(500).json({ error: 'Erreur lors de la création du Dialplan' });
   }
 };
 
@@ -266,15 +302,15 @@ exports.launchOutboundCall = async (req, res) => {
   const { callerNumber, calleeNumber } = req.body;
 
   if (!callerNumber || !calleeNumber) {
-      return res.status(400).json({ error: 'callerNumber et calleeNumber sont requis' });
+    return res.status(400).json({ error: 'callerNumber et calleeNumber sont requis' });
   }
 
   try {
-      const result = await ovhService.launchOutboundCall(callerNumber, calleeNumber);
-      res.status(200).json({ message: 'Appel lancé avec succès', result });
+    const result = await ovhService.launchOutboundCall(callerNumber, calleeNumber);
+    res.status(200).json({ message: 'Appel lancé avec succès', result });
   } catch (error) {
-      console.error('Erreur dans launchOutboundCall Controller:', error);
-      res.status(500).json({ error: 'Erreur lors du lancement de l\'appel' });
+    console.error('Erreur dans launchOutboundCall Controller:', error);
+    res.status(500).json({ error: 'Erreur lors du lancement de l\'appel' });
   }
 };
 
@@ -340,7 +376,7 @@ exports.handleVoice = async (req, res) => {
   res.type('text/xml');
   res.send(response); */
   const { To } = req.body;
-  console.log("To",To);
+  console.log("To", To);
 
   try {
     const responseXml = await twilioService.generateTwimlResponse(To);
@@ -356,7 +392,7 @@ exports.handleVoice = async (req, res) => {
 
 exports.initiateCall = async (req, res) => {
   const { to, userId } = req.body;
-  
+
   if (!userId) {
     return res.status(400).json({ message: 'User ID is required' });
   }
@@ -390,7 +426,7 @@ exports.trackCallStatus = async (req, res) => {
 exports.hangUpCall = async (req, res) => {
   const callSid = req.params.callSid;
   const { userId } = req.body;
-  
+
   if (!callSid || !userId) {
     return res.status(400).json({ message: 'Call SID and User ID are required' });
   }
@@ -427,7 +463,7 @@ exports.getTwilioToken = async (req, res) => {
   try {
     // Generate Twilio token using the service layer
     const token = await twilioService.generateTwilioToken('platform-user');
-    
+
     // Send the token back to the client
     res.json({ token });
   } catch (error) {
@@ -439,7 +475,7 @@ exports.getTwilioToken = async (req, res) => {
 
 
 
-exports.endCall= async (req, res) => {
+exports.endCall = async (req, res) => {
   const callSid = req.body.CallSid;
   const callStatus = req.body.CallStatus;
 
@@ -508,7 +544,7 @@ exports.storeCallsInDBatStartingCall = async (req, res) => {
   console.log("storeCall from qalqul:", storeCall);
   try {
     const callDetails = await qalqulService.storeCallsInDBatStartingCall(storeCall);
-    
+
     // Return a properly formatted response
     res.status(200).json({
       success: true,
@@ -516,10 +552,10 @@ exports.storeCallsInDBatStartingCall = async (req, res) => {
     });
   } catch (error) {
     console.error('Error storing call:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Failed to store call details', 
-      error: error.message 
+      message: 'Failed to store call details',
+      error: error.message
     });
   }
 };
@@ -535,10 +571,10 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
     });
   } catch (error) {
     console.error('Error storing call:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Failed to store call details', 
-      error: error.message 
+      message: 'Failed to store call details',
+      error: error.message
     });
   }
 };
@@ -546,7 +582,7 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
 exports.getAIAssistance = async (req, res) => {
   try {
     const { transcription, context } = req.body;
-    
+
     if (!transcription) {
       return res.status(400).json({
         success: false,
@@ -594,7 +630,7 @@ exports.getAIAssistance = async (req, res) => {
     // Generate response
     const result = await generativeModel.generateContent(prompt);
     const response = await result.response;
-    
+
     // Access the text content from the response parts
     const responseText = response.candidates[0].content.parts[0].text;
 
