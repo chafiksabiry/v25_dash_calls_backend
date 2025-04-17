@@ -8,7 +8,7 @@ RUN npm install
 
 COPY . .
 
-ENV MONGODB_URI=mongodb://harx:gcZ62rl8hoME@185.137.122.3:27017/V25_CompanySearchWizard
+ENV MONGODB_URI=mongodb://harx:ix5S3vU6BjKn4MHp@207.180.226.2:27017/V25_HarxPreProd
 ENV PORT=5006
 ENV OVH_APPLICATION_KEY=951ed23a2d85dc98
 ENV OVH_APPLICATION_SECRET=f084e28c889418c3093aed237a8b7198
@@ -36,7 +36,7 @@ ENV CLOUDINARY_API_KEY=981166483223979
 ENV CLOUDINARY_API_SECRET=i3nxRvfOF1jjfLzMHKE8mP4aXVM
 
 #integration twilio
-ENV INTEGRATIONS_SERVICE_URL=http://38.242.208.242:5009
+ENV INTEGRATIONS_SERVICE_URL=https://preprod-api-dash-integrations.harx.ai
 
 #qalqul
 ENV QALQUL_API=https://digital-works.qalqul.io/discovery/v1/calls
