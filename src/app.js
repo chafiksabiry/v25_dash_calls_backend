@@ -26,8 +26,14 @@ app.use(express.urlencoded({ extended: true }));
 // Body parser
 app.use(express.json());
 
-// Enable CORS
-app.use(cors());
+//app.use(cors());
+// Enable CORS with specific configuration
+app.use(cors({
+  origin: ['https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 
 // Mount routers
 app.use('/api/auth', auth);
