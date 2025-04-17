@@ -51,6 +51,6 @@ ENV GOOGLE_CLOUD_LOCATION=us-central1
 ENV GOOGLE_APPLICATION_CREDENTIALS=./config/vertex-service-account.json
 
 
-EXPOSE 5007
+EXPOSE 5006
 
 CMD ["npm", "start"]
