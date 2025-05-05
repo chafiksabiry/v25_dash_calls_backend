@@ -29,7 +29,7 @@ app.use(express.json());
 //app.use(cors());
 // Enable CORS with specific configuration
 app.use(cors({
-  origin: ['https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai'],
+  origin: ['http://localhost:5180','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
