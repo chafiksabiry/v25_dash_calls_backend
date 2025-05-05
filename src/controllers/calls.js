@@ -18,7 +18,7 @@ const vertex_ai = new VertexAI({
 });
 
 // Initialize the model
-const model = 'gemini-pro';
+const model = 'gemini-1.5-flash-002';
 
 // @desc    Get all calls
 // @route   GET /api/calls
