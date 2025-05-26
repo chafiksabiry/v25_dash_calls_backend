@@ -81,6 +81,9 @@ class CallService {
   async updateQualityScore(id, score) {
     return this.repository.updateQualityScore(id, score);
   }
+
 }
+
+
 
 module.exports = { CallService };
