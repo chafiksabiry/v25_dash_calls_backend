@@ -4,6 +4,7 @@ const ovhService = require('../services/integrations/ovh');
 const twilioService = require('../services/integrations/twilio');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
+const telnyxService = require('../services/integrations/telnyxService');
 const OpenAI = require('openai');
 const { VertexAI } = require('@google-cloud/vertexai');
 
@@ -647,5 +648,15 @@ exports.getAIAssistance = async (req, res) => {
       message: 'Failed to get AI assistance',
       error: error.message
     });
+  }
+};
+
+exports.getLoginToken = async (req, res) => {
+  try {
+    const token = await telnyxService.generateLoginToken();
+    res.json({ login_token: token });
+  } catch (error) {
+    console.error('Error in controller:', error);
+    res.status(500).json({ error: 'Failed to get Telnyx login token' });
   }
 };

@@ -8,7 +8,7 @@ RUN npm install
 
 COPY . .
 
-ENV MONGODB_URI=mongodb://harx:gcZ62rl8hoME@185.137.122.3:27017/V25_CompanySearchWizard
+ENV MONGODB_URI=mongodb://harx:gcZ62rl8hoME@38.242.208.242:27018/V25_CompanySearchWizard
 ENV PORT=5006
 ENV OVH_APPLICATION_KEY=951ed23a2d85dc98
 ENV OVH_APPLICATION_SECRET=f084e28c889418c3093aed237a8b7198
@@ -54,3 +54,4 @@ ENV GOOGLE_APPLICATION_CREDENTIALS=./config/vertex-service-account.json
 EXPOSE 5006
 
 CMD ["npm", "start"]
+
