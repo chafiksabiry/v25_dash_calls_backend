@@ -84,4 +84,7 @@ router.post('/call-details', callController.getCallDetails);
 router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatStartingCall);
 router.post('/store-call-in-db-at-end-call', callController.storeCallsInDBatEndingCall);
 router.post('/ai-assist', callController.getAIAssistance);
+
+router.post('/get-login-token', callController.getLoginToken);
+
 module.exports = router;
