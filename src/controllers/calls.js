@@ -660,3 +660,138 @@ exports.getLoginToken = async (req, res) => {
     res.status(500).json({ error: 'Failed to get Telnyx login token' });
   }
 };
+
+// @desc    Analyze personality during call and provide caller assistance
+// @route   POST /api/calls/personality-analysis
+// @access  Private
+exports.getPersonalityAnalysis = async (req, res) => {
+  try {
+    const { transcription, context, callDuration } = req.body;
+
+    if (!transcription) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transcription is required'
+      });
+    }
+
+    // Initialize the generative model
+    const generativeModel = vertex_ai.preview.getGenerativeModel({
+      model: model,
+      generation_config: {
+        max_output_tokens: 1024,
+        temperature: 0.3,
+      },
+    });
+
+    // Optimized DISC personality analysis prompt for early detection
+    const isEarlyAnalysis = transcription.length < 100;
+    const prompt = `You are an expert DISC personality analyst helping sales agents during phone calls.
+
+    ${isEarlyAnalysis ? 'IMPORTANT: This is an early analysis with limited text. Focus on immediate personality indicators and provide a preliminary assessment with appropriate confidence levels.' : ''}
+
+    Analyze the customer's communication patterns and provide DISC personality insights with specific recommendations.
+
+    DISC Framework:
+    - D (Dominant): Direct, results-focused, decisive, competitive, impatient, authoritative
+    - I (Influential): Enthusiastic, people-oriented, optimistic, persuasive, talkative, emotional
+    - S (Steady): Patient, reliable, cooperative, calm, supportive, methodical
+    - C (Conscientious): Analytical, precise, systematic, careful, detail-oriented, logical
+
+    Key Early Indicators:
+    - D: "I need", "Let's get to the point", "What's the bottom line", direct questions
+    - I: "That's great!", "I love", "We should", enthusiastic language, personal stories
+    - S: "Let me think", "I'm not sure", "Maybe", cautious language, questions for clarification
+    - C: "Can you explain", "What are the details", "How does it work", analytical questions
+
+    Analyze the following conversation and provide:
+    1. Primary DISC type (D, I, S, or C) with confidence level (0-100)
+    2. Secondary DISC type if applicable
+    3. Key personality indicators found in the speech
+    4. Specific communication recommendations for the agent
+    5. Suggested approach strategies
+    6. Potential objections and how to handle them
+    7. Best closing techniques for this personality type
+
+    Current conversation context:
+    ${context && Array.isArray(context) ? context.map(msg => `${msg.role}: ${msg.content}`).join('\n') : ''}
+    
+    Latest transcription: ${transcription}
+    Call duration: ${callDuration || 'Unknown'} minutes
+    ${isEarlyAnalysis ? 'Text length: Short (early analysis)' : 'Text length: Sufficient for detailed analysis'}
+
+    Respond in JSON format:
+    {
+      "primaryType": "D|I|S|C",
+      "secondaryType": "D|I|S|C|null",
+      "confidence": ${isEarlyAnalysis ? '60-80' : '70-95'},
+      "personalityIndicators": ["direct language", "quick decisions", "results-focused"],
+      "recommendations": ["Be direct and to the point", "Focus on results and outcomes"],
+      "approachStrategy": "Get straight to business, avoid small talk",
+      "potentialObjections": ["Price concerns", "Time constraints"],
+      "objectionHandling": ["Emphasize ROI", "Respect their time"],
+      "closingTechniques": ["Direct ask", "Limited time offer"],
+      "communicationStyle": "Direct and professional",
+      "emotionalTriggers": ["Success", "Achievement", "Recognition"],
+      "riskFactors": ["May seem pushy", "Could rush decisions"],
+      "successIndicators": ["Asks specific questions", "Shows interest in results"]
+    }`;
+
+    console.log('Sending personality analysis prompt to Vertex AI');
+
+    // Generate response
+    const result = await generativeModel.generateContent(prompt);
+    const response = await result.response;
+    const responseText = response.candidates[0].content.parts[0].text;
+
+    console.log('Received personality analysis from Vertex AI:', responseText);
+
+    // Try to parse JSON response
+    let personalityData;
+    try {
+      personalityData = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Error parsing JSON response:', parseError);
+      // Fallback: create a basic structure from text response
+      personalityData = {
+        primaryType: 'S',
+        confidence: 70,
+        recommendations: ['Continue building rapport', 'Listen actively'],
+        approachStrategy: 'Patient and supportive approach',
+        communicationStyle: 'Professional and empathetic'
+      };
+    }
+
+    // Validate and enhance the response
+    const validatedData = {
+      primaryType: personalityData.primaryType || 'S',
+      secondaryType: personalityData.secondaryType || null,
+      confidence: Math.min(100, Math.max(0, personalityData.confidence || 70)),
+      personalityIndicators: personalityData.personalityIndicators || [],
+      recommendations: personalityData.recommendations || [],
+      approachStrategy: personalityData.approachStrategy || 'Adaptive approach',
+      potentialObjections: personalityData.potentialObjections || [],
+      objectionHandling: personalityData.objectionHandling || [],
+      closingTechniques: personalityData.closingTechniques || [],
+      communicationStyle: personalityData.communicationStyle || 'Professional',
+      emotionalTriggers: personalityData.emotionalTriggers || [],
+      riskFactors: personalityData.riskFactors || [],
+      successIndicators: personalityData.successIndicators || [],
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      personalityProfile: validatedData,
+      message: `Personality analysis completed. Primary type: ${validatedData.primaryType} (${validatedData.confidence}% confidence)`
+    });
+
+  } catch (error) {
+    console.error('Error getting personality analysis:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get personality analysis',
+      error: error.message
+    });
+  }
+};
