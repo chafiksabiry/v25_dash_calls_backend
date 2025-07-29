@@ -85,6 +85,9 @@ router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatSt
 router.post('/store-call-in-db-at-end-call', callController.storeCallsInDBatEndingCall);
 router.post('/ai-assist', callController.getAIAssistance);
 
+// Route pour l'analyse de personnalité DISC
+router.post('/personality-analysis', callController.getPersonalityAnalysis);
+
 router.post('/get-login-token', callController.getLoginToken);
 
 module.exports = router;

@@ -12,6 +12,7 @@ function setupSpeechToTextWebSocket(server) {
     console.log('Client connected to speech-to-text WebSocket');
     let recognizeStream = null;
     let isStreamActive = false;
+    let speechConfig = null;
     
     try {
       // Create a new speech recognition stream for this connection
@@ -36,6 +37,51 @@ function setupSpeechToTextWebSocket(server) {
             // Configuration message
             const config = JSON.parse(data);
             console.log('Received config:', config);
+            
+            // Store the speech configuration
+            if (config.config) {
+              speechConfig = config.config;
+              console.log('Speech config updated:', speechConfig);
+              
+              // Recreate the stream with new configuration
+              if (recognizeStream) {
+                cleanupStream();
+              }
+              
+              try {
+                recognizeStream = await vertexAIService.createSpeechStream(speechConfig);
+                isStreamActive = true;
+                console.log('Speech recognition stream recreated with new config');
+                
+                // Set up event handlers for the new stream
+                recognizeStream.on('data', (response) => {
+                  if (!isStreamActive) return;
+                  
+                  try {
+                    const result = response.results[0];
+                    if (result && ws.readyState === WebSocket.OPEN) {
+                      const message = {
+                        transcript: result.alternatives[0]?.transcript || '',
+                        confidence: result.alternatives[0]?.confidence || 0,
+                        isFinal: result.isFinal || false,
+                        languageCode: result.languageCode || speechConfig?.languageCode
+                      };
+                      ws.send(JSON.stringify(message));
+                    }
+                  } catch (error) {
+                    console.error('Error processing recognition result:', error);
+                  }
+                });
+
+                recognizeStream.on('error', (error) => {
+                  console.error('Recognition stream error:', error);
+                  isStreamActive = false;
+                  cleanupStream();
+                });
+              } catch (error) {
+                console.error('Error recreating speech stream:', error);
+              }
+            }
           }
         } catch (error) {
           console.error('Error processing message:', error);
@@ -47,15 +93,30 @@ function setupSpeechToTextWebSocket(server) {
           if (!isStreamActive) return;
           
           try {
+            console.log('🔍 Raw recognition response:', JSON.stringify(response, null, 2));
+            
             const result = response.results[0];
             if (result && ws.readyState === WebSocket.OPEN) {
+              const detectedLanguage = 'fr-FR'; // Forcer le français
               const message = {
                 transcript: result.alternatives[0]?.transcript || '',
                 confidence: result.alternatives[0]?.confidence || 0,
                 isFinal: result.isFinal || false,
-                languageCode: result.languageCode
+                languageCode: detectedLanguage
               };
+              
+              // Log la transcription française
+              if (result.alternatives[0]?.transcript) {
+                console.log(`🇫🇷 French transcription: "${result.alternatives[0].transcript}"`);
+                console.log(`📊 Confidence: ${result.alternatives[0].confidence}, Final: ${result.isFinal}`);
+                console.log(`🔍 Full result:`, result);
+              } else {
+                console.log('⚠️ Empty transcript in recognition result');
+              }
+              
               ws.send(JSON.stringify(message));
+            } else {
+              console.log('⚠️ No result or WebSocket not open');
             }
           } catch (error) {
             console.error('Error processing recognition result:', error);
