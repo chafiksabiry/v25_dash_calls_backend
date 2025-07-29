@@ -667,6 +667,7 @@ exports.getLoginToken = async (req, res) => {
 exports.getPersonalityAnalysis = async (req, res) => {
   try {
     const { transcription, context, callDuration } = req.body;
+    console.log("transcription from personality analysis:", transcription);
 
     if (!transcription) {
       return res.status(400).json({
