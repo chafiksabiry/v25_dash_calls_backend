@@ -11,18 +11,24 @@ const model = 'gemini-pro';
 
 class VertexAIService {
   async createSpeechStream(config = {}) {
+    // Configuration par défaut avec français forcé
+    const defaultConfig = {
+      encoding: 'LINEAR16',
+      sampleRateHertz: 48000,
+      languageCode: 'fr-FR', // Forcer le français
+      model: 'default',
+      useEnhanced: true,
+      enableAutomaticPunctuation: true,
+      audioChannelCount: 1,
+      enableWordConfidence: true,
+      enableSpeakerDiarization: true,
+      enableAutomaticLanguageIdentification: false, // Désactiver la détection automatique
+      alternativeLanguageCodes: [] // Pas d'alternatives pour forcer le français
+    };
+
+    // Fusionner avec la configuration fournie
     const request = {
-      config: {
-        encoding: 'LINEAR16',
-        sampleRateHertz: 48000,
-        languageCode: 'en-US',
-        model: 'default',
-        useEnhanced: true,
-        enableAutomaticPunctuation: true,
-        audioChannelCount: 1,
-        enableWordConfidence: true,
-        enableSpeakerDiarization: true
-      },
+      config: { ...defaultConfig, ...config },
       interimResults: true
     };
 
@@ -48,7 +54,8 @@ class VertexAIService {
               confidence: data.results[0].alternatives[0]?.confidence || 0,
               isFinal: data.results[0].isFinal,
               stability: data.results[0].stability,
-              resultEndTime: data.results[0].resultEndTime
+              resultEndTime: data.results[0].resultEndTime,
+              languageCode: data.results[0].languageCode || request.config.languageCode
             };
             console.log('Processed transcript:', result);
             return result;
