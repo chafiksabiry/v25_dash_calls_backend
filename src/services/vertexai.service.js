@@ -15,7 +15,7 @@ class VertexAIService {
     const defaultConfig = {
       encoding: 'LINEAR16',
       sampleRateHertz: 48000,
-      languageCode: 'fr-FR', // Forcer le français
+      languageCode: 'en-US', // Langue par défaut
       model: 'default',
       useEnhanced: true,
       enableAutomaticPunctuation: true,
@@ -33,7 +33,11 @@ class VertexAIService {
     };
 
     try {
-      console.log('Creating speech recognition stream with config:', JSON.stringify(request.config, null, 2));
+      console.log('🎤 CREATING SPEECH STREAM:');
+      console.log('📥 Config received from frontend:', JSON.stringify(config, null, 2));
+      console.log('🔧 Default config:', JSON.stringify(defaultConfig, null, 2));
+      console.log('✅ Final merged config:', JSON.stringify(request.config, null, 2));
+      console.log('🌍 Final language code:', request.config.languageCode);
       
       const recognizeStream = speechClient.streamingRecognize(request)
         .on('error', error => {
