@@ -6,7 +6,7 @@ function setupSpeechToTextWebSocket(server) {
     server,
     path: '/speech-to-text'
   });
-  console.log("wss",wss);
+ // console.log("wss",wss);
 
   wss.on('connection', async (ws) => {
     console.log('Client connected to speech-to-text WebSocket');
@@ -21,27 +21,52 @@ function setupSpeechToTextWebSocket(server) {
       
       ws.on('message', async (data) => {
         try {
-          // Check if it's a configuration message
-          if (data instanceof Buffer) {
-            // Audio data
-            if (isStreamActive && recognizeStream && recognizeStream.writable) {
-              try {
-                await recognizeStream.write(data);
-              } catch (writeError) {
-                console.error('Error writing to stream:', writeError);
-                isStreamActive = false;
-                cleanupStream();
-              }
-            }
-          } else {
-            // Configuration message
-            const config = JSON.parse(data);
-            console.log('Received config:', config);
+          console.log('📨 MESSAGE RECEIVED:');
+          console.log('📊 Data type:', typeof data);
+          console.log('📊 Data instanceof Buffer:', data instanceof Buffer);
+          console.log('📊 Data length:', data.length);
+          console.log('📊 Raw data (first 200 chars):', data.toString().substring(0, 200));
+          
+                     // Check if it's a configuration message
+           let isConfigMessage = false;
+           let configData = null;
+           
+           if (data instanceof Buffer) {
+             // Try to parse as JSON first (config message)
+             try {
+               const jsonString = data.toString('utf8');
+               if (jsonString.trim().startsWith('{')) {
+                 console.log('🔧 DETECTED JSON IN BUFFER - PARSING CONFIG MESSAGE...');
+                 configData = JSON.parse(jsonString);
+                 isConfigMessage = true;
+               }
+             } catch (parseError) {
+               // Not JSON, treat as audio data
+               console.log('🔊 Buffer contains audio data, not JSON');
+             }
+           } else {
+             // String data, treat as config
+             console.log('🔧 PARSING CONFIG MESSAGE FROM STRING...');
+             configData = JSON.parse(data);
+             isConfigMessage = true;
+           }
+           
+           if (isConfigMessage && configData) {
+             // Configuration message
+             console.log('🔧 PARSING CONFIG MESSAGE...');
+             const config = configData;
+            console.log('📥 CONFIG RECEIVED FROM FRONTEND:');
+            console.log('📋 Raw config:', JSON.stringify(config, null, 2));
+            console.log('🌍 Language from frontend:', config.config?.languageCode || 'NOT FOUND');
+            console.log('📊 Full config object:', config);
             
             // Store the speech configuration
             if (config.config) {
               speechConfig = config.config;
-              console.log('Speech config updated:', speechConfig);
+              console.log('💾 STORED CONFIG:');
+              console.log('🌍 Language stored:', speechConfig.languageCode);
+              console.log('📋 Full stored config:', JSON.stringify(speechConfig, null, 2));
+              console.log('🔍 Config keys:', Object.keys(speechConfig));
               
               // Recreate the stream with new configuration
               if (recognizeStream) {
@@ -58,15 +83,30 @@ function setupSpeechToTextWebSocket(server) {
                   if (!isStreamActive) return;
                   
                   try {
+                    console.log('🔍 Raw recognition response:', JSON.stringify(response, null, 2));
+                    
                     const result = response.results[0];
                     if (result && ws.readyState === WebSocket.OPEN) {
+                      const detectedLanguage = speechConfig?.languageCode || 'en-US';
                       const message = {
                         transcript: result.alternatives[0]?.transcript || '',
                         confidence: result.alternatives[0]?.confidence || 0,
                         isFinal: result.isFinal || false,
-                        languageCode: result.languageCode || speechConfig?.languageCode
+                        languageCode: detectedLanguage
                       };
+                      
+                      // Log avec la langue détectée
+                      if (result.alternatives[0]?.transcript) {
+                        console.log(`🌍 Transcription (${detectedLanguage}): "${result.alternatives[0].transcript}"`);
+                        console.log(`📊 Confidence: ${result.alternatives[0].confidence}, Final: ${result.isFinal}`);
+                        console.log(`🔍 Full result:`, result);
+                      } else {
+                        console.log('⚠️ Empty transcript in recognition result');
+                      }
+                      
                       ws.send(JSON.stringify(message));
+                    } else {
+                      console.log('⚠️ No result or WebSocket not open');
                     }
                   } catch (error) {
                     console.error('Error processing recognition result:', error);
@@ -81,54 +121,23 @@ function setupSpeechToTextWebSocket(server) {
               } catch (error) {
                 console.error('Error recreating speech stream:', error);
               }
-            }
-          }
-        } catch (error) {
-          console.error('Error processing message:', error);
-        }
+                         }
+           } else {
+             // Audio data
+             if (isStreamActive && recognizeStream && recognizeStream.writable) {
+               try {
+                 await recognizeStream.write(data);
+               } catch (writeError) {
+                 console.error('Error writing to stream:', writeError);
+                 isStreamActive = false;
+                 cleanupStream();
+               }
+             }
+           }
+         } catch (error) {
+           console.error('Error processing message:', error);
+         }
       });
-      
-      if (recognizeStream) {
-        recognizeStream.on('data', (response) => {
-          if (!isStreamActive) return;
-          
-          try {
-            console.log('🔍 Raw recognition response:', JSON.stringify(response, null, 2));
-            
-            const result = response.results[0];
-            if (result && ws.readyState === WebSocket.OPEN) {
-              const detectedLanguage = 'fr-FR'; // Forcer le français
-              const message = {
-                transcript: result.alternatives[0]?.transcript || '',
-                confidence: result.alternatives[0]?.confidence || 0,
-                isFinal: result.isFinal || false,
-                languageCode: detectedLanguage
-              };
-              
-              // Log la transcription française
-              if (result.alternatives[0]?.transcript) {
-                console.log(`🇫🇷 French transcription: "${result.alternatives[0].transcript}"`);
-                console.log(`📊 Confidence: ${result.alternatives[0].confidence}, Final: ${result.isFinal}`);
-                console.log(`🔍 Full result:`, result);
-              } else {
-                console.log('⚠️ Empty transcript in recognition result');
-              }
-              
-              ws.send(JSON.stringify(message));
-            } else {
-              console.log('⚠️ No result or WebSocket not open');
-            }
-          } catch (error) {
-            console.error('Error processing recognition result:', error);
-          }
-        });
-
-        recognizeStream.on('error', (error) => {
-          console.error('Recognition stream error:', error);
-          isStreamActive = false;
-          cleanupStream();
-        });
-      }
       
       const cleanupStream = () => {
         if (recognizeStream) {
