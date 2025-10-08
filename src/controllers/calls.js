@@ -664,6 +664,206 @@ exports.getLoginToken = async (req, res) => {
 // @desc    Analyze personality during call and provide caller assistance
 // @route   POST /api/calls/personality-analysis
 // @access  Private
+// @desc    Initiate a call using Telnyx
+// @route   POST /api/calls/telnyx/initiate
+// @access  Private
+exports.initiateTelnyxCall = async (req, res) => {
+  try {
+    const { to, from, agentId } = req.body;
+
+    if (!to || !from || !agentId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide to, from, and agentId'
+      });
+    }
+
+    const call = await telnyxService.makeCall(to, from, agentId);
+
+    res.status(201).json({
+      success: true,
+      data: call
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Handle Telnyx call webhook
+// @route   POST /api/calls/telnyx/webhook
+// @access  Public
+exports.telnyxWebhook = async (req, res) => {
+  try {
+    const event = req.body;
+    
+    // Validate webhook signature if needed
+    // TODO: Add signature validation
+
+    const call = await telnyxService.handleCallWebhook(event);
+
+    res.status(200).json({
+      success: true,
+      data: call
+    });
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    End a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/end
+// @access  Private
+// @desc    Mute a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/mute
+// @access  Private
+exports.muteTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.muteCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Unmute a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/unmute
+// @access  Private
+exports.unmuteTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.unmuteCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Handle Telnyx call webhook for real-time events
+// @route   POST /api/calls/telnyx/webhook
+// @access  Public
+exports.telnyxWebhook = async (req, res) => {
+  try {
+    const event = req.body;
+    const eventType = event.data.event_type;
+    const callId = event.data.payload.call_control_id;
+
+    // Find the call in our database
+    const call = await Call.findOne({ call_id: callId });
+    if (!call) {
+      throw new Error(`Call not found with ID: ${callId}`);
+    }
+
+    // Update call status based on event type
+    switch (eventType) {
+      case 'call.initiated':
+        call.status = 'initiated';
+        break;
+      case 'call.answered':
+        call.status = 'in-progress';
+        break;
+      case 'call.hangup':
+      case 'call.terminated':
+        call.status = 'completed';
+        call.endTime = new Date();
+        call.duration = Math.round((call.endTime - call.startTime) / 1000);
+        break;
+      case 'call.muted':
+        call.status = 'muted';
+        break;
+      case 'call.unmuted':
+        call.status = 'in-progress';
+        break;
+      // Add other event types as needed
+    }
+
+    await call.save();
+
+    // Send a 200 response quickly to acknowledge the webhook
+    res.status(200).json({ received: true });
+
+    // Emit the event to connected websocket clients
+    if (global.io) {
+      global.io.emit('call_event', {
+        type: eventType,
+        callId: callId,
+        status: call.status,
+        timestamp: new Date(),
+        data: event.data.payload
+      });
+    }
+
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+exports.endTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.endCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
 exports.getPersonalityAnalysis = async (req, res) => {
   try {
     const { transcription, context, callDuration } = req.body;

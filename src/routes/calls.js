@@ -90,4 +90,11 @@ router.post('/personality-analysis', callController.getPersonalityAnalysis);
 
 router.post('/get-login-token', callController.getLoginToken);
 
+// Telnyx routes - Basic call control
+router.post('/telnyx/initiate', protect, callController.initiateTelnyxCall);
+router.post('/telnyx/webhook', callController.telnyxWebhook); // No protection for webhooks
+router.post('/telnyx/:callId/end', protect, callController.endTelnyxCall);
+router.post('/telnyx/:callId/mute', protect, callController.muteTelnyxCall);
+router.post('/telnyx/:callId/unmute', protect, callController.unmuteTelnyxCall);
+
 module.exports = router;
