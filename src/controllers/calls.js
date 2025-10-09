@@ -697,13 +697,14 @@ exports.initiateTelnyxCall = async (req, res) => {
 // @access  Public
 exports.telnyxWebhook = async (req, res) => {
   try {
-    // The event has already been verified by the middleware
-    const event = req.telnyxEvent;
-    const eventType = event.data.event_type;
+    // Parse the raw body to get the event data
+    const rawBody = req.body;
+    const event = JSON.parse(rawBody.toString());
     
     // Send a 200 response quickly to acknowledge the webhook
     res.status(200).json({ received: true });
 
+    const eventType = event.data.event_type;
     console.log(`📞 Processing Telnyx event: ${eventType}`);
 
     // Only process specific call events
@@ -718,16 +719,30 @@ exports.telnyxWebhook = async (req, res) => {
       console.log('Call Control ID:', event.data.payload.call_control_id);
       console.log('Event Timestamp:', event.data.occurred_at);
       
-      switch(eventType) {
-        case 'call.initiated':
-          console.log('Call initiated to:', event.data.payload.to);
-          break;
-        case 'call.answered':
-          console.log('Call answered at:', event.data.occurred_at);
-          break;
-        case 'call.hangup':
-          console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
-          break;
+      // Update call status in database
+      const callId = event.data.payload.call_control_id;
+      const call = await Call.findOne({ call_id: callId });
+      
+      if (call) {
+        switch(eventType) {
+          case 'call.initiated':
+            console.log('Call initiated to:', event.data.payload.to);
+            call.status = 'initiated';
+            break;
+          case 'call.answered':
+            console.log('Call answered at:', event.data.occurred_at);
+            call.status = 'in-progress';
+            call.startTime = new Date(event.data.occurred_at);
+            break;
+          case 'call.hangup':
+            console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
+            call.status = 'completed';
+            call.endTime = new Date(event.data.occurred_at);
+            call.duration = event.data.payload.duration_seconds || 
+              Math.round((call.endTime - call.startTime) / 1000);
+            break;
+        }
+        await call.save();
       }
     }
 
@@ -797,68 +812,6 @@ exports.unmuteTelnyxCall = async (req, res) => {
   }
 };
 
-// @desc    Handle Telnyx call webhook for real-time events
-// @route   POST /api/calls/telnyx/webhook
-// @access  Public
-exports.telnyxWebhook = async (req, res) => {
-  try {
-    const event = req.body;
-    const eventType = event.data.event_type;
-    const callId = event.data.payload.call_control_id;
-
-    // Find the call in our database
-    const call = await Call.findOne({ call_id: callId });
-    if (!call) {
-      throw new Error(`Call not found with ID: ${callId}`);
-    }
-
-    // Update call status based on event type
-    switch (eventType) {
-      case 'call.initiated':
-        call.status = 'initiated';
-        break;
-      case 'call.answered':
-        call.status = 'in-progress';
-        break;
-      case 'call.hangup':
-      case 'call.terminated':
-        call.status = 'completed';
-        call.endTime = new Date();
-        call.duration = Math.round((call.endTime - call.startTime) / 1000);
-        break;
-      case 'call.muted':
-        call.status = 'muted';
-        break;
-      case 'call.unmuted':
-        call.status = 'in-progress';
-        break;
-      // Add other event types as needed
-    }
-
-    await call.save();
-
-    // Send a 200 response quickly to acknowledge the webhook
-    res.status(200).json({ received: true });
-
-    // Emit the event to connected websocket clients
-    if (global.io) {
-      global.io.emit('call_event', {
-        type: eventType,
-        callId: callId,
-        status: call.status,
-        timestamp: new Date(),
-        data: event.data.payload
-      });
-    }
-
-  } catch (err) {
-    console.error('Webhook error:', err);
-    res.status(400).json({
-      success: false,
-      error: err.message
-    });
-  }
-};
 
 exports.endTelnyxCall = async (req, res) => {
   try {
