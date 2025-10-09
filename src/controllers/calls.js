@@ -697,23 +697,44 @@ exports.initiateTelnyxCall = async (req, res) => {
 // @access  Public
 exports.telnyxWebhook = async (req, res) => {
   try {
-    const event = req.body;
+    // The event has already been verified by the middleware
+    const event = req.telnyxEvent;
+    const eventType = event.data.event_type;
     
-    // Validate webhook signature if needed
-    // TODO: Add signature validation
+    // Send a 200 response quickly to acknowledge the webhook
+    res.status(200).json({ received: true });
 
-    const call = await telnyxService.handleCallWebhook(event);
+    console.log(`📞 Processing Telnyx event: ${eventType}`);
 
-    res.status(200).json({
-      success: true,
-      data: call
-    });
+    // Only process specific call events
+    if (['call.initiated', 'call.answered', 'call.hangup'].includes(eventType)) {
+      // Import the broadcast function
+      const { broadcastCallEvent } = require('../websocket/callEvents');
+      
+      // Broadcast the event to all connected WebSocket clients
+      broadcastCallEvent(event);
+
+      // Log the event details
+      console.log('Call Control ID:', event.data.payload.call_control_id);
+      console.log('Event Timestamp:', event.data.occurred_at);
+      
+      switch(eventType) {
+        case 'call.initiated':
+          console.log('Call initiated to:', event.data.payload.to);
+          break;
+        case 'call.answered':
+          console.log('Call answered at:', event.data.occurred_at);
+          break;
+        case 'call.hangup':
+          console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
+          break;
+      }
+    }
+
   } catch (err) {
-    console.error('Webhook error:', err);
-    res.status(400).json({
-      success: false,
-      error: err.message
-    });
+    console.error('❌ Webhook processing error:', err);
+    // Even if there's an error processing the event, we should acknowledge receipt
+    res.status(200).json({ received: true });
   }
 };
 

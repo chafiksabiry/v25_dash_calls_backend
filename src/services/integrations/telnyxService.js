@@ -1,11 +1,28 @@
-
-const telnyx = require('telnyx');
+const axios = require('axios');
 const { Call } = require('../../models/Call');
+require('dotenv').config();
 
 class TelnyxService {
   constructor() {
-    this.client = telnyx(process.env.TELNYX_API_KEY);
+    this.apiKey = process.env.TELNYX_API_KEY;
     this.applicationId = process.env.TELNYX_APPLICATION_ID;
+    this.baseURL = 'https://api.telnyx.com/v2';
+    this.axiosInstance = axios.create({
+      baseURL: this.baseURL,
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
+  }
+
+  /**
+   * Generate a unique command ID
+   * @returns {string} A unique command ID
+   */
+  generateCommandId() {
+    return `cmd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
   /**
@@ -26,13 +43,12 @@ class TelnyxService {
         to: to,
         from: from,
         connection_id: this.applicationId,
-        webhook_url: process.env.TELNYX_WEBHOOK_URL,
-        record_audio: false, // Disable call recording as per requirement
-        timeout_secs: 30
+        command_id: this.generateCommandId()
       };
 
       // Create call using Telnyx API
-      const call = await this.client.calls.create(callOptions);
+      const response = await this.axiosInstance.post('/calls', callOptions);
+      const call = response.data.data;
 
       // Create call record in database
       const callRecord = await Call.create({
@@ -52,8 +68,8 @@ class TelnyxService {
       };
 
     } catch (error) {
-      console.error('Error in TelnyxService.makeCall:', error);
-      throw new Error(`Failed to initiate Telnyx call: ${error.message}`);
+      console.error('Error in TelnyxService.makeCall:', error.response?.data || error.message);
+      throw new Error(`Failed to initiate Telnyx call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);
     }
   }
 
@@ -103,22 +119,20 @@ class TelnyxService {
   }
 
   /**
-   * End an active call
-   * @param {string} callId - The Telnyx call control ID
-   * @returns {Promise<Object>} The call status
-   */
-  /**
    * Mute a call
    * @param {string} callId - The call control ID
    * @returns {Promise<Object>} The call status
    */
   async muteCall(callId) {
     try {
-      await this.client.calls.mute(callId);
-      return { success: true, message: 'Call muted successfully' };
+      const response = await this.axiosInstance.post(`/calls/${callId}/actions/mute`, {
+        command_id: this.generateCommandId()
+      });
+
+      return { success: true, message: 'Call muted successfully', data: response.data };
     } catch (error) {
-      console.error('Error muting Telnyx call:', error);
-      throw new Error(`Failed to mute call: ${error.message}`);
+      console.error('Error muting Telnyx call:', error.response?.data || error.message);
+      throw new Error(`Failed to mute call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);
     }
   }
 
@@ -129,17 +143,27 @@ class TelnyxService {
    */
   async unmuteCall(callId) {
     try {
-      await this.client.calls.unmute(callId);
-      return { success: true, message: 'Call unmuted successfully' };
+      const response = await this.axiosInstance.post(`/calls/${callId}/actions/unmute`, {
+        command_id: this.generateCommandId()
+      });
+
+      return { success: true, message: 'Call unmuted successfully', data: response.data };
     } catch (error) {
-      console.error('Error unmuting Telnyx call:', error);
-      throw new Error(`Failed to unmute call: ${error.message}`);
+      console.error('Error unmuting Telnyx call:', error.response?.data || error.message);
+      throw new Error(`Failed to unmute call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);
     }
   }
 
+  /**
+   * End a call
+   * @param {string} callId - The call control ID
+   * @returns {Promise<Object>} The call status
+   */
   async endCall(callId) {
     try {
-      await this.client.calls.hangup(callId);
+      const response = await this.axiosInstance.post(`/calls/${callId}/actions/hangup`, {
+        command_id: this.generateCommandId()
+      });
       
       const call = await Call.findOne({ call_id: callId });
       if (call) {
@@ -149,14 +173,12 @@ class TelnyxService {
         await call.save();
       }
 
-      return { success: true, message: 'Call ended successfully' };
+      return { success: true, message: 'Call ended successfully', data: response.data };
     } catch (error) {
-      console.error('Error ending Telnyx call:', error);
-      throw new Error(`Failed to end call: ${error.message}`);
+      console.error('Error ending Telnyx call:', error.response?.data || error.message);
+      throw new Error(`Failed to end call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);
     }
   }
 }
 
 module.exports = new TelnyxService();
-
- 

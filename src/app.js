@@ -5,6 +5,7 @@ const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
 const setupSpeechToTextWebSocket = require('./websocket/speechToText');
+const { setupCallEventsWebSocket } = require('./websocket/callEvents');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -23,7 +24,10 @@ const app = express();
 
 app.use(express.urlencoded({ extended: true }));
 
-// Body parser
+// Special handling for Telnyx webhooks - must come before JSON parser
+app.use('/api/calls/telnyx/webhook', express.raw({ type: 'application/json' }));
+
+// Body parser for all other routes
 app.use(express.json());
 
 //app.use(cors());
@@ -53,8 +57,9 @@ const PORT = config.PORT;
 // Create HTTP server
 const server = http.createServer(app);
 //console.log("server",server);
-// Set up WebSocket handler for speech-to-text
+// Set up WebSocket handlers
 setupSpeechToTextWebSocket(server);
+setupCallEventsWebSocket(server);
 
 // Listen on server instead of app
 server.listen(PORT, () => {
