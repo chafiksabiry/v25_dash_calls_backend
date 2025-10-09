@@ -4,9 +4,7 @@ const { config } = require('./config/env');
 const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
-const setupSpeechToTextWebSocket = require('./websocket/speechToText');
-const { setupCallEventsWebSocket } = require('./websocket/callEvents');
-const setupTestWebSocket = require('./websocket/testWebSocket');
+const { setupTestWebSocket } = require('./websocket/testWebSocket');
 
 // Route imports
 const auth = require('./routes/auth');

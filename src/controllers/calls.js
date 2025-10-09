@@ -709,8 +709,8 @@ exports.telnyxWebhook = async (req, res) => {
 
     // Only process specific call events
     if (['call.initiated', 'call.answered', 'call.hangup'].includes(eventType)) {
-      // Import the broadcast function
-      const { broadcastCallEvent } = require('../websocket/callEvents');
+      // Import the broadcast function from test WebSocket
+      const { broadcastCallEvent } = require('../websocket/testWebSocket');
       
       // Broadcast the event to all connected WebSocket clients
       broadcastCallEvent(event);
