@@ -6,7 +6,7 @@ const clients = new Set();
 function setupTestWebSocket(server) {
   const wss = new WebSocket.Server({ 
     server,
-    path: '/call-events'  // Gardons le même chemin
+    path: '/call-events'
   });
 
   console.log('📞 WebSocket server initialized at /call-events');
@@ -38,17 +38,12 @@ function setupTestWebSocket(server) {
 function broadcastCallEvent(event) {
   console.log(`📢 Broadcasting call event to ${clients.size} clients`);
   
+  // Send the complete event data
   const eventData = {
     type: event.data.event_type,
-    callId: event.data.payload.call_control_id,
-    status: event.data.event_type.replace('call.', ''),
-    timestamp: event.data.occurred_at,
-    details: {
-      from: event.data.payload.from,
-      to: event.data.payload.to,
-      direction: event.data.payload.direction,
-      duration: event.data.payload.duration_seconds
-    }
+    id: event.data.id,
+    occurred_at: event.data.occurred_at,
+    payload: event.data.payload
   };
 
   clients.forEach(client => {
