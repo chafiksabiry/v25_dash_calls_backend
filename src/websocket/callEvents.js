@@ -5,9 +5,39 @@ const clients = new Set();
 
 function setupCallEventsWebSocket(server) {
   const wss = new WebSocket.Server({ 
-    server,
-    path: '/call-events'
+    server, 
+    path: '/call-events',
+    verifyClient: (info) => {
+      // Log connection attempt details
+      console.log('WebSocket connection attempt from:', info.origin);
+      console.log('Request URL:', info.req.url);
+      console.log('Headers:', info.req.headers);
+      
+      // Accept connections from Postman and other allowed origins
+      const allowedOrigins = [
+        'postman',
+        'http://localhost:5180',
+        'http://localhost:5183',
+        'https://v25-preprod.harx.ai',
+        'https://preprod-api-dash-calls.harx.ai',
+        'https://v25.harx.ai',
+        'https://copilot.harx.ai',
+        'http://38.242.208.242:5186',
+        'http://localhost:5173',
+        'http://localhost:3000'
+      ];
+
+      // Pour Postman, l'origine peut être undefined ou contenir "postman"
+      if (!info.origin || info.origin.toLowerCase().includes('postman')) {
+        return true;
+      }
+
+      // Pour les autres clients, vérifier si l'origine est autorisée
+      return allowedOrigins.includes();
+    }
   });
+  
+  console.log('📞 WebSocket server initialized at /call-events');
 
   wss.on('connection', (ws) => {
     console.log('Client connected to call-events WebSocket');
