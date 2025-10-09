@@ -3,16 +3,10 @@ const WebSocket = require('ws');
 // Store connected clients
 const clients = new Set();
 
-function setupTestWebSocket(server) {
-  const wss = new WebSocket.Server({ 
-    server,
-    path: '/call-events'
-  });
-
-  console.log('📞 WebSocket server initialized at /call-events');
-
-  wss.on('connection', (ws) => {
+function setupTestWebSocket(wsServer) {
+  wsServer.on('connection', (ws) => {
     console.log('👋 New client connected to call events WebSocket');
+    
     clients.add(ws);
 
     // Send welcome message immediately
@@ -38,7 +32,6 @@ function setupTestWebSocket(server) {
 function broadcastCallEvent(event) {
   console.log(`📢 Broadcasting call event to ${clients.size} clients`);
   
-  // Send the complete event data
   const eventData = {
     type: event.data.event_type,
     id: event.data.id,

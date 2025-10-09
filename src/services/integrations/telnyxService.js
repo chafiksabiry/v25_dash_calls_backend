@@ -17,34 +17,67 @@ class TelnyxService {
     });
   }
 
-  /**
-   * Generate a unique command ID
-   * @returns {string} A unique command ID
-   */
   generateCommandId() {
     return `cmd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  /**
-   * Initiate an outbound call using Telnyx
-   * @param {string} to - The destination phone number
-   * @param {string} from - The caller ID number
-   * @param {string} agentId - The ID of the agent making the call
-   * @returns {Promise<Object>} The call object
-   */
   async makeCall(to, from, agentId) {
     try {
-      // Validate phone numbers
       if (!to.startsWith('+')) {
         throw new Error('Destination number must be in E.164 format (e.g., +1234567890)');
       }
 
+      // Générer un ID unique pour ce stream
+      const streamId = this.generateCommandId();
+      const baseUrl = process.env.BASE_URL || 'http://localhost:5006';
+
+      // Créer un objet d'état client et le convertir en base64
+      const clientState = Buffer.from(JSON.stringify({
+        streamId,
+        agentId,
+        timestamp: new Date().toISOString()
+      })).toString('base64');
+
+      // Configuration selon la documentation Telnyx
       const callOptions = {
+        // Paramètres requis
         to: to,
         from: from,
         connection_id: this.applicationId,
-        command_id: this.generateCommandId()
+        
+        // Identifiants uniques
+        command_id: this.generateCommandId(),
+        client_state: clientState,
+
+        // Configuration de l'appel
+        answer_on_bridge: true,              // Répondre seulement quand l'appel est connecté
+        from_display_name: 'Harx Call',      // Nom affiché
+        timeout_secs: 30,                    // Timeout de l'appel
+        
+        // Configuration du streaming
+        stream_url: `${baseUrl}/audio-stream?callId=${streamId}`,
+        stream_track: "both_tracks",         // Capturer l'audio dans les deux sens
+        
+        // Webhook pour les événements
+       /*  webhook_url: process.env.WEBHOOK_URL,
+        webhook_url_method: 'POST', */
+
+        // Paramètres audio
+        sip_headers: [],                     // En-têtes SIP personnalisés
+        media_format: "pcm_s16le",          // Format audio non compressé
+        channels: 1,                         // Mono
+        sample_rate: 8000,                   // Taux d'échantillonnage standard
+        
+        // Désactiver les fonctionnalités non nécessaires
+        answering_machine_detection: false,   // Pas de détection de répondeur
       };
+
+      console.log('📞 Initiating call with config:', {
+        to: to,
+        from: from,
+        streamId: streamId,
+        streamUrl: callOptions.stream_url
+      });
 
       // Create call using Telnyx API
       const response = await this.axiosInstance.post('/calls', callOptions);
@@ -57,13 +90,17 @@ class TelnyxService {
         provider: 'telnyx',
         startTime: new Date(),
         status: 'initiated',
-        call_id: call.call_control_id // Telnyx's unique call identifier
+        call_id: call.call_control_id,
+        stream_id: streamId,
+        stream_url: callOptions.stream_url
       });
 
       return {
         callId: call.call_control_id,
+        streamId: streamId,
         status: call.status,
         direction: call.direction,
+        streamUrl: callOptions.stream_url,
         dbRecord: callRecord
       };
 
@@ -73,15 +110,21 @@ class TelnyxService {
     }
   }
 
-  /**
-   * Handle call status webhook from Telnyx
-   * @param {Object} event - The webhook event from Telnyx
-   * @returns {Promise<Object>} Updated call record
-   */
   async handleCallWebhook(event) {
     try {
       const callId = event.data.payload.call_control_id;
       const eventType = event.data.event_type;
+      
+      // Décoder le client_state base64 si présent
+      let clientState = {};
+      if (event.data.payload.client_state) {
+        try {
+          const decodedState = Buffer.from(event.data.payload.client_state, 'base64').toString();
+          clientState = JSON.parse(decodedState);
+        } catch (error) {
+          console.error('Error decoding client_state:', error);
+        }
+      }
 
       // Find the call in our database
       const call = await Call.findOne({ call_id: callId });
@@ -93,19 +136,32 @@ class TelnyxService {
       switch (eventType) {
         case 'call.initiated':
           call.status = 'initiated';
+          console.log(`📞 Call initiated: ${callId}`);
           break;
         case 'call.answered':
           call.status = 'in-progress';
           call.startTime = new Date();
+          console.log(`📞 Call answered: ${callId}`);
           break;
         case 'call.hangup':
         case 'call.terminated':
           call.status = 'completed';
           call.endTime = new Date();
-          call.duration = Math.round((call.endTime - call.startTime) / 1000); // Duration in seconds
+          call.duration = Math.round((call.endTime - call.startTime) / 1000);
+          console.log(`📞 Call ended: ${callId}, duration: ${call.duration}s`);
           break;
-        case 'call.recording.saved':
-          call.recording_url = event.data.payload.recording_urls.mp3;
+        case 'streaming.started':
+          call.stream_status = 'active';
+          console.log(`🎵 Streaming started for call ${callId}, stream ${clientState.streamId}`);
+          break;
+        case 'streaming.failed':
+          call.stream_status = 'failed';
+          call.stream_error = event.data.payload.error;
+          console.error(`❌ Streaming failed for call ${callId}:`, event.data.payload.error);
+          break;
+        case 'streaming.stopped':
+          call.stream_status = 'stopped';
+          console.log(`🔇 Streaming stopped for call ${callId}`);
           break;
       }
 
@@ -118,11 +174,6 @@ class TelnyxService {
     }
   }
 
-  /**
-   * Mute a call
-   * @param {string} callId - The call control ID
-   * @returns {Promise<Object>} The call status
-   */
   async muteCall(callId) {
     try {
       const response = await this.axiosInstance.post(`/calls/${callId}/actions/mute`, {
@@ -136,11 +187,6 @@ class TelnyxService {
     }
   }
 
-  /**
-   * Unmute a call
-   * @param {string} callId - The call control ID
-   * @returns {Promise<Object>} The call status
-   */
   async unmuteCall(callId) {
     try {
       const response = await this.axiosInstance.post(`/calls/${callId}/actions/unmute`, {
@@ -154,11 +200,6 @@ class TelnyxService {
     }
   }
 
-  /**
-   * End a call
-   * @param {string} callId - The call control ID
-   * @returns {Promise<Object>} The call status
-   */
   async endCall(callId) {
     try {
       const response = await this.axiosInstance.post(`/calls/${callId}/actions/hangup`, {

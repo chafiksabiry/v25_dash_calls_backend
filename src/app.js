@@ -4,7 +4,9 @@ const { config } = require('./config/env');
 const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
+const setupWebSocketManager = require('./websocket/wsManager');
 const { setupTestWebSocket } = require('./websocket/testWebSocket');
+const setupAudioStream = require('./websocket/audioStream');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -29,8 +31,6 @@ app.use('/api/calls/telnyx/webhook', express.raw({ type: 'application/json' }));
 // Body parser for all other routes
 app.use(express.json());
 
-//app.use(cors());
-// Enable CORS with specific configuration
 app.use(cors({
   origin: ['http://localhost:5180','http://localhost:5183','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai','https://copilot.harx.ai','http://38.242.208.242:5186','http://localhost:5173','http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -57,9 +57,6 @@ app.use('/api/settings', settings);
 app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
 
-// Error handler
-//app.use(errorHandler);
-
 const PORT = config.PORT;
 
 // Create HTTP server
@@ -69,7 +66,12 @@ const server = http.createServer(app);
 server.listen(PORT, () => {
   console.log(`Server running in ${config.NODE_ENV} mode on port ${PORT}`);
   
-  // Set up WebSocket handlers after server is listening
-  setupTestWebSocket(server);
-  console.log('Test WebSocket server initialized');
+  // Initialize WebSocket manager
+  const wsServers = setupWebSocketManager(server);
+  
+  // Setup individual WebSocket handlers
+  setupTestWebSocket(wsServers.get('callEvents'));
+  setupAudioStream(wsServers.get('audioStream'));
+  
+  console.log('WebSocket servers initialized');
 }); 
