@@ -27,56 +27,33 @@ class TelnyxService {
         throw new Error('Destination number must be in E.164 format (e.g., +1234567890)');
       }
 
-      // Générer un ID unique pour ce stream
-      const streamId = this.generateCommandId();
-      const baseUrl = process.env.BASE_URL || 'http://localhost:5006';
-
       // Créer un objet d'état client et le convertir en base64
       const clientState = Buffer.from(JSON.stringify({
-        streamId,
         agentId,
         timestamp: new Date().toISOString()
       })).toString('base64');
 
-      // Configuration selon la documentation Telnyx
+      // Configuration exacte selon la documentation Telnyx
       const callOptions = {
-        // Paramètres requis
+        connection_id: this.applicationId,
         to: to,
         from: from,
-        connection_id: this.applicationId,
-        
-        // Identifiants uniques
-        command_id: this.generateCommandId(),
+        // Utiliser l'URL ngrok pour le streaming
+        stream_url: 'wss://f06ba4c70af4.ngrok-free.app/audio-stream',
+        stream_track: 'both_tracks',
+        stream_bidirectional_mode: 'rtp',
+        stream_bidirectional_codec: 'PCMU',
         client_state: clientState,
-
-        // Configuration de l'appel
-        answer_on_bridge: true,              // Répondre seulement quand l'appel est connecté
-        from_display_name: 'Harx Call',      // Nom affiché
-        timeout_secs: 30,                    // Timeout de l'appel
-        
-        // Configuration du streaming
-        stream_url: `${baseUrl}/audio-stream?callId=${streamId}`,
-        stream_track: "both_tracks",         // Capturer l'audio dans les deux sens
-        
-        // Webhook pour les événements
-       /*  webhook_url: process.env.WEBHOOK_URL,
-        webhook_url_method: 'POST', */
-
-        // Paramètres audio
-        sip_headers: [],                     // En-têtes SIP personnalisés
-        media_format: "pcm_s16le",          // Format audio non compressé
-        channels: 1,                         // Mono
-        sample_rate: 8000,                   // Taux d'échantillonnage standard
-        
-        // Désactiver les fonctionnalités non nécessaires
-        answering_machine_detection: false,   // Pas de détection de répondeur
+        command_id: this.generateCommandId()
       };
 
       console.log('📞 Initiating call with config:', {
         to: to,
         from: from,
-        streamId: streamId,
-        streamUrl: callOptions.stream_url
+        stream_url: callOptions.stream_url,
+        stream_track: callOptions.stream_track,
+        stream_bidirectional_mode: callOptions.stream_bidirectional_mode,
+        stream_bidirectional_codec: callOptions.stream_bidirectional_codec
       });
 
       // Create call using Telnyx API
@@ -91,13 +68,11 @@ class TelnyxService {
         startTime: new Date(),
         status: 'initiated',
         call_id: call.call_control_id,
-        stream_id: streamId,
         stream_url: callOptions.stream_url
       });
 
       return {
         callId: call.call_control_id,
-        streamId: streamId,
         status: call.status,
         direction: call.direction,
         streamUrl: callOptions.stream_url,
@@ -152,16 +127,16 @@ class TelnyxService {
           break;
         case 'streaming.started':
           call.stream_status = 'active';
-          console.log(`🎵 Streaming started for call ${callId}, stream ${clientState.streamId}`);
+          console.log(`🎵 Streaming started for call ${callId}`, event.data.payload);
           break;
         case 'streaming.failed':
           call.stream_status = 'failed';
-          call.stream_error = event.data.payload.error;
-          console.error(`❌ Streaming failed for call ${callId}:`, event.data.payload.error);
+          call.stream_error = event.data.payload.failure_reason;
+          console.error(`❌ Streaming failed for call ${callId}:`, event.data.payload);
           break;
         case 'streaming.stopped':
           call.stream_status = 'stopped';
-          console.log(`🔇 Streaming stopped for call ${callId}`);
+          console.log(`🔇 Streaming stopped for call ${callId}`, event.data.payload);
           break;
       }
 

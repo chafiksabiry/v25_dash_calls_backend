@@ -707,8 +707,8 @@ exports.telnyxWebhook = async (req, res) => {
     const eventType = event.data.event_type;
     console.log(`📞 Processing Telnyx event: ${eventType}`);
 
-    // Only process specific call events
-    if (['call.initiated', 'call.answered', 'call.hangup'].includes(eventType)) {
+    // Process call and streaming events
+    if (['call.initiated', 'call.answered', 'call.hangup', 'streaming.started', 'streaming.failed', 'streaming.stopped'].includes(eventType)) {
       // Import the broadcast function from test WebSocket
       const { broadcastCallEvent } = require('../websocket/testWebSocket');
       
