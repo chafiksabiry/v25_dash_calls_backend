@@ -94,8 +94,8 @@ router.post('/get-login-token', callController.getLoginToken);
 // Telnyx routes - Basic call control
 router.post('/telnyx/initiate', callController.initiateTelnyxCall);
 router.post('/telnyx/webhook', verifyTelnyxWebhook, callController.telnyxWebhook); // Verify webhook signature
-router.post('/telnyx/:callId/end', callController.endTelnyxCall);
-router.post('/telnyx/:callId/mute', callController.muteTelnyxCall);
-router.post('/telnyx/:callId/unmute', callController.unmuteTelnyxCall);
+router.post('/telnyx/:callControlId/end', callController.endTelnyxCall);
+router.post('/telnyx/:callControlId/mute', callController.muteTelnyxCall);
+router.post('/telnyx/:callControlId/unmute', callController.unmuteTelnyxCall);
 
 module.exports = router;
