@@ -60,22 +60,51 @@ function setupAudioStream(wsServer) {
                     return;
                   }
 
-                  // Décoder le payload base64 en buffer
-                  const audioBuffer = Buffer.from(message.media.payload, 'base64');
-                  
-                  // Envoyer les métadonnées
-                  broadcastToClients({
-                    event: 'media',
-                    sequence_number: message.sequence_number,
-                    stream_id: message.stream_id,
-                    media: {
-                      ...message.media,
-                      size: audioBuffer.length
-                    }
+                  // Log détaillé du message media
+                  console.log('📊 Media message details:', {
+                    sequence: message.sequence_number,
+                    streamId: message.stream_id,
+                    timestamp: message.media.timestamp,
+                    track: message.media.track,
+                    payloadLength: message.media.payload.length
                   });
 
-                  // Envoyer le buffer audio
-                  broadcastToClients(audioBuffer);
+                  try {
+                    // Décoder le payload base64 en buffer
+                    const audioBuffer = Buffer.from(message.media.payload, 'base64');
+                    
+                    // Log des premiers octets pour debug
+                    console.log('🎵 First 8 bytes:', Array.from(audioBuffer.slice(0, 8)));
+                    console.log('📦 Buffer size:', audioBuffer.length);
+                    
+                    // Vérifier que c'est bien du PCMU (µ-law)
+                    const isValidPCMU = audioBuffer.every(byte => byte <= 255);
+                    if (!isValidPCMU) {
+                      console.error('❌ Invalid PCMU data detected');
+                      return;
+                    }
+
+                    // Envoyer les métadonnées avec plus d'informations
+                    broadcastToClients({
+                      event: 'media',
+                      sequence_number: message.sequence_number,
+                      stream_id: message.stream_id,
+                      media: {
+                        ...message.media,
+                        format: 'PCMU',
+                        sampleRate: 8000,
+                        channels: 1,
+                        size: audioBuffer.length,
+                        timestamp: Date.now()
+                      }
+                    });
+
+                    // Envoyer le buffer audio
+                    broadcastToClients(audioBuffer);
+                    console.log('✅ Audio chunk broadcasted successfully');
+                  } catch (error) {
+                    console.error('❌ Error processing audio data:', error);
+                  }
                   break;
 
                 case 'stop':
