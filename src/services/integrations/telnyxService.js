@@ -58,6 +58,16 @@ class TelnyxService {
       const response = await this.axiosInstance.post('/calls', callOptions);
       const call = response.data.data;
 
+      // Activer la suppression de bruit immédiatement après la création de l'appel
+      try {
+        await this.axiosInstance.post(`/calls/${call.call_control_id}/actions/suppression_start`, {
+          direction: 'both'  // Supprimer le bruit dans les deux sens
+        });
+        console.log('✅ Noise suppression enabled for call:', call.call_control_id);
+      } catch (suppressionError) {
+        console.error('❌ Failed to enable noise suppression:', suppressionError);
+      }
+
       // Create call record in database
       const callRecord = await Call.create({
         agent: agentId,
@@ -122,6 +132,14 @@ class TelnyxService {
           call.endTime = new Date();
           call.duration = Math.round((call.endTime - call.startTime) / 1000);
           console.log(`📞 Call ended: ${callId}, duration: ${call.duration}s`);
+          
+          // Arrêter la suppression de bruit
+          try {
+            await this.axiosInstance.post(`/calls/${callId}/actions/suppression_stop`, {});
+            console.log('✅ Noise suppression disabled for terminated call:', callId);
+          } catch (suppressionError) {
+            console.error('❌ Failed to disable noise suppression on call termination:', suppressionError);
+          }
           break;
         case 'streaming.started':
           call.stream_status = 'active';
@@ -177,11 +195,15 @@ class TelnyxService {
     try {
       console.log('Attempting to end call:', callId);
       
-      // Générer un nouveau command_id
-      //const commandId = this.generateCommandId();
-      //console.log('Using command_id:', commandId);
+      // D'abord, arrêter la suppression de bruit
+      try {
+        await this.axiosInstance.post(`/calls/${callId}/actions/suppression_stop`, {});
+        console.log('✅ Noise suppression disabled for call:', callId);
+      } catch (suppressionError) {
+        console.error('❌ Failed to disable noise suppression:', suppressionError);
+      }
       
-      // Construire l'URL correcte selon la documentation Telnyx
+      // Ensuite, terminer l'appel
       const url = `/calls/${callId}/actions/hangup`;
       console.log('Making request to:', url);
       
