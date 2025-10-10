@@ -1,83 +1,135 @@
 const WebSocket = require('ws');
 
+// Store connected clients
+const clients = new Set();
+let telnyxConnection = null;
+
+function broadcastToClients(message, excludeWs = null) {
+  const connectedClients = clients.size;
+  console.log(`📢 Broadcasting to ${connectedClients} clients`);
+
+  clients.forEach(client => {
+    if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
+      if (message instanceof Buffer) {
+        client.send(message);
+      } else {
+        client.send(JSON.stringify(message));
+      }
+    }
+  });
+}
+
 function setupAudioStream(wsServer) {
   wsServer.on('connection', (ws, req) => {
     try {
-      console.log('🎧 New audio stream connection');
+      const isTelnyx = req.headers['user-agent']?.toLowerCase().includes('telnyx') || 
+                      req.headers['x-telnyx-signature'];
 
-      // Envoyer l'événement de connexion selon la doc Telnyx
-      ws.send(JSON.stringify({ 
-        event: "connected", 
-        version: "1.0.0"
-      }));
+      if (isTelnyx) {
+        console.log('🎧 Telnyx audio stream connected');
+        telnyxConnection = ws;
 
-      // Handle incoming messages from Telnyx
-      ws.on('message', (data) => {
-        try {
-          // Essayer de parser comme JSON d'abord
-          const messageStr = data.toString();
-          const message = JSON.parse(messageStr);
-          console.log(`📥 Received WebSocket message type: ${message.event}`);
+        // Envoyer l'événement de connexion selon la doc Telnyx
+        ws.send(JSON.stringify({ 
+          event: "connected", 
+          version: "1.0.0"
+        }));
 
-          switch (message.event) {
-            case 'start':
-              // Message de début de stream avec les infos de format
-              console.log('🎵 Stream starting:', {
-                streamId: message.stream_id,
-                mediaFormat: message.start.media_format
-              });
+        // Handle incoming messages from Telnyx
+        ws.on('message', (data) => {
+          try {
+            // Essayer de parser comme JSON d'abord
+            const messageStr = data.toString();
+            let message;
+            try {
+              message = JSON.parse(messageStr);
+              console.log(`📥 Received Telnyx message type: ${message.event}`);
 
-              // Envoyer une confirmation au client
-              ws.send(JSON.stringify({
-                event: 'start',
-                sequence_number: message.sequence_number,
-                stream_id: message.stream_id,
-                start: message.start
-              }));
-              break;
+              switch (message.event) {
+                case 'start':
+                  console.log('🎵 Stream starting:', {
+                    streamId: message.stream_id,
+                    mediaFormat: message.start.media_format
+                  });
+                  broadcastToClients(message);
+                  break;
 
-            case 'media':
-              // Vérifier que le message a le bon format
-              if (!message.media || !message.media.payload) {
-                console.error('Invalid media message format:', message);
-                return;
+                case 'media':
+                  if (!message.media || !message.media.payload) {
+                    console.error('Invalid media message format:', message);
+                    return;
+                  }
+
+                  // Décoder le payload base64 en buffer
+                  const audioBuffer = Buffer.from(message.media.payload, 'base64');
+                  
+                  // Envoyer les métadonnées
+                  broadcastToClients({
+                    event: 'media',
+                    sequence_number: message.sequence_number,
+                    stream_id: message.stream_id,
+                    media: {
+                      ...message.media,
+                      size: audioBuffer.length
+                    }
+                  });
+
+                  // Envoyer le buffer audio
+                  broadcastToClients(audioBuffer);
+                  break;
+
+                case 'stop':
+                  console.log('🛑 Stream stopping:', message);
+                  broadcastToClients(message);
+                  break;
+
+                case 'error':
+                  console.error('❌ Stream error:', message);
+                  broadcastToClients(message);
+                  break;
+
+                default:
+                  console.log('📥 Unknown event type:', message.event);
               }
-
-              // Envoyer le message media tel quel
-              ws.send(JSON.stringify({
-                event: 'media',
-                sequence_number: message.sequence_number,
-                stream_id: message.stream_id,
-                media: message.media
-              }));
-              break;
-
-            case 'stop':
-              console.log('🛑 Stream stopping:', message);
-              ws.send(JSON.stringify(message));
-              break;
-
-            case 'error':
-              console.error('❌ Stream error:', message);
-              ws.send(JSON.stringify(message));
-              break;
-
-            default:
-              console.log('📥 Unknown event type:', message.event);
+            } catch (parseError) {
+              // Si ce n'est pas du JSON, c'est probablement des données binaires
+              console.log('📦 Received binary data');
+              broadcastToClients(data);
+            }
+          } catch (error) {
+            console.error('Error processing message:', error);
           }
-        } catch (error) {
-          console.error('Error processing message:', error);
-        }
-      });
+        });
 
-      // Handle client disconnect
-      ws.on('close', (code, reason) => {
-        console.log(`🔇 Audio stream disconnected`, { code, reason });
-      });
+        ws.on('close', () => {
+          console.log('🔇 Telnyx connection closed');
+          telnyxConnection = null;
+        });
 
-      // Handle errors
+      } else {
+        console.log('👤 Frontend client connected to audio stream');
+        clients.add(ws);
+
+        // Envoyer un message de bienvenue au client frontend
+        ws.send(JSON.stringify({
+          event: 'connected',
+          message: 'Connected to audio stream'
+        }));
+
+        ws.on('close', () => {
+          console.log('👤 Frontend client disconnected');
+          clients.delete(ws);
+        });
+      }
+
+      // Handle errors for all connections
       ws.on('error', (error) => {
-        console.error(`❌ Audio stream error:`, error);
+        console.error(`❌ WebSocket error:`, error);
+        if (isTelnyx) {
+          telnyxConnection = null;
+        } else {
+          clients.delete(ws);
+        }
       });
 
     } catch (error) {
