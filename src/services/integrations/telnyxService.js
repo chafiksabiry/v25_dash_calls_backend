@@ -177,19 +177,20 @@ class TelnyxService {
 
   async endCall(callId) {
     try {
-      const response = await this.axiosInstance.post(`/calls/${callId}/actions/hangup`, {
-        command_id: this.generateCommandId()
-      });
+      console.log('Attempting to end call:', callId);
       
-      const call = await Call.findOne({ call_id: callId });
-      if (call) {
-        call.status = 'completed';
-        call.endTime = new Date();
-        call.duration = Math.round((call.endTime - call.startTime) / 1000);
-        await call.save();
-      }
-
-      return { success: true, message: 'Call ended successfully', data: response.data };
+      // Générer un nouveau command_id
+      //const commandId = this.generateCommandId();
+      //console.log('Using command_id:', commandId);
+      
+      // Construire l'URL correcte selon la documentation Telnyx
+      const url = `/calls/${callId}/actions/hangup`;
+      console.log('Making request to:', url);
+      
+      const response = await this.axiosInstance.post(url);
+      
+      console.log('Telnyx API response:', response.data);
+      return response.data;
     } catch (error) {
       console.error('Error ending Telnyx call:', error.response?.data || error.message);
       throw new Error(`Failed to end call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);

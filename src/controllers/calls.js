@@ -815,21 +815,20 @@ exports.unmuteTelnyxCall = async (req, res) => {
 
 exports.endTelnyxCall = async (req, res) => {
   try {
-    const { callId } = req.params;
+    const { call_control_id } = req.body;
 
-    if (!callId) {
+    if (!call_control_id) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide callId'
+        error: 'Please provide call_control_id in request body'
       });
     }
 
-    const result = await telnyxService.endCall(callId);
+    console.log('Ending call with control ID:', call_control_id);
+    const result = await telnyxService.endCall(call_control_id);
 
-    res.status(200).json({
-      success: true,
-      data: result
-    });
+    // Retourner directement la réponse de l'API Telnyx
+    res.status(200).json(result);
   } catch (err) {
     res.status(400).json({
       success: false,
@@ -840,7 +839,7 @@ exports.endTelnyxCall = async (req, res) => {
 
 exports.getPersonalityAnalysis = async (req, res) => {
   try {
-    const { transcription, context, callDuration } = req.body;
+    const { transcription, contextc, callDuration } = req.body;
     console.log("transcription from personality analysis:", transcription);
 
     if (!transcription) {
