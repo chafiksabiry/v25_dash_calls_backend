@@ -21,7 +21,8 @@
     "node-fetch": "^2.7.0",
     "openai": "^4.87.3",
     "ovh": "^2.0.3",
-    "twilio": "^4.22.0",
+    "telnyx": "^1.25.5",
+    "twilio": "^5.8.0",
     "ws": "^8.18.1"
   },
   "devDependencies": {

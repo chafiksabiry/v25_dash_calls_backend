@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Audio Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .connected { background-color: #dff0d8; }
+        .disconnected { background-color: #f2dede; }
+        .audio-stats {
+            font-family: monospace;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f8f9fa;
+        }
+        #volumeMeter {
+            width: 300px;
+            height: 20px;
+            background-color: #eee;
+            margin: 10px 0;
+        }
+        #volumeLevel {
+            width: 0%;
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <h1>Audio Stream Test</h1>
+    
+    <div id="connection-status" class="status disconnected">Disconnected</div>
+    
+    <input type="text" id="streamId" placeholder="Enter Stream ID">
+    <button onclick="connect()">Connect</button>
+    <button onclick="disconnect()">Disconnect</button>
+
+    <div class="audio-stats">
+        <div>Packets received: <span id="packetsReceived">0</span></div>
+        <div>Last packet size: <span id="lastPacketSize">0</span> bytes</div>
+        <div>Sample rate: <span id="sampleRate">0</span> Hz</div>
+        <div>Channels: <span id="channels">0</span></div>
+    </div>
+
+    <div id="volumeMeter">
+        <div id="volumeLevel"></div>
+    </div>
+
+    <script>
+        let audioContext;
+        let ws;
+        let packetsReceived = 0;
+
+        async function initAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('Audio context initialized:', audioContext.sampleRate);
+            } catch (error) {
+                console.error('Failed to initialize audio context:', error);
+            }
+        }
+
+        function updateStats(packetSize, format) {
+            packetsReceived++;
+            document.getElementById('packetsReceived').textContent = packetsReceived;
+            document.getElementById('lastPacketSize').textContent = packetSize;
+            if (format) {
+                document.getElementById('sampleRate').textContent = format.sampleRate;
+                document.getElementById('channels').textContent = format.channels;
+            }
+        }
+
+        function updateVolumeMeter(volume) {
+            const level = Math.min(100, Math.max(0, volume * 100));
+            document.getElementById('volumeLevel').style.width = level + '%';
+        }
+
+        async function playAudioData(audioData) {
+            if (!audioContext) {
+                await initAudio();
+            }
+
+            try {
+                // Convertir les données en AudioBuffer
+                const arrayBuffer = await audioData.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // Créer un analyseur pour le volume
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                // Créer et connecter la source
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(analyser);
+                analyser.connect(audioContext.destination);
+                
+                // Monitorer le volume
+                function checkVolume() {
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                    updateVolumeMeter(average / 256);
+                    
+                    if (source.playbackState !== 'finished') {
+                        requestAnimationFrame(checkVolume);
+                    }
+                }
+                
+                // Démarrer la lecture
+                source.start(0);
+                checkVolume();
+                
+            } catch (error) {
+                console.error('Error playing audio:', error);
+            }
+        }
+
+        function connect() {
+            if (ws) {
+                ws.close();
+            }
+
+            const streamId = document.getElementById('streamId').value;
+            const statusDiv = document.getElementById('connection-status');
+            
+            ws = new WebSocket(`ws://localhost:5006/audio-stream?callId=${streamId}`);
+
+            ws.onopen = () => {
+                console.log('Connected to audio stream');
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    // Si c'est un message JSON
+                    if (typeof event.data === 'string') {
+                        const message = JSON.parse(event.data);
+                        console.log('Received message:', message);
+                        
+                        if (message.type === 'audio.data') {
+                            updateStats(0, message.format);
+                        }
+                        return;
+                    }
+
+                    // Si c'est des données audio
+                    console.log('Received audio data:', event.data.size, 'bytes');
+                    updateStats(event.data.size);
+                    await playAudioData(event.data);
+
+                } catch (error) {
+                    console.error('Error processing message:', error);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected from audio stream');
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                statusDiv.textContent = 'Error: ' + error;
+                statusDiv.className = 'status disconnected';
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+
+        // Initialize audio context on page load
+        initAudio();
+    </script>
+</body>
+</html>

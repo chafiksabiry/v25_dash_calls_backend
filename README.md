@@ -77,8 +77,70 @@ On some READMEs, you may see small images that convey metadata, such as whether 
 ## Visuals
 Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## Installation and Setup
+
+### Environment Variables
+
+Create a `.env` file in the root directory with the following variables:
+
+```env
+PORT=5006
+NODE_ENV=development
+MONGODB_URI=your_mongodb_uri
+JWT_SECRET=your_jwt_secret
+JWT_EXPIRE=24h
+
+# Telnyx Configuration
+TELNYX_API_KEY=your_telnyx_api_key
+TELNYX_PUBLIC_KEY=your_telnyx_public_key
+TELNYX_APP_ID=your_telnyx_app_id
+
+# Webhook Configuration
+BASE_URL=https://your-domain.com
+TELNYX_WEBHOOK_URL=https://your-domain.com/api/calls/telnyx/webhook
+```
+
+### Telnyx Webhook Setup
+
+1. Make your server publicly accessible (e.g., using a domain or ngrok)
+2. Go to your Telnyx Dashboard → Webhooks
+3. Add a new webhook with:
+   - URL: `https://your-domain.com/api/calls/telnyx/webhook`
+   - Secret: Your TELNYX_PUBLIC_KEY
+   - Events to receive: 
+     - `call.initiated`
+     - `call.answered`
+     - `call.hangup`
+
+### WebSocket Integration
+
+The server provides real-time call events through WebSocket connections. Frontend applications can connect to:
+
+```javascript
+const ws = new WebSocket('ws://your-domain.com/call-events');
+
+ws.onmessage = (event) => {
+  const callEvent = JSON.parse(event.data);
+  // Handle call events:
+  // - call.initiated
+  // - call.answered
+  // - call.hangup
+};
+```
+
+### Installation Steps
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Set up environment variables as described above
+
+3. Start the server:
+   ```bash
+   npm start
+   ```
 
 ## Usage
 Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.

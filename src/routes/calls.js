@@ -1,5 +1,6 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
+const { verifyTelnyxWebhook } = require('../middleware/telnyxWebhook');
 const callController = require('../controllers/calls');
 const {
   getCalls,
@@ -22,6 +23,8 @@ const router = express.Router();
 router.route('/')
   .get(getCalls)
   .post(createCall);
+
+router.post('/telnyx/end', callController.endTelnyxCall);
 
 router.get('/agent/:agentId', callController.getCallsByAgent);
 
@@ -89,5 +92,11 @@ router.post('/ai-assist', callController.getAIAssistance);
 router.post('/personality-analysis', callController.getPersonalityAnalysis);
 
 router.post('/get-login-token', callController.getLoginToken);
+
+// Telnyx routes - Basic call control
+router.post('/telnyx/initiate', callController.initiateTelnyxCall);
+router.post('/telnyx/webhook', verifyTelnyxWebhook, callController.telnyxWebhook); // Verify webhook signature
+router.post('/telnyx/:callControlId/mute', callController.muteTelnyxCall);
+router.post('/telnyx/:callControlId/unmute', callController.unmuteTelnyxCall);
 
 module.exports = router;

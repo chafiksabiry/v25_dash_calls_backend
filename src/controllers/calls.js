@@ -664,9 +664,182 @@ exports.getLoginToken = async (req, res) => {
 // @desc    Analyze personality during call and provide caller assistance
 // @route   POST /api/calls/personality-analysis
 // @access  Private
+// @desc    Initiate a call using Telnyx
+// @route   POST /api/calls/telnyx/initiate
+// @access  Private
+exports.initiateTelnyxCall = async (req, res) => {
+  try {
+    const { to, from, agentId } = req.body;
+
+    if (!to || !from || !agentId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide to, from, and agentId'
+      });
+    }
+
+    const call = await telnyxService.makeCall(to, from, agentId);
+
+    res.status(201).json({
+      success: true,
+      data: call
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Handle Telnyx call webhook
+// @route   POST /api/calls/telnyx/webhook
+// @access  Public
+exports.telnyxWebhook = async (req, res) => {
+  try {
+    // Parse the raw body to get the event data
+    const rawBody = req.body;
+    const event = JSON.parse(rawBody.toString());
+    
+    // Send a 200 response quickly to acknowledge the webhook
+    res.status(200).json({ received: true });
+
+    const eventType = event.data.event_type;
+    console.log(`📞 Processing Telnyx event: ${eventType}`);
+
+    // Process call and streaming events
+    if (['call.initiated', 'call.answered', 'call.hangup', 'streaming.started', 'streaming.failed', 'streaming.stopped'].includes(eventType)) {
+      // Import the broadcast function from test WebSocket
+      const { broadcastCallEvent } = require('../websocket/testWebSocket');
+      
+      // Broadcast the event to all connected WebSocket clients
+      broadcastCallEvent(event);
+
+      // Log the event details
+      console.log('Call Control ID:', event.data.payload.call_control_id);
+      console.log('Event Timestamp:', event.data.occurred_at);
+      
+      // Update call status in database
+      const callId = event.data.payload.call_control_id;
+      const call = await Call.findOne({ call_id: callId });
+      
+      if (call) {
+        switch(eventType) {
+          case 'call.initiated':
+            console.log('Call initiated to:', event.data.payload.to);
+            call.status = 'initiated';
+            break;
+          case 'call.answered':
+            console.log('Call answered at:', event.data.occurred_at);
+            call.status = 'in-progress';
+            call.startTime = new Date(event.data.occurred_at);
+            break;
+          case 'call.hangup':
+            console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
+            call.status = 'completed';
+            call.endTime = new Date(event.data.occurred_at);
+            call.duration = event.data.payload.duration_seconds || 
+              Math.round((call.endTime - call.startTime) / 1000);
+            break;
+        }
+        await call.save();
+      }
+    }
+
+  } catch (err) {
+    console.error('❌ Webhook processing error:', err);
+    // Even if there's an error processing the event, we should acknowledge receipt
+    res.status(200).json({ received: true });
+  }
+};
+
+// @desc    End a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/end
+// @access  Private
+// @desc    Mute a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/mute
+// @access  Private
+exports.muteTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.muteCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Unmute a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/unmute
+// @access  Private
+exports.unmuteTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.unmuteCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+
+exports.endTelnyxCall = async (req, res) => {
+  try {
+    const { call_control_id } = req.body;
+
+    if (!call_control_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide call_control_id in request body'
+      });
+    }
+
+    console.log('Ending call with control ID:', call_control_id);
+    const result = await telnyxService.endCall(call_control_id);
+
+    // Retourner directement la réponse de l'API Telnyx
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
 exports.getPersonalityAnalysis = async (req, res) => {
   try {
-    const { transcription, context, callDuration } = req.body;
+    const { transcription, contextc, callDuration } = req.body;
     console.log("transcription from personality analysis:", transcription);
 
     if (!transcription) {
