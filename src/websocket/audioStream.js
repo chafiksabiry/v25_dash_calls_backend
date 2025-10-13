@@ -19,187 +19,124 @@ function broadcastToClients(message, excludeWs = null) {
   });
 }
 
+// Convert Float32 audio samples to PCMU 8-bit µ-law
+function float32ToPCMU(float32Array) {
+  const pcmu = new Uint8Array(float32Array.length);
+  const MU = 255;
+  for (let i = 0; i < float32Array.length; i++) {
+    let sample = Math.max(-1, Math.min(1, float32Array[i]));
+    const sign = sample < 0 ? 0x80 : 0;
+    sample = Math.abs(sample);
+    const magnitude = Math.log1p(MU * sample) / Math.log1p(MU);
+    pcmu[i] = sign | (magnitude * 127 & 0x7F);
+  }
+  return pcmu;
+}
+
 function setupAudioStream(wsServer) {
   wsServer.on('connection', (ws, req) => {
     try {
       const isTelnyx = req.headers['user-agent']?.toLowerCase().includes('telnyx') || 
-                      req.headers['x-telnyx-signature'];
+                        req.headers['x-telnyx-signature'];
 
       if (isTelnyx) {
         console.log('🎧 Telnyx audio stream connected');
         telnyxConnection = ws;
 
-        // Envoyer l'événement de connexion selon la doc Telnyx
-        ws.send(JSON.stringify({ 
-          event: "connected", 
-          version: "1.0.0"
-        }));
+        ws.send(JSON.stringify({ event: "connected", version: "1.0.0" }));
 
-        // Handle incoming messages from Telnyx
         ws.on('message', (data) => {
           try {
-            // Essayer de parser comme JSON d'abord
             const messageStr = data.toString();
             let message;
             try {
               message = JSON.parse(messageStr);
-              console.log(`📥 Received Telnyx message type: ${message.event}`);
-
               switch (message.event) {
                 case 'start':
-                  console.log('🎵 Stream starting:', {
-                    streamId: message.stream_id,
-                    mediaFormat: message.start.media_format
-                  });
+                  console.log('🎵 Stream starting:', message.stream_id, message.start.media_format);
                   broadcastToClients(message);
                   break;
 
                 case 'media':
-                  if (!message.media || !message.media.payload) {
-                    console.error('Invalid media message format:', message);
-                    return;
-                  }
-
-                  // Log détaillé du message media
-                  console.log('📊 Media message details:', {
-                    sequence: message.sequence_number,
-                    streamId: message.stream_id,
-                    timestamp: message.media.timestamp,
-                    track: message.media.track,
-                    payloadLength: message.media.payload.length
-                  });
-
-                  try {
-                    // Décoder le payload base64 en buffer
-                    const audioBuffer = Buffer.from(message.media.payload, 'base64');
-                    
-                    // Log des premiers octets pour debug
-                    console.log('🎵 First 8 bytes:', Array.from(audioBuffer.slice(0, 8)));
-                    console.log('📦 Buffer size:', audioBuffer.length);
-                    
-                    // Vérifier que c'est bien du PCMU (µ-law)
-                    const isValidPCMU = audioBuffer.every(byte => byte <= 255);
-                    if (!isValidPCMU) {
-                      console.error('❌ Invalid PCMU data detected');
-                      return;
+                  if (!message.media?.payload) return;
+                  const audioBuffer = Buffer.from(message.media.payload, 'base64');
+                  broadcastToClients(audioBuffer);
+                  broadcastToClients({
+                    event: 'media',
+                    sequence_number: message.sequence_number,
+                    stream_id: message.stream_id,
+                    media: {
+                      ...message.media,
+                      format: 'PCMU',
+                      sampleRate: 8000,
+                      channels: 1,
+                      size: audioBuffer.length,
+                      timestamp: Date.now()
                     }
-
-                    // Envoyer les métadonnées avec plus d'informations
-                    broadcastToClients({
-                      event: 'media',
-                      sequence_number: message.sequence_number,
-                      stream_id: message.stream_id,
-                      media: {
-                        ...message.media,
-                        format: 'PCMU',
-                        sampleRate: 8000,
-                        channels: 1,
-                        size: audioBuffer.length,
-                        timestamp: Date.now()
-                      }
-                    });
-
-                    // Envoyer le buffer audio
-                    broadcastToClients(audioBuffer);
-                    console.log('✅ Audio chunk broadcasted successfully');
-                  } catch (error) {
-                    console.error('❌ Error processing audio data:', error);
-                  }
+                  });
                   break;
 
                 case 'stop':
-                  console.log('🛑 Stream stopping:', message);
-                  broadcastToClients(message);
-                  break;
-
                 case 'error':
-                  console.error('❌ Stream error:', message);
                   broadcastToClients(message);
                   break;
-
-                default:
-                  console.log('📥 Unknown event type:', message.event);
               }
-            } catch (parseError) {
-              // Si ce n'est pas du JSON, c'est probablement des données binaires
-              console.log('📦 Received binary data');
+            } catch {
+              // Binary data from Telnyx
               broadcastToClients(data);
             }
-          } catch (error) {
-            console.error('Error processing message:', error);
+          } catch (err) {
+            console.error('Error processing Telnyx message:', err);
           }
         });
 
-        ws.on('close', () => {
-          console.log('🔇 Telnyx connection closed');
-          telnyxConnection = null;
-        });
+        ws.on('close', () => { telnyxConnection = null; });
 
       } else {
         console.log('👤 Frontend client connected to audio stream');
         clients.add(ws);
 
-        // Envoyer un message de bienvenue au client frontend
-        ws.send(JSON.stringify({
-          event: 'connected',
-          message: 'Connected to audio stream'
-        }));
+        ws.send(JSON.stringify({ event: 'connected', message: 'Connected to audio stream' }));
 
-        // Gérer les messages audio du frontend (microphone)
+        // === Partie Frontend -> Telnyx ===
         ws.on('message', async (data) => {
           try {
-            if (telnyxConnection?.readyState === WebSocket.OPEN) {
-              // Si c'est un message JSON
-              if (typeof data === 'string') {
-                const message = JSON.parse(data);
-                if (message.event === 'media') {
-                  // Vérifier que le payload est en base64
-                  if (!message.media?.payload) {
-                    console.error('❌ Invalid media format from frontend');
-                    return;
-                  }
-                  
-                  console.log('🎤 Received audio from frontend, forwarding to Telnyx');
-                  // Envoyer directement à Telnyx dans le format attendu
-                  telnyxConnection.send(JSON.stringify({
-                    event: 'media',
-                    media: {
-                      payload: message.media.payload // Déjà en base64
-                    }
-                  }));
-                }
-              } else if (data instanceof Buffer) {
-                // Si c'est des données binaires brutes, les encoder en base64
-                const base64Audio = data.toString('base64');
-                console.log('🎤 Received raw audio from frontend, encoding and forwarding');
-                
+            if (telnyxConnection?.readyState !== WebSocket.OPEN) return;
+
+            if (typeof data === 'string') {
+              const message = JSON.parse(data);
+              if (message.event === 'media' && message.media?.payload) {
+                // Ici tu assumes que le frontend a déjà envoyé en PCMU base64
                 telnyxConnection.send(JSON.stringify({
                   event: 'media',
-                  media: {
-                    payload: base64Audio
-                  }
+                  media: { payload: message.media.payload }
                 }));
               }
+            } else if (data instanceof Buffer) {
+              // Si le frontend envoie brut, tu convertis en PCMU + base64
+              // ⚠️ idéalement, le frontend doit déjà encoder en PCMU
+              const float32Samples = new Float32Array(data.buffer);
+              const pcmuData = float32ToPCMU(float32Samples);
+              const base64Payload = Buffer.from(pcmuData).toString('base64');
+
+              telnyxConnection.send(JSON.stringify({
+                event: 'media',
+                media: { payload: base64Payload }
+              }));
             }
-          } catch (error) {
-            console.error('❌ Error processing frontend audio:', error);
+          } catch (err) {
+            console.error('❌ Error forwarding frontend audio to Telnyx:', err);
           }
         });
+        // === Fin partie Frontend -> Telnyx ===
 
-        ws.on('close', () => {
-          console.log('👤 Frontend client disconnected');
-          clients.delete(ws);
-        });
+        ws.on('close', () => { clients.delete(ws); });
       }
 
-      // Handle errors for all connections
       ws.on('error', (error) => {
-        console.error(`❌ WebSocket error:`, error);
-        if (isTelnyx) {
-          telnyxConnection = null;
-        } else {
-          clients.delete(ws);
-        }
+        console.error('❌ WebSocket error:', error);
+        if (isTelnyx) telnyxConnection = null;
+        else clients.delete(ws);
       });
 
     } catch (error) {
@@ -207,11 +144,7 @@ function setupAudioStream(wsServer) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           event: 'error',
-          payload: {
-            code: 100002,
-            title: 'Connection error',
-            detail: error.message
-          }
+          payload: { code: 100002, title: 'Connection error', detail: error.message }
         }));
         ws.close();
       }
