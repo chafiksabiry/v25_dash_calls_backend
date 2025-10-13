@@ -41,6 +41,7 @@ class TelnyxService {
         // Utiliser l'URL ngrok pour le streaming
         stream_url: 'wss://f06ba4c70af4.ngrok-free.app/audio-stream',
         stream_track: 'both_tracks',           // Écouter les deux côtés de la conversation
+        stream_bidirectional_mode: 'rtp',      // Activer le mode bidirectionnel
         stream_bidirectional_codec: 'PCMU',    // µ-law codec standard
         client_state: clientState,
         command_id: this.generateCommandId()

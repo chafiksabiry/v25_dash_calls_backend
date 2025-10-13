@@ -145,6 +145,47 @@ function setupAudioStream(wsServer) {
           message: 'Connected to audio stream'
         }));
 
+        // Gérer les messages audio du frontend (microphone)
+        ws.on('message', async (data) => {
+          try {
+            if (telnyxConnection?.readyState === WebSocket.OPEN) {
+              // Si c'est un message JSON
+              if (typeof data === 'string') {
+                const message = JSON.parse(data);
+                if (message.event === 'media') {
+                  // Vérifier que le payload est en base64
+                  if (!message.media?.payload) {
+                    console.error('❌ Invalid media format from frontend');
+                    return;
+                  }
+                  
+                  console.log('🎤 Received audio from frontend, forwarding to Telnyx');
+                  // Envoyer directement à Telnyx dans le format attendu
+                  telnyxConnection.send(JSON.stringify({
+                    event: 'media',
+                    media: {
+                      payload: message.media.payload // Déjà en base64
+                    }
+                  }));
+                }
+              } else if (data instanceof Buffer) {
+                // Si c'est des données binaires brutes, les encoder en base64
+                const base64Audio = data.toString('base64');
+                console.log('🎤 Received raw audio from frontend, encoding and forwarding');
+                
+                telnyxConnection.send(JSON.stringify({
+                  event: 'media',
+                  media: {
+                    payload: base64Audio
+                  }
+                }));
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error processing frontend audio:', error);
+          }
+        });
+
         ws.on('close', () => {
           console.log('👤 Frontend client disconnected');
           clients.delete(ws);
