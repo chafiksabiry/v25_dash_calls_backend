@@ -9,6 +9,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@discordjs/opus": "^0.10.0",
     "@google-cloud/speech": "^7.0.0",
     "@google-cloud/vertexai": "^1.9.3",
     "bcryptjs": "^2.4.3",
