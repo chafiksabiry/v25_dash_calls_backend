@@ -220,6 +220,50 @@ class TelnyxService {
       throw new Error(`Failed to end call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);
     }
   }
+
+  async makeTestCall(to, from, streamConfig) {
+    try {
+      if (!to.startsWith('+')) {
+        throw new Error('Destination number must be in E.164 format (e.g., +1234567890)');
+      }
+
+      // Configuration exacte pour le test
+      const callOptions = {
+        connection_id: this.applicationId,
+        to: to,
+        from: from,
+        stream_url: streamConfig.streamUrl,
+        stream_track: 'inbound_track',
+        stream_codec: streamConfig.streamCodec || 'PCMU',
+        stream_sample_rate: streamConfig.streamSampleRate || '8000',
+        command_id: this.generateCommandId()
+      };
+
+      console.log('📞 Initiating test call with config:', {
+        to: to,
+        from: from,
+        stream_url: callOptions.stream_url,
+        stream_track: callOptions.stream_track,
+        stream_codec: callOptions.stream_codec,
+        stream_sample_rate: callOptions.stream_sample_rate
+      });
+
+      // Create call using Telnyx API
+      const response = await this.axiosInstance.post('/calls', callOptions);
+      const call = response.data.data;
+
+      return {
+        callId: call.call_control_id,
+        status: call.status,
+        direction: call.direction,
+        streamUrl: callOptions.stream_url
+      };
+
+    } catch (error) {
+      console.error('Error in TelnyxService.makeTestCall:', error.response?.data || error.message);
+      throw new Error(`Failed to initiate test call: ${error.response?.data?.errors?.[0]?.detail || error.message}`);
+    }
+  }
 }
 
 module.exports = new TelnyxService();
