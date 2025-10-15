@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {"version":"1.0.0","event":"connected","_receivedAt":"2025-10-14T12:43:58.721Z"}
+  ],
+  "metadata": {
+  "startTime": "2025-10-14T12:43:58.666Z",
+  "format": "PCMU",
+  "sampleRate": 8000,
+  "channels": 1,
+  "totalMessages": 1,
+  "mediaChunks": 0,
+  "events": {
+    "connected": 1
+  },
+  "totalBytes": {
+    "raw": 0,
+    "decoded": 0
+  },
+  "endTime": "2025-10-14T12:44:13.870Z",
+  "duration": 15.204
+}
+}

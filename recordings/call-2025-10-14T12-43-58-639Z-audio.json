@@ -1,0 +1,16 @@
+{
+  "messages": [
+
+  ],
+  "metadata": {
+  "format": "PCMU",
+  "sampleRate": 8000,
+  "channels": 1,
+  "totalChunks": 0,
+  "totalBytes": 0,
+  "timestamps": [],
+  "startTime": "2025-10-14T12:43:58.666Z",
+  "endTime": "2025-10-14T12:44:13.871Z",
+  "duration": null
+}
+}
