@@ -112,12 +112,12 @@ wss.on('connection', (ws) => {
                 if (message.event === 'media' && message.media?.payload) {
                     const decodedChunk = Buffer.from(message.media.payload, 'base64');
                     
-                    // Décoder le payload base64 en PCMU et le stocker
+                    // Décoder le payload base64 en PCMU
                     const audioChunk = {
                         sequence: message.sequence_number,
                         timestamp: Date.now(),
                         size: decodedChunk.length,
-                        data: Array.from(decodedChunk) // Convertir le Buffer en array pour le JSON
+                        data: Array.from(decodedChunk) // Convertir le Buffer en array de valeurs PCMU
                     };
                     audioWriter.writeMessage(audioChunk);
 
