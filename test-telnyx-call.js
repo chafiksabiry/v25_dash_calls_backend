@@ -8,7 +8,7 @@ const telnyxService = require('./src/services/integrations/telnyxService');
 const config = {
     callerNumber: '+33423340775',
     calleeNumber: '+33652411708',
-    streamUrl: 'wss://lemon-teams-show.loca.lt/test-audio-stream', // URL du serveur WebSocket local
+    streamUrl: 'wss://silent-phones-open.loca.lt/test-audio-stream', // URL du serveur WebSocket local
     streamCodec: 'PCMU',
     streamSampleRate: '8000'
 };

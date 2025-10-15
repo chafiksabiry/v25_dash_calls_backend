@@ -252,6 +252,17 @@ class TelnyxService {
       const response = await this.axiosInstance.post('/calls', callOptions);
       const call = response.data.data;
 
+      // Activer la suppression de bruit pour l'appel test
+      try {
+        await this.axiosInstance.post(`/calls/${call.call_control_id}/actions/suppression_start`, {
+          direction: 'both',  // Supprimer le bruit dans les deux sens
+          command_id: this.generateCommandId()
+        });
+        console.log('✅ Noise suppression enabled for test call:', call.call_control_id);
+      } catch (suppressionError) {
+        console.error('❌ Failed to enable noise suppression for test call:', suppressionError);
+      }
+
       return {
         callId: call.call_control_id,
         status: call.status,
