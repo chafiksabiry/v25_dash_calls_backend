@@ -3,9 +3,9 @@ const fs = require('fs');
 const path = require('path');
 
 // Créer un serveur WebSocket
-const wss = new WebSocket.Server({ port: 5006, path: '/test-audio-stream' });
+const wss = new WebSocket.Server({ port: 5007, path: '/test-audio-stream' });
 
-console.log('🎧 Serveur WebSocket démarré sur ws://localhost:5006/test-audio-stream');
+console.log('🎧 Serveur WebSocket démarré sur ws://localhost:5007/test-audio-stream');
 
 class JsonStreamWriter {
     constructor(filePath) {
@@ -80,7 +80,9 @@ wss.on('connection', (ws) => {
         totalChunks: 0,
         totalBytes: 0,
         timestamps: [],
-        startTime: new Date().toISOString()
+        startTime: new Date().toISOString(),
+        encoding: 'decoded-pcmu', // Indiquer que les données sont décodées
+        originalFormat: 'base64'  // Format original des données
     };
     
     console.log(`📝 Enregistrement démarré pour la session ${timestamp}`);
@@ -110,12 +112,12 @@ wss.on('connection', (ws) => {
                 if (message.event === 'media' && message.media?.payload) {
                     const decodedChunk = Buffer.from(message.media.payload, 'base64');
                     
-                    // Écrire le chunk audio
+                    // Décoder le payload base64 en PCMU et le stocker
                     const audioChunk = {
                         sequence: message.sequence_number,
                         timestamp: Date.now(),
                         size: decodedChunk.length,
-                        data: message.media.payload // Garder en base64
+                        data: Array.from(decodedChunk) // Convertir le Buffer en array pour le JSON
                     };
                     audioWriter.writeMessage(audioChunk);
 
