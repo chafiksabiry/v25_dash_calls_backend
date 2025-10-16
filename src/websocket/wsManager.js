@@ -9,8 +9,13 @@ function setupWebSocketManager(server) {
     noServer: true // Important: let the HTTP server handle upgrade
   });
 
-  // Setup Audio Stream WebSocket
+  // Setup Audio Stream WebSocket (Telnyx)
   const audioStreamWss = new WebSocket.Server({
+    noServer: true // Important: let the HTTP server handle upgrade
+  });
+
+  // Setup Frontend Audio Stream WebSocket
+  const frontendAudioWss = new WebSocket.Server({
     noServer: true // Important: let the HTTP server handle upgrade
   });
 
@@ -23,8 +28,14 @@ function setupWebSocketManager(server) {
         callEventsWss.emit('connection', ws, request);
       });
     } else if (pathname === '/audio-stream') {
+      // Endpoint Telnyx
       audioStreamWss.handleUpgrade(request, socket, head, (ws) => {
         audioStreamWss.emit('connection', ws, request);
+      });
+    } else if (pathname === '/frontend-audio') {
+      // Endpoint Frontend
+      frontendAudioWss.handleUpgrade(request, socket, head, (ws) => {
+        frontendAudioWss.emit('connection', ws, request);
       });
     } else {
       socket.destroy();
@@ -34,6 +45,7 @@ function setupWebSocketManager(server) {
   // Store WebSocket servers
   wsServers.set('callEvents', callEventsWss);
   wsServers.set('audioStream', audioStreamWss);
+  wsServers.set('frontendAudio', frontendAudioWss);
 
   return wsServers;
 }

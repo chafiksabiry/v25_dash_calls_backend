@@ -7,6 +7,7 @@ const http = require('http');
 const setupWebSocketManager = require('./websocket/wsManager');
 const { setupTestWebSocket } = require('./websocket/testWebSocket');
 const setupAudioStream = require('./websocket/audioStream');
+const setupFrontendAudioStream = require('./websocket/frontendAudioStream');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -71,7 +72,12 @@ server.listen(PORT, () => {
   
   // Setup individual WebSocket handlers
   setupTestWebSocket(wsServers.get('callEvents'));
-  setupAudioStream(wsServers.get('audioStream'));
+  
+  // Setup frontend audio stream
+  const frontendAudioStream = setupFrontendAudioStream(wsServers.get('frontendAudio'));
+  
+  // Setup Telnyx audio stream with reference to frontend broadcaster
+  setupAudioStream(wsServers.get('audioStream'), frontendAudioStream);
   
   console.log('WebSocket servers initialized');
 }); 
