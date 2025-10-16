@@ -40,12 +40,12 @@ class TelnyxService {
         from: from,
         // Utiliser l'URL ngrok pour le streaming
         stream_url: 'wss://'+process.env.TELNYX_STREAM_URL+'/audio-stream',
-        stream_track: 'inbound_track',           // Écouter les deux côtés de la conversation
-        //stream_bidirectional_mode: 'rtp', 
+        stream_track: 'both_tracks',           // Écouter les deux côtés de la conversation
+        stream_bidirectional_mode: 'rtp', 
         stream_codec: 'PCMU',  // Changé de PCMU à OPUS
         stream_sample_rate: '8000', 
-        //stream_bidirectional_codec: 'PCMU',    // Utiliser PCMU pour une meilleure compatibilité
-        //stream_bidirectional_sample_rate: 8000,  // Fréquence standard pour PCMU
+        stream_bidirectional_codec: 'PCMU',    // Utiliser PCMU pour une meilleure compatibilité
+        stream_bidirectional_sample_rate: 8000,  // Fréquence standard pour PCMU
         client_state: clientState,
         command_id: this.generateCommandId()
       };

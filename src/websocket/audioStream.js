@@ -45,7 +45,7 @@ function setupAudioStream(wsServer, frontendAudioStream) {
                 break;
 
               case 'media':
-                if (!message.media?.payload) return;
+                if (!message.media?.payload || message.media.track !='inbound') return;
                 // Transmettre tel quel au frontend
                 frontendBroadcaster.broadcastToClients(message);
                 break;
