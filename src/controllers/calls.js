@@ -660,3 +660,312 @@ exports.getLoginToken = async (req, res) => {
     res.status(500).json({ error: 'Failed to get Telnyx login token' });
   }
 };
+
+// @desc    Analyze personality during call and provide caller assistance
+// @route   POST /api/calls/personality-analysis
+// @access  Private
+// @desc    Initiate a call using Telnyx
+// @route   POST /api/calls/telnyx/initiate
+// @access  Private
+exports.initiateTelnyxCall = async (req, res) => {
+  try {
+    const { to, from, agentId } = req.body;
+
+    if (!to || !from || !agentId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide to, from, and agentId'
+      });
+    }
+
+    const call = await telnyxService.makeCall(to, from, agentId);
+
+    res.status(201).json({
+      success: true,
+      data: call
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Handle Telnyx call webhook
+// @route   POST /api/calls/telnyx/webhook
+// @access  Public
+exports.telnyxWebhook = async (req, res) => {
+  try {
+    // Parse the raw body to get the event data
+    const rawBody = req.body;
+    const event = JSON.parse(rawBody.toString());
+    
+    // Send a 200 response quickly to acknowledge the webhook
+    res.status(200).json({ received: true });
+
+    const eventType = event.data.event_type;
+    console.log(`📞 Processing Telnyx event: ${eventType}`);
+
+    // Process call and streaming events
+    if (['call.initiated', 'call.answered', 'call.hangup', 'streaming.started', 'streaming.failed', 'streaming.stopped'].includes(eventType)) {
+      // Import the broadcast function from test WebSocket
+      const { broadcastCallEvent } = require('../websocket/testWebSocket');
+      
+      // Broadcast the event to all connected WebSocket clients
+      broadcastCallEvent(event);
+
+      // Log the event details
+      console.log('Call Control ID:', event.data.payload.call_control_id);
+      console.log('Event Timestamp:', event.data.occurred_at);
+      
+      // Update call status in database
+      const callId = event.data.payload.call_control_id;
+      const call = await Call.findOne({ call_id: callId });
+      
+      if (call) {
+        switch(eventType) {
+          case 'call.initiated':
+            console.log('Call initiated to:', event.data.payload.to);
+            call.status = 'initiated';
+            break;
+          case 'call.answered':
+            console.log('Call answered at:', event.data.occurred_at);
+            call.status = 'in-progress';
+            call.startTime = new Date(event.data.occurred_at);
+            break;
+          case 'call.hangup':
+            console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
+            call.status = 'completed';
+            call.endTime = new Date(event.data.occurred_at);
+            call.duration = event.data.payload.duration_seconds || 
+              Math.round((call.endTime - call.startTime) / 1000);
+            break;
+        }
+        await call.save();
+      }
+    }
+
+  } catch (err) {
+    console.error('❌ Webhook processing error:', err);
+    // Even if there's an error processing the event, we should acknowledge receipt
+    res.status(200).json({ received: true });
+  }
+};
+
+// @desc    End a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/end
+// @access  Private
+// @desc    Mute a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/mute
+// @access  Private
+exports.muteTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.muteCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// @desc    Unmute a Telnyx call
+// @route   POST /api/calls/telnyx/:callId/unmute
+// @access  Private
+exports.unmuteTelnyxCall = async (req, res) => {
+  try {
+    const { callId } = req.params;
+
+    if (!callId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide callId'
+      });
+    }
+
+    const result = await telnyxService.unmuteCall(callId);
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+
+exports.endTelnyxCall = async (req, res) => {
+  try {
+    const { call_control_id } = req.body;
+
+    if (!call_control_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide call_control_id in request body'
+      });
+    }
+
+    console.log('Ending call with control ID:', call_control_id);
+    const result = await telnyxService.endCall(call_control_id);
+
+    // Retourner directement la réponse de l'API Telnyx
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+exports.getPersonalityAnalysis = async (req, res) => {
+  try {
+    const { transcription, contextc, callDuration } = req.body;
+    console.log("transcription from personality analysis:", transcription);
+
+    if (!transcription) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transcription is required'
+      });
+    }
+
+    // Initialize the generative model
+    const generativeModel = vertex_ai.preview.getGenerativeModel({
+      model: model,
+      generation_config: {
+        max_output_tokens: 1024,
+        temperature: 0.3,
+      },
+    });
+
+    // Optimized DISC personality analysis prompt for early detection
+    const isEarlyAnalysis = transcription.length < 100;
+    const prompt = `You are an expert DISC personality analyst helping sales agents during phone calls.
+
+    ${isEarlyAnalysis ? 'IMPORTANT: This is an early analysis with limited text. Focus on immediate personality indicators and provide a preliminary assessment with appropriate confidence levels.' : ''}
+
+    Analyze the customer's communication patterns and provide DISC personality insights with specific recommendations.
+
+    DISC Framework:
+    - D (Dominant): Direct, results-focused, decisive, competitive, impatient, authoritative
+    - I (Influential): Enthusiastic, people-oriented, optimistic, persuasive, talkative, emotional
+    - S (Steady): Patient, reliable, cooperative, calm, supportive, methodical
+    - C (Conscientious): Analytical, precise, systematic, careful, detail-oriented, logical
+
+    Key Early Indicators:
+    - D: "I need", "Let's get to the point", "What's the bottom line", direct questions
+    - I: "That's great!", "I love", "We should", enthusiastic language, personal stories
+    - S: "Let me think", "I'm not sure", "Maybe", cautious language, questions for clarification
+    - C: "Can you explain", "What are the details", "How does it work", analytical questions
+
+    Analyze the following conversation and provide:
+    1. Primary DISC type (D, I, S, or C) with confidence level (0-100)
+    2. Secondary DISC type if applicable
+    3. Key personality indicators found in the speech
+    4. Specific communication recommendations for the agent
+    5. Suggested approach strategies
+    6. Potential objections and how to handle them
+    7. Best closing techniques for this personality type
+
+    Current conversation context:
+    ${context && Array.isArray(context) ? context.map(msg => `${msg.role}: ${msg.content}`).join('\n') : ''}
+    
+    Latest transcription: ${transcription}
+    Call duration: ${callDuration || 'Unknown'} minutes
+    ${isEarlyAnalysis ? 'Text length: Short (early analysis)' : 'Text length: Sufficient for detailed analysis'}
+
+    Respond in JSON format:
+    {
+      "primaryType": "D|I|S|C",
+      "secondaryType": "D|I|S|C|null",
+      "confidence": ${isEarlyAnalysis ? '60-80' : '70-95'},
+      "personalityIndicators": ["direct language", "quick decisions", "results-focused"],
+      "recommendations": ["Be direct and to the point", "Focus on results and outcomes"],
+      "approachStrategy": "Get straight to business, avoid small talk",
+      "potentialObjections": ["Price concerns", "Time constraints"],
+      "objectionHandling": ["Emphasize ROI", "Respect their time"],
+      "closingTechniques": ["Direct ask", "Limited time offer"],
+      "communicationStyle": "Direct and professional",
+      "emotionalTriggers": ["Success", "Achievement", "Recognition"],
+      "riskFactors": ["May seem pushy", "Could rush decisions"],
+      "successIndicators": ["Asks specific questions", "Shows interest in results"]
+    }`;
+
+    console.log('Sending personality analysis prompt to Vertex AI');
+
+    // Generate response
+    const result = await generativeModel.generateContent(prompt);
+    const response = await result.response;
+    const responseText = response.candidates[0].content.parts[0].text;
+
+    console.log('Received personality analysis from Vertex AI:', responseText);
+
+    // Try to parse JSON response
+    let personalityData;
+    try {
+      personalityData = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Error parsing JSON response:', parseError);
+      // Fallback: create a basic structure from text response
+      personalityData = {
+        primaryType: 'S',
+        confidence: 70,
+        recommendations: ['Continue building rapport', 'Listen actively'],
+        approachStrategy: 'Patient and supportive approach',
+        communicationStyle: 'Professional and empathetic'
+      };
+    }
+
+    // Validate and enhance the response
+    const validatedData = {
+      primaryType: personalityData.primaryType || 'S',
+      secondaryType: personalityData.secondaryType || null,
+      confidence: Math.min(100, Math.max(0, personalityData.confidence || 70)),
+      personalityIndicators: personalityData.personalityIndicators || [],
+      recommendations: personalityData.recommendations || [],
+      approachStrategy: personalityData.approachStrategy || 'Adaptive approach',
+      potentialObjections: personalityData.potentialObjections || [],
+      objectionHandling: personalityData.objectionHandling || [],
+      closingTechniques: personalityData.closingTechniques || [],
+      communicationStyle: personalityData.communicationStyle || 'Professional',
+      emotionalTriggers: personalityData.emotionalTriggers || [],
+      riskFactors: personalityData.riskFactors || [],
+      successIndicators: personalityData.successIndicators || [],
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      personalityProfile: validatedData,
+      message: `Personality analysis completed. Primary type: ${validatedData.primaryType} (${validatedData.confidence}% confidence)`
+    });
+
+  } catch (error) {
+    console.error('Error getting personality analysis:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get personality analysis',
+      error: error.message
+    });
+  }
+};

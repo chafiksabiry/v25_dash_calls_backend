@@ -4,7 +4,10 @@ const { config } = require('./config/env');
 const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
-const setupSpeechToTextWebSocket = require('./websocket/speechToText');
+const setupWebSocketManager = require('./websocket/wsManager');
+const { setupTestWebSocket } = require('./websocket/testWebSocket');
+const setupAudioStream = require('./websocket/audioStream');
+const setupFrontendAudioStream = require('./websocket/frontendAudioStream');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -23,15 +26,25 @@ const app = express();
 
 app.use(express.urlencoded({ extended: true }));
 
-// Body parser
+// Special handling for Telnyx webhooks - must come before JSON parser
+app.use('/api/calls/telnyx/webhook', express.raw({ type: 'application/json' }));
+
+// Body parser for all other routes
 app.use(express.json());
 
-//app.use(cors());
-// Enable CORS with specific configuration
 app.use(cors({
-  origin: ['http://localhost:5180','http://localhost:5183','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai'],
+  origin: ['http://localhost:5180','http://localhost:5183','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai','https://copilot.harx.ai','http://38.242.208.242:5186','http://localhost:5173','http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization',
+    'Upgrade',
+    'Connection',
+    'Sec-WebSocket-Key',
+    'Sec-WebSocket-Version',
+    'Sec-WebSocket-Extensions',
+    'Sec-WebSocket-Protocol'
+  ],
   credentials: true
 }));
 
@@ -45,18 +58,26 @@ app.use('/api/settings', settings);
 app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
 
-// Error handler
-//app.use(errorHandler);
-
 const PORT = config.PORT;
 
 // Create HTTP server
 const server = http.createServer(app);
-console.log("server",server);
-// Set up WebSocket handler for speech-to-text
-setupSpeechToTextWebSocket(server);
 
 // Listen on server instead of app
 server.listen(PORT, () => {
   console.log(`Server running in ${config.NODE_ENV} mode on port ${PORT}`);
+  
+  // Initialize WebSocket manager
+  const wsServers = setupWebSocketManager(server);
+  
+  // Setup individual WebSocket handlers
+  setupTestWebSocket(wsServers.get('callEvents'));
+  
+  // Setup frontend audio stream
+  const frontendAudioStream = setupFrontendAudioStream(wsServers.get('frontendAudio'));
+  
+  // Setup Telnyx audio stream with reference to frontend broadcaster
+  setupAudioStream(wsServers.get('audioStream'), frontendAudioStream);
+  
+  console.log('WebSocket servers initialized');
 }); 

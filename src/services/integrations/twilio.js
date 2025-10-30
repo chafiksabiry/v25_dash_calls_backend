@@ -61,12 +61,12 @@ const getCallDetails = async (callSid, userId) => {
     return {
       ParentCallSid: callSid,
       ChildCallSid: callFils[0].sid,
-      duration: callParent.duration,
+      duration: callFils[0].duration,
       from: callFils[0].from,
       to: callFils[0].to,
       status: callFils[0].status,
-      startTime: callParent.startTime,
-      endTime: callParent.endTime,
+      startTime: callFils[0].startTime,
+      endTime: callFils[0].endTime,
       direction: callFils[0].direction,
       recordingUrl: recordingUrl,
     };

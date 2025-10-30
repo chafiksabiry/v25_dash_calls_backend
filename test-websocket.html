@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test WebSocket Telnyx Events</title>
+    <style>
+        .event {
+            margin: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .event.initiated { background-color: #e6f3ff; }
+        .event.answered { background-color: #e6ffe6; }
+        .event.hangup { background-color: #ffe6e6; }
+        #events {
+            margin-top: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .status {
+            padding: 5px 10px;
+            border-radius: 3px;
+            display: inline-block;
+            margin: 5px 0;
+        }
+        .connected { background-color: #4CAF50; color: white; }
+        .disconnected { background-color: #f44336; color: white; }
+    </style>
+</head>
+<body>
+    <h2>Telnyx Call Events WebSocket Test</h2>
+    <div id="connection-status" class="status disconnected">Disconnected</div>
+    <div id="events"></div>
+
+    <script>
+        function connect() {
+            // Use wss:// if page is loaded via https://, ws:// otherwise
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${protocol}//localhost:5006/call-events`, 'echo-protocol');
+            const eventsDiv = document.getElementById('events');
+            const statusDiv = document.getElementById('connection-status');
+
+            ws.onopen = () => {
+                console.log('✅ Connected to WebSocket');
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+                // Send a test message to verify connection
+                ws.send(JSON.stringify({ type: 'test', message: 'Hello server!' }));
+            };
+
+            // Add connection error handling
+            ws.onerror = (error) => {
+                console.error('❌ WebSocket Error:', error);
+                statusDiv.textContent = 'Error: ' + error.type;
+                statusDiv.className = 'status disconnected';
+            };
+
+            ws.onmessage = (event) => {
+                console.log('Received:', event.data);
+                const callEvent = JSON.parse(event.data);
+                
+                // Create event display element
+                const eventElement = document.createElement('div');
+                eventElement.className = `event ${callEvent.type.split('.')[1]}`;
+                
+                // Format timestamp
+                const timestamp = new Date(callEvent.occurredAt).toLocaleTimeString();
+                
+                // Create event content
+                eventElement.innerHTML = `
+                    <strong>Event:</strong> ${callEvent.type}<br>
+                    <strong>Time:</strong> ${timestamp}<br>
+                    <strong>Call ID:</strong> ${callEvent.id}<br>
+                    <pre>${JSON.stringify(callEvent.payload, null, 2)}</pre>
+                `;
+                
+                // Add to display
+                eventsDiv.insertBefore(eventElement, eventsDiv.firstChild);
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected from WebSocket');
+                statusDiv.textContent = 'Disconnected - Reconnecting...';
+                statusDiv.className = 'status disconnected';
+                
+                // Reconnect after 3 seconds
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                statusDiv.textContent = 'Error - Reconnecting...';
+                statusDiv.className = 'status disconnected';
+            };
+        }
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>
