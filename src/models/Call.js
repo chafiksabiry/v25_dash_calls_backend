@@ -40,8 +40,8 @@ const callSchema = new mongoose.Schema({
   },
   provider: {
     type: String,
-    enum: ["twilio", "qalqul"],
-    //required: true,
+    enum: ["twilio", "qalqul", "telnyx"],
+    required: true,
   },
   startTime: {
     type: Date, // Date et heure de début de l'appel
@@ -62,6 +62,31 @@ const callSchema = new mongoose.Schema({
   },
   recording_url: String,
   recording_url_cloudinary: String,
+  transcription: {
+    status: {
+      type: String,
+      enum: ['pending', 'in-progress', 'completed', 'failed'],
+      default: 'pending'
+    },
+    text: String,
+    language: String,
+    confidence: Number
+  },
+  ai_assistant: {
+    enabled: {
+      type: Boolean,
+      default: false
+    },
+    last_suggestion: String,
+    context: [{
+      role: {
+        type: String,
+        enum: ['agent', 'customer', 'system']
+      },
+      content: String,
+      timestamp: Date
+    }]
+  },
   quality_score: {
     type: Number,
     min: 0,

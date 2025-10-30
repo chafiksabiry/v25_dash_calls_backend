@@ -11,23 +11,33 @@ const model = 'gemini-pro';
 
 class VertexAIService {
   async createSpeechStream(config = {}) {
+    // Configuration par défaut avec français forcé
+    const defaultConfig = {
+      encoding: 'LINEAR16',
+      sampleRateHertz: 48000,
+      languageCode: 'en-US', // Langue par défaut
+      model: 'default',
+      useEnhanced: true,
+      enableAutomaticPunctuation: true,
+      audioChannelCount: 1,
+      enableWordConfidence: true,
+      enableSpeakerDiarization: true,
+      enableAutomaticLanguageIdentification: false, // Désactiver la détection automatique
+      alternativeLanguageCodes: [] // Pas d'alternatives pour forcer le français
+    };
+
+    // Fusionner avec la configuration fournie
     const request = {
-      config: {
-        encoding: 'LINEAR16',
-        sampleRateHertz: 48000,
-        languageCode: 'en-US',
-        model: 'default',
-        useEnhanced: true,
-        enableAutomaticPunctuation: true,
-        audioChannelCount: 1,
-        enableWordConfidence: true,
-        enableSpeakerDiarization: true
-      },
+      config: { ...defaultConfig, ...config },
       interimResults: true
     };
 
     try {
-      console.log('Creating speech recognition stream with config:', JSON.stringify(request.config, null, 2));
+      console.log('🎤 CREATING SPEECH STREAM:');
+      console.log('📥 Config received from frontend:', JSON.stringify(config, null, 2));
+      console.log('🔧 Default config:', JSON.stringify(defaultConfig, null, 2));
+      console.log('✅ Final merged config:', JSON.stringify(request.config, null, 2));
+      console.log('🌍 Final language code:', request.config.languageCode);
       
       const recognizeStream = speechClient.streamingRecognize(request)
         .on('error', error => {
@@ -48,7 +58,8 @@ class VertexAIService {
               confidence: data.results[0].alternatives[0]?.confidence || 0,
               isFinal: data.results[0].isFinal,
               stability: data.results[0].stability,
-              resultEndTime: data.results[0].resultEndTime
+              resultEndTime: data.results[0].resultEndTime,
+              languageCode: data.results[0].languageCode || request.config.languageCode
             };
             console.log('Processed transcript:', result);
             return result;
