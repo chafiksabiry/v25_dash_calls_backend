@@ -1,3 +1,6 @@
+const { PhoneNumber } = require('../models/PhoneNumber');
+const mongoose = require('mongoose');
+
 // @desc    Check if a gig has a phone number configured
 // @route   GET /api/phone-numbers/gig/:gigId/check
 // @access  Public (for now)
@@ -7,13 +10,45 @@ exports.checkGigPhoneNumber = async (req, res) => {
     
     console.log('🔍 Checking phone number for gig:', gigId);
     
-    // TODO: Implement actual logic to check if gig has phone number
-    // For now, return a default response indicating no number is configured
-    // This allows the frontend to proceed without crashing
+    // Convertir gigId en ObjectId si c'est une string valide, sinon utiliser tel quel
+    let gigIdQuery = gigId;
+    if (mongoose.Types.ObjectId.isValid(gigId)) {
+      gigIdQuery = new mongoose.Types.ObjectId(gigId);
+    }
     
+    // Rechercher un numéro de téléphone pour ce gigId avec status 'success'
+    // Essayer d'abord avec ObjectId, puis avec string si nécessaire
+    let phoneNumberDoc = await PhoneNumber.findOne({
+      gigId: gigIdQuery,
+      status: 'success'
+    }).lean();
+    
+    // Si pas trouvé avec ObjectId, essayer avec string
+    if (!phoneNumberDoc) {
+      phoneNumberDoc = await PhoneNumber.findOne({
+        gigId: gigId,
+        status: 'success'
+      }).lean();
+    }
+    
+    if (phoneNumberDoc) {
+      console.log('✅ Phone number found for gig:', gigId, phoneNumberDoc.phoneNumber);
+      return res.status(200).json({
+        hasNumber: true,
+        number: {
+          phoneNumber: phoneNumberDoc.phoneNumber,
+          provider: phoneNumberDoc.provider,
+          status: phoneNumberDoc.status,
+          features: phoneNumberDoc.features || {}
+        },
+        message: 'Phone number found'
+      });
+    }
+    
+    console.log('❌ No phone number found for gig:', gigId);
     res.status(200).json({
       hasNumber: false,
-      message: 'Phone number check not yet implemented. Using default configuration.'
+      message: 'No phone number configured for this gig'
     });
   } catch (error) {
     console.error('❌ Error checking gig phone number:', error);
