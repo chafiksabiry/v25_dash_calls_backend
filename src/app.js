@@ -17,6 +17,7 @@ const calls = require('./routes/calls');
 const settings = require('./routes/settings');
 const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
+const phoneNumbers = require('./routes/phoneNumbers');
 
 // Connect to database
 connectDB();
@@ -32,7 +33,7 @@ app.use('/api/calls/telnyx/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 app.use(cors({
-  origin: ['http://localhost:5180','http://localhost:5183','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai','https://copilot.harx.ai','http://38.242.208.242:5186','http://localhost:5173','http://localhost:3000'],
+  origin: ['http://localhost:5180','http://localhost:5183','http://localhost:5186','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai','https://copilot.harx.ai','http://38.242.208.242:5186','http://localhost:5173','http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type', 
@@ -56,6 +57,7 @@ app.use('/api/calls', calls);
 app.use('/api/settings', settings);
 app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
+app.use('/api/phone-numbers', phoneNumbers);
 
 const PORT = config.PORT;
 

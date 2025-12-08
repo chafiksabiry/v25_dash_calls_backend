@@ -1,17 +1,29 @@
 const ovh = require('ovh');
 require('dotenv').config();
 
-const ovhClient = ovh({
-    endpoint: 'ovh-eu',
-    appKey: process.env.OVH_APP_KEY,
-    appSecret: process.env.OVH_APP_SECRET,
-    consumerKey: process.env.OVH_CONSUMER_KEY
-});
+// Lazy initialization of OVH client - only create if credentials are available
+let ovhClient = null;
+
+const getOvhClient = () => {
+    if (!ovhClient) {
+        if (!process.env.OVH_APP_KEY || !process.env.OVH_APP_SECRET) {
+            throw new Error('OVH credentials are not configured. Please set OVH_APP_KEY and OVH_APP_SECRET environment variables.');
+        }
+        ovhClient = ovh({
+            endpoint: 'ovh-eu',
+            appKey: process.env.OVH_APP_KEY,
+            appSecret: process.env.OVH_APP_SECRET,
+            consumerKey: process.env.OVH_CONSUMER_KEY
+        });
+    }
+    return ovhClient;
+};
 
 // Création du Dialplan
 exports.createDialplan = async (callerNumber, calleeNumber) => {
     try {
-        const result = await ovhClient.requestPromised('POST', 
+        const client = getOvhClient();
+        const result = await client.requestPromised('POST', 
             `/telephony/${process.env.OVH_BILLING_ACCOUNT}/ovhPabx/${process.env.OVH_SERVICE_NAME}/dialplan`, 
             {
                 caller: callerNumber,
@@ -28,7 +40,8 @@ exports.createDialplan = async (callerNumber, calleeNumber) => {
 // Lancer un appel sortant
 exports.launchOutboundCall = async (callerNumber, calleeNumber) => {
     try {
-        const result = await ovhClient.requestPromised('POST', 
+        const client = getOvhClient();
+        const result = await client.requestPromised('POST', 
             `/telephony/${process.env.OVH_BILLING_ACCOUNT}/ovhPabx/${process.env.OVH_SERVICE_NAME}/dialplan/actions`, 
             {
                 action: 'call',
@@ -46,7 +59,8 @@ exports.launchOutboundCall = async (callerNumber, calleeNumber) => {
 // Suivre l'état de l'appel
 exports.trackCallStatus = async (callId) => {
     try {
-        const result = await ovhClient.requestPromised('GET', 
+        const client = getOvhClient();
+        const result = await client.requestPromised('GET', 
             `/telephony/${process.env.OVH_BILLING_ACCOUNT}/ovhPabx/${process.env.OVH_SERVICE_NAME}/calls/${callId}/status`
         );
         return result;
