@@ -1,5 +1,13 @@
 FROM node:18
 
+# Install system dependencies required for native modules (speaker, @discordjs/opus, etc.)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libasound2-dev \
+    libopus-dev \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package*.json ./
