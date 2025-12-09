@@ -33,7 +33,7 @@ function setupCallEventsWebSocket(server) {
       }
 
       // Pour les autres clients, vérifier si l'origine est autorisée
-      return allowedOrigins.includes();
+      return allowedOrigins.includes(info.origin);
     }
   });
   
