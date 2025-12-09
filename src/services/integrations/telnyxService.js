@@ -34,6 +34,8 @@ class TelnyxService {
       })).toString('base64');
 
       // Configuration exacte selon la documentation Telnyx
+      // Note: HD Voice (Opus) n'est pas supporté pour tous les numéros
+      // Ce numéro français (+33) ne supporte pas HD Voice, donc on utilise PCMU
       const callOptions = {
         connection_id: this.applicationId,
         to: to,
@@ -42,7 +44,7 @@ class TelnyxService {
         stream_url: 'wss://api-calls.harx.ai/audio-stream',
         stream_track: 'both_tracks',           // Écouter les deux côtés de la conversation
         stream_bidirectional_mode: 'rtp',      // Activer le mode bidirectionnel
-        stream_bidirectional_codec: 'PCMU',    // µ-law codec standard
+        stream_bidirectional_codec: 'PCMU',    // PCMU (G.711 µ-law) - codec standard compatible avec tous les numéros
         client_state: clientState,
         command_id: this.generateCommandId()
       };

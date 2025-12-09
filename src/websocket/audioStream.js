@@ -54,6 +54,11 @@ function setupAudioStream(wsServer) {
               switch (message.event) {
                 case 'start':
                   console.log('🎵 Stream starting:', message.stream_id, message.start.media_format);
+                  // Détecter le codec depuis le message Telnyx
+                  const mediaFormat = message.start?.media_format;
+                  const codec = mediaFormat?.encoding || 'PCMU'; // Par défaut PCMU
+                  const sampleRate = mediaFormat?.sample_rate || 8000;
+                  console.log(`🎵 Detected codec: ${codec}, sample rate: ${sampleRate}Hz`);
                   broadcastToClients(message);
                   break;
 
@@ -61,14 +66,17 @@ function setupAudioStream(wsServer) {
                   if (!message.media?.payload) return;
                   const audioBuffer = Buffer.from(message.media.payload, 'base64');
                   broadcastToClients(audioBuffer);
+                  // Détecter le codec depuis le format média ou utiliser celui du start event
+                  const detectedCodec = message.media?.format || 'PCMU';
+                  const detectedSampleRate = message.media?.sample_rate || 8000;
                   broadcastToClients({
                     event: 'media',
                     sequence_number: message.sequence_number,
                     stream_id: message.stream_id,
                     media: {
                       ...message.media,
-                      format: 'PCMU',
-                      sampleRate: 8000,
+                      format: detectedCodec,
+                      sampleRate: detectedSampleRate,
                       channels: 1,
                       size: audioBuffer.length,
                       timestamp: Date.now()
