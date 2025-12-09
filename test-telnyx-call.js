@@ -7,7 +7,7 @@ const telnyxService = require('./src/services/integrations/telnyxService');
 // Configuration de l'appel
 const config = {
     callerNumber: '+33423340775',
-    calleeNumber: '+212693223005',
+    calleeNumber: '+33623984708',
     streamUrl: 'wss://lemon-dolls-lick.loca.lt/test-audio-stream', // URL du serveur WebSocket local
     streamCodec: 'PCMU',
     streamSampleRate: '8000'
