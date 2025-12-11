@@ -23,8 +23,17 @@ function setupWebSocketManager(server) {
         pathname,
         origin: request.headers.origin,
         host: request.headers.host,
-        url: request.url
+        url: request.url,
+        upgrade: request.headers.upgrade,
+        connection: request.headers.connection,
+        'sec-websocket-key': request.headers['sec-websocket-key'] ? 'present' : 'missing',
+        'sec-websocket-version': request.headers['sec-websocket-version']
       });
+
+      // Verify WebSocket upgrade headers
+      if (request.headers.upgrade?.toLowerCase() !== 'websocket') {
+        console.warn('⚠️ Invalid upgrade header:', request.headers.upgrade);
+      }
 
       if (pathname === '/call-events') {
         console.log('✅ Upgrading to call-events WebSocket');
@@ -33,15 +42,24 @@ function setupWebSocketManager(server) {
         });
       } else if (pathname === '/audio-stream' || pathname === '/frontend-audio') {
         console.log('✅ Upgrading to audio-stream WebSocket (path:', pathname, ')');
-        audioStreamWss.handleUpgrade(request, socket, head, (ws) => {
-          audioStreamWss.emit('connection', ws, request);
-        });
+        try {
+          audioStreamWss.handleUpgrade(request, socket, head, (ws) => {
+            console.log('✅ WebSocket upgrade completed, emitting connection event');
+            audioStreamWss.emit('connection', ws, request);
+          });
+        } catch (upgradeError) {
+          console.error('❌ Error during WebSocket upgrade:', upgradeError);
+          console.error('Upgrade error stack:', upgradeError.stack);
+          socket.destroy();
+        }
       } else {
         console.log('❌ Unknown WebSocket path:', pathname);
+        console.log('Available paths: /call-events, /audio-stream, /frontend-audio');
         socket.destroy();
       }
     } catch (error) {
       console.error('❌ Error handling WebSocket upgrade:', error);
+      console.error('Error stack:', error.stack);
       socket.destroy();
     }
   });

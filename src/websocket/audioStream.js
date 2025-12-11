@@ -4,19 +4,50 @@ const WebSocket = require('ws');
 const clients = new Set();
 let telnyxConnection = null;
 
+// Counter for logging frequency (only log every N broadcasts)
+let broadcastLogCounter = 0;
+const BROADCAST_LOG_INTERVAL = 100; // Log every 100 broadcasts
+
 function broadcastToClients(message, excludeWs = null) {
   const connectedClients = clients.size;
-  console.log(`📢 Broadcasting to ${connectedClients} clients`);
+  
+  // Only log if there are clients connected, and only periodically for media messages
+  if (connectedClients > 0) {
+    broadcastLogCounter++;
+    if (broadcastLogCounter % BROADCAST_LOG_INTERVAL === 0 || !(message instanceof Buffer)) {
+      // Log non-buffer messages (events) always, buffer messages (audio) only periodically
+      console.log(`📢 Broadcasting to ${connectedClients} clients${message instanceof Buffer ? ' (audio data)' : ''}`);
+    }
+  } else {
+    // Only log warning if trying to broadcast when no clients (but not for every media packet)
+    if (!(message instanceof Buffer)) {
+      console.warn(`⚠️ Attempting to broadcast to 0 clients:`, message.event || 'unknown event');
+    }
+    return; // Early return if no clients
+  }
 
+  let sentCount = 0;
   clients.forEach(client => {
     if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
-      if (message instanceof Buffer) {
-        client.send(message);
-      } else {
-        client.send(JSON.stringify(message));
+      try {
+        if (message instanceof Buffer) {
+          client.send(message);
+        } else {
+          client.send(JSON.stringify(message));
+        }
+        sentCount++;
+      } catch (err) {
+        console.error('❌ Error sending to client:', err);
+        // Remove dead client
+        clients.delete(client);
       }
     }
   });
+  
+  // Log if we tried to send but couldn't reach any clients
+  if (sentCount === 0 && connectedClients > 0) {
+    console.warn(`⚠️ No clients received broadcast (all may be disconnected)`);
+  }
 }
 
 // Convert Float32 audio samples to PCMU 8-bit µ-law
@@ -36,6 +67,16 @@ function float32ToPCMU(float32Array) {
 function setupAudioStream(wsServer) {
   wsServer.on('connection', (ws, req) => {
     try {
+      console.log('🔌 WebSocket upgrade request received in audioStream handler');
+      console.log('📋 Request details:', {
+        pathname: req.url,
+        origin: req.headers.origin,
+        host: req.headers.host,
+        userAgent: req.headers['user-agent'],
+        upgrade: req.headers.upgrade,
+        connection: req.headers.connection
+      });
+      
       const isTelnyx = req.headers['user-agent']?.toLowerCase().includes('telnyx') || 
                         req.headers['x-telnyx-signature'];
 
@@ -65,23 +106,30 @@ function setupAudioStream(wsServer) {
                 case 'media':
                   if (!message.media?.payload) return;
                   const audioBuffer = Buffer.from(message.media.payload, 'base64');
-                  broadcastToClients(audioBuffer);
-                  // Détecter le codec depuis le format média ou utiliser celui du start event
-                  const detectedCodec = message.media?.format || 'PCMU';
-                  const detectedSampleRate = message.media?.sample_rate || 8000;
-                  broadcastToClients({
-                    event: 'media',
-                    sequence_number: message.sequence_number,
-                    stream_id: message.stream_id,
-                    media: {
-                      ...message.media,
-                      format: detectedCodec,
-                      sampleRate: detectedSampleRate,
-                      channels: 1,
-                      size: audioBuffer.length,
-                      timestamp: Date.now()
+                  
+                  // Only broadcast audio buffer if there are clients connected
+                  if (clients.size > 0) {
+                    broadcastToClients(audioBuffer);
+                    
+                    // Also send metadata (less frequently - only every 10th packet to reduce overhead)
+                    if (message.sequence_number % 10 === 0) {
+                      const detectedCodec = message.media?.format || 'PCMU';
+                      const detectedSampleRate = message.media?.sample_rate || 8000;
+                      broadcastToClients({
+                        event: 'media',
+                        sequence_number: message.sequence_number,
+                        stream_id: message.stream_id,
+                        media: {
+                          ...message.media,
+                          format: detectedCodec,
+                          sampleRate: detectedSampleRate,
+                          channels: 1,
+                          size: audioBuffer.length,
+                          timestamp: Date.now()
+                        }
+                      });
                     }
-                  });
+                  }
                   break;
 
                 case 'stop':
@@ -90,8 +138,10 @@ function setupAudioStream(wsServer) {
                   break;
               }
             } catch {
-              // Binary data from Telnyx
-              broadcastToClients(data);
+              // Binary data from Telnyx - only broadcast if clients connected
+              if (clients.size > 0) {
+                broadcastToClients(data);
+              }
             }
           } catch (err) {
             console.error('Error processing Telnyx message:', err);
@@ -102,9 +152,23 @@ function setupAudioStream(wsServer) {
 
       } else {
         console.log('👤 Frontend client connected to audio stream');
+        console.log('📋 Connection details:', {
+          remoteAddress: req.socket.remoteAddress,
+          remotePort: req.socket.remotePort,
+          origin: req.headers.origin,
+          userAgent: req.headers['user-agent'],
+          totalClients: clients.size + 1,
+          pathname: req.url
+        });
         clients.add(ws);
 
-        ws.send(JSON.stringify({ event: 'connected', message: 'Connected to audio stream' }));
+        // Send welcome message immediately
+        try {
+          ws.send(JSON.stringify({ event: 'connected', message: 'Connected to audio stream' }));
+          console.log('✅ Welcome message sent to frontend client');
+        } catch (sendError) {
+          console.error('❌ Error sending welcome message:', sendError);
+        }
 
         // === Partie Frontend -> Telnyx ===
         ws.on('message', async (data) => {

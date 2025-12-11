@@ -136,12 +136,17 @@ class TelnyxService {
           call.duration = Math.round((call.endTime - call.startTime) / 1000);
           console.log(`📞 Call ended: ${callId}, duration: ${call.duration}s`);
           
-          // Arrêter la suppression de bruit
+          // Arrêter la suppression de bruit (si elle était activée)
           try {
             await this.axiosInstance.post(`/calls/${callId}/actions/suppression_stop`, {});
             console.log('✅ Noise suppression disabled for terminated call:', callId);
           } catch (suppressionError) {
-            console.error('❌ Failed to disable noise suppression on call termination:', suppressionError);
+            // 422 means noise suppression wasn't active - this is OK
+            if (suppressionError.response?.status === 422) {
+              // Silent - this is expected if suppression wasn't enabled
+            } else {
+              console.warn('⚠️ Failed to disable noise suppression on call termination:', suppressionError.message);
+            }
           }
           break;
         case 'streaming.started':
@@ -198,12 +203,17 @@ class TelnyxService {
     try {
       console.log('Attempting to end call:', callId);
       
-      // D'abord, arrêter la suppression de bruit
+      // D'abord, arrêter la suppression de bruit (si elle était activée)
       try {
         await this.axiosInstance.post(`/calls/${callId}/actions/suppression_stop`, {});
         console.log('✅ Noise suppression disabled for call:', callId);
       } catch (suppressionError) {
-        console.error('❌ Failed to disable noise suppression:', suppressionError);
+        // 422 means noise suppression wasn't active or call already ended - this is OK
+        if (suppressionError.response?.status === 422) {
+          console.log('ℹ️ Noise suppression not active (call may already be ended)');
+        } else {
+          console.warn('⚠️ Failed to disable noise suppression:', suppressionError.message);
+        }
       }
       
       // Ensuite, terminer l'appel
