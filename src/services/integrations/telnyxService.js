@@ -61,33 +61,7 @@ class TelnyxService {
       const response = await this.axiosInstance.post('/calls', callOptions);
       const call = response.data.data;
 
-      // Activer la suppression de bruit immédiatement après la création de l'appel
-      try {
-        await this.axiosInstance.post(`/calls/${call.call_control_id}/actions/suppression_start`, {
-          direction: 'both'  // Supprimer le bruit dans les deux sens
-        });
-        console.log('✅ Noise suppression enabled for call:', call.call_control_id);
-      } catch (suppressionError) {
-        // Log detailed error information for debugging
-        if (suppressionError.response) {
-          const status = suppressionError.response.status;
-          const errorData = suppressionError.response.data;
-          console.warn(`⚠️ Failed to enable noise suppression (status ${status}):`, {
-            callId: call.call_control_id,
-            status,
-            errors: errorData?.errors || errorData,
-            message: errorData?.message || suppressionError.message
-          });
-          
-          // 422 usually means noise suppression is not available or already active
-          if (status === 422) {
-            console.log('ℹ️ Noise suppression not available for this call (this is OK, call will continue)');
-          }
-        } else {
-          console.warn('⚠️ Failed to enable noise suppression (network error):', suppressionError.message);
-        }
-        // Don't throw - allow call to continue without noise suppression
-      }
+      // Note: Noise suppression will be activated when call is answered (in handleCallWebhook)
 
       // Create call record in database
       const callRecord = await Call.create({
@@ -146,6 +120,34 @@ class TelnyxService {
           call.status = 'in-progress';
           call.startTime = new Date();
           console.log(`📞 Call answered: ${callId}`);
+          
+          // Activer la suppression de bruit maintenant que l'appel est répondu
+          try {
+            await this.axiosInstance.post(`/calls/${callId}/actions/suppression_start`, {
+              direction: 'both'  // Supprimer le bruit dans les deux sens
+            });
+            console.log('✅ Noise suppression enabled for answered call:', callId);
+          } catch (suppressionError) {
+            // Log detailed error information for debugging
+            if (suppressionError.response) {
+              const status = suppressionError.response.status;
+              const errorData = suppressionError.response.data;
+              console.warn(`⚠️ Failed to enable noise suppression (status ${status}):`, {
+                callId: callId,
+                status,
+                errors: errorData?.errors || errorData,
+                message: errorData?.message || suppressionError.message
+              });
+              
+              // 422 usually means noise suppression is not available - log but continue
+              if (status === 422) {
+                console.log('ℹ️ Noise suppression not available for this call (this is OK, call will continue)');
+              }
+            } else {
+              console.warn('⚠️ Failed to enable noise suppression (network error):', suppressionError.message);
+            }
+            // Don't throw - allow call to continue without noise suppression
+          }
           break;
         case 'call.hangup':
         case 'call.terminated':
