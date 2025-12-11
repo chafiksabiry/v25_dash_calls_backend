@@ -31,8 +31,8 @@ function setupWebSocketManager(server) {
         callEventsWss.handleUpgrade(request, socket, head, (ws) => {
           callEventsWss.emit('connection', ws, request);
         });
-      } else if (pathname === '/audio-stream') {
-        console.log('✅ Upgrading to audio-stream WebSocket');
+      } else if (pathname === '/audio-stream' || pathname === '/frontend-audio') {
+        console.log('✅ Upgrading to audio-stream WebSocket (path:', pathname, ')');
         audioStreamWss.handleUpgrade(request, socket, head, (ws) => {
           audioStreamWss.emit('connection', ws, request);
         });
