@@ -46,9 +46,9 @@ function setupWebSocketManager(server) {
         callEventsWss.handleUpgrade(request, socket, head, (ws) => {
           callEventsWss.emit('connection', ws, request);
         });
-      } else if (normalizedPath === '/audio-stream' || normalizedPath === '/frontend-audio' || 
-                 pathname === '/audio-stream' || pathname === '/frontend-audio' ||
-                 pathname === '/api/audio-stream' || pathname === '/api/frontend-audio') {
+      } else if (normalizedPath === '/audio-stream' || normalizedPath === '/audio-stream' || 
+                 pathname === '/audio-stream' || pathname === '/audio-stream' ||
+                 pathname === '/api/audio-stream' || pathname === '/api/audio-stream') {
         console.log('✅ Upgrading to audio-stream WebSocket (path:', pathname, ', normalized:', normalizedPath, ')');
         try {
           audioStreamWss.handleUpgrade(request, socket, head, (ws) => {
@@ -62,7 +62,7 @@ function setupWebSocketManager(server) {
         }
       } else {
         console.log('❌ Unknown WebSocket path:', pathname);
-        console.log('Available paths: /call-events, /api/call-events, /audio-stream, /frontend-audio, /api/audio-stream, /api/frontend-audio');
+        console.log('Available paths: /call-events, /api/call-events, /audio-stream, /audio-stream, /api/audio-stream, /api/audio-stream');
         socket.destroy();
       }
     } catch (error) {
