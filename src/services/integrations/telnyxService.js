@@ -68,7 +68,25 @@ class TelnyxService {
         });
         console.log('✅ Noise suppression enabled for call:', call.call_control_id);
       } catch (suppressionError) {
-        console.error('❌ Failed to enable noise suppression:', suppressionError);
+        // Log detailed error information for debugging
+        if (suppressionError.response) {
+          const status = suppressionError.response.status;
+          const errorData = suppressionError.response.data;
+          console.warn(`⚠️ Failed to enable noise suppression (status ${status}):`, {
+            callId: call.call_control_id,
+            status,
+            errors: errorData?.errors || errorData,
+            message: errorData?.message || suppressionError.message
+          });
+          
+          // 422 usually means noise suppression is not available or already active
+          if (status === 422) {
+            console.log('ℹ️ Noise suppression not available for this call (this is OK, call will continue)');
+          }
+        } else {
+          console.warn('⚠️ Failed to enable noise suppression (network error):', suppressionError.message);
+        }
+        // Don't throw - allow call to continue without noise suppression
       }
 
       // Create call record in database
