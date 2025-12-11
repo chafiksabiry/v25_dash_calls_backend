@@ -105,9 +105,20 @@ class TelnyxService {
       }
 
       // Find the call in our database
-      const call = await Call.findOne({ call_id: callId });
+      // For call.initiated, the call might not exist yet (race condition), so wait a bit
+      let call = await Call.findOne({ call_id: callId });
+      if (!call && eventType === 'call.initiated') {
+        // Wait a bit and retry (call might be created by makeCall() shortly)
+        await new Promise(resolve => setTimeout(resolve, 500));
+        call = await Call.findOne({ call_id: callId });
+      }
       if (!call) {
-        throw new Error(`Call not found with ID: ${callId}`);
+        console.warn(`⚠️ Call not found with ID: ${callId} (event: ${eventType}) - this may be a race condition`);
+        // Don't throw for call.initiated - the call will be created by makeCall()
+        if (eventType !== 'call.initiated') {
+          throw new Error(`Call not found with ID: ${callId}`);
+        }
+        return null; // Return early for call.initiated if call doesn't exist yet
       }
 
       // Update call status based on event type
