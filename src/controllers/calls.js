@@ -745,30 +745,36 @@ exports.telnyxWebhook = async (req, res) => {
       console.log('Call Control ID:', event.data.payload.call_control_id);
       console.log('Event Timestamp:', event.data.occurred_at);
       
-      // Update call status in database
-      const callId = event.data.payload.call_control_id;
-      const call = await Call.findOne({ call_id: callId });
-      
-      if (call) {
-        switch(eventType) {
-          case 'call.initiated':
-            console.log('Call initiated to:', event.data.payload.to);
-            call.status = 'initiated';
-            break;
-          case 'call.answered':
-            console.log('Call answered at:', event.data.occurred_at);
-            call.status = 'in-progress';
-            call.startTime = new Date(event.data.occurred_at);
-            break;
-          case 'call.hangup':
-            console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
-            call.status = 'completed';
-            call.endTime = new Date(event.data.occurred_at);
-            call.duration = event.data.payload.duration_seconds || 
-              Math.round((call.endTime - call.startTime) / 1000);
-            break;
+      // Use telnyxService.handleCallWebhook to process the event (includes noise suppression activation on call.answered)
+      try {
+        await telnyxService.handleCallWebhook(event);
+      } catch (webhookError) {
+        console.error('❌ Error processing webhook in telnyxService:', webhookError);
+        // Fallback to basic database update if service fails
+        const callId = event.data.payload.call_control_id;
+        const call = await Call.findOne({ call_id: callId });
+        
+        if (call) {
+          switch(eventType) {
+            case 'call.initiated':
+              console.log('Call initiated to:', event.data.payload.to);
+              call.status = 'initiated';
+              break;
+            case 'call.answered':
+              console.log('Call answered at:', event.data.occurred_at);
+              call.status = 'in-progress';
+              call.startTime = new Date(event.data.occurred_at);
+              break;
+            case 'call.hangup':
+              console.log('Call ended. Duration:', event.data.payload.duration_seconds, 'seconds');
+              call.status = 'completed';
+              call.endTime = new Date(event.data.occurred_at);
+              call.duration = event.data.payload.duration_seconds || 
+                Math.round((call.endTime - call.startTime) / 1000);
+              break;
+          }
+          await call.save();
         }
-        await call.save();
       }
     }
 

@@ -162,9 +162,23 @@ function setupAudioStream(wsServer) {
         });
         clients.add(ws);
 
-        // Send welcome message immediately
+        // Send welcome message immediately with config
         try {
-          ws.send(JSON.stringify({ event: 'connected', message: 'Connected to audio stream' }));
+          // Get current stream config from Telnyx if available
+          const config = {
+            codec: 'PCMU', // Default codec
+            sampleRate: 8000, // Default sample rate
+            channels: 1
+          };
+          
+          // If we have a Telnyx connection and know the codec, use it
+          // (This will be updated when Telnyx sends the 'start' event)
+          
+          ws.send(JSON.stringify({ 
+            event: 'connected', 
+            message: 'Connected to audio stream',
+            config: config
+          }));
           console.log('✅ Welcome message sent to frontend client');
         } catch (sendError) {
           console.error('❌ Error sending welcome message:', sendError);
