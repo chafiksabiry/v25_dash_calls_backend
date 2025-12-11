@@ -19,7 +19,7 @@ function setupCallEventsWebSocket(server) {
         'http://localhost:5180',
         'http://localhost:5183',
         'https://v25-preprod.harx.ai',
-        'https://preprod-api-dash-calls.harx.ai',
+        'https://api-dash-calls.harx.ai',
         'https://v25.harx.ai',
         'https://copilot.harx.ai',
         'http://38.242.208.242:5186',
