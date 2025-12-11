@@ -41,7 +41,7 @@ class TelnyxService {
         to: to,
         from: from,
         // Utiliser l'URL pour le streaming audio
-        stream_url: 'wss://api-dash-calls.harx.ai/audio-stream',
+        stream_url: 'wss://api-calls.harx.ai/audio-stream',
         stream_track: 'both_tracks',           // Écouter les deux côtés de la conversation
         stream_bidirectional_mode: 'rtp',      // Activer le mode bidirectionnel
         stream_bidirectional_codec: 'PCMU',    // PCMU (G.711 µ-law) - codec standard compatible avec tous les numéros

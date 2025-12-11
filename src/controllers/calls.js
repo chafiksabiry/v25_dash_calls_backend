@@ -671,23 +671,49 @@ exports.initiateTelnyxCall = async (req, res) => {
   try {
     const { to, from, agentId } = req.body;
 
+    console.log('📞 Received call initiation request:', {
+      to,
+      from,
+      agentId,
+      body: req.body,
+      headers: req.headers
+    });
+
+    // Validation des paramètres
     if (!to || !from || !agentId) {
+      console.error('❌ Missing required parameters:', {
+        hasTo: !!to,
+        hasFrom: !!from,
+        hasAgentId: !!agentId
+      });
       return res.status(400).json({
         success: false,
-        error: 'Please provide to, from, and agentId'
+        error: 'Please provide to, from, and agentId',
+        received: {
+          to: to || null,
+          from: from || null,
+          agentId: agentId || null
+        }
       });
     }
 
+    console.log('✅ All parameters present, initiating call via Telnyx service...');
     const call = await telnyxService.makeCall(to, from, agentId);
+    console.log('✅ Call initiated successfully:', call);
 
     res.status(201).json({
       success: true,
       data: call
     });
   } catch (err) {
+    console.error('❌ Error initiating Telnyx call:', {
+      message: err.message,
+      stack: err.stack,
+      name: err.name
+    });
     res.status(400).json({
       success: false,
-      error: err.message
+      error: err.message || 'Failed to initiate call'
     });
   }
 };

@@ -33,7 +33,19 @@ app.use('/api/calls/telnyx/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 app.use(cors({
-  origin: ['http://localhost:5180','http://localhost:5183','http://localhost:5186','https://v25-preprod.harx.ai', 'https://api-dash-calls.harx.ai','https://v25.harx.ai','https://copilot.harx.ai','http://38.242.208.242:5186','http://localhost:5173','http://localhost:3000'],
+  origin: [
+    'http://localhost:5180',
+    'http://localhost:5183',
+    'http://localhost:5186',
+    'https://v25-preprod.harx.ai',
+    'https://api-dash-calls.harx.ai',
+    'https://api-calls.harx.ai',
+    'https://v25.harx.ai',
+    'https://copilot.harx.ai',
+    'http://38.242.208.242:5186',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type', 
