@@ -63,13 +63,24 @@ function initializeAudioServer(server) {
     });
 
     // Événement : Recevoir de l'audio du frontend (microphone)
+    let audioPacketCount = 0;
     socket.on('audio-data', (data) => {
       const { callControlId, audioChunk } = data;
+      
+      // Log tous les 50 packets (environ toutes les 2 secondes)
+      if (audioPacketCount % 50 === 0) {
+        console.log(`📨 Audio reçu du frontend: ${audioChunk ? audioChunk.length : 0} bytes pour ${callControlId}`);
+      }
+      audioPacketCount++;
       
       // Transférer l'audio vers Telnyx via Media Stream
       if (activeCalls.has(callControlId)) {
         const { sendAudioToTelnyx } = require('./telnyxMediaStream');
         sendAudioToTelnyx(callControlId, audioChunk);
+      } else {
+        if (audioPacketCount % 50 === 0) {
+          console.log(`⚠️ Appel ${callControlId} non trouvé dans activeCalls`);
+        }
       }
     });
 

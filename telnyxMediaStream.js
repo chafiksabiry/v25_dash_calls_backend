@@ -48,9 +48,9 @@ function handleTelnyxMediaStream(ws, req) {
     }
   }
 
+  let receivedPacketCount = 0;
+  
   ws.on('message', (message) => {
-    console.log(`📩 Message reçu de Telnyx (type: ${Buffer.isBuffer(message) ? 'Buffer' : typeof message}, length: ${message.length})`);
-    
     try {
       // Vérifier si c'est un message binaire ou JSON
       if (Buffer.isBuffer(message)) {
@@ -60,7 +60,14 @@ function handleTelnyxMediaStream(ws, req) {
         // Si ça ressemble à du JSON, essayer de le parser
         if (strMessage.startsWith('{')) {
           const data = JSON.parse(strMessage);
-          console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+          
+          // Log seulement les événements importants (pas media)
+          if (data.event !== 'media') {
+            console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+          } else if (receivedPacketCount % 50 === 0) {
+            console.log(`📨 Audio reçu de Telnyx (packet #${receivedPacketCount})`);
+          }
+          receivedPacketCount++;
           
           // Traiter comme un message JSON
           handleJsonMessage(data);
@@ -77,7 +84,9 @@ function handleTelnyxMediaStream(ws, req) {
 
       // Message JSON string
       const data = JSON.parse(message.toString());
-      console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+      if (data.event !== 'media') {
+        console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+      }
       handleJsonMessage(data);
     } catch (error) {
       console.error('❌ Erreur parsing message Telnyx:', error);
@@ -129,6 +138,7 @@ function sendAudioToFrontend(callControlId, audioPayload) {
 }
 
 // Envoyer l'audio du frontend vers Telnyx
+let sentPacketCount = 0;
 function sendAudioToTelnyx(callControlId, audioPayload) {
   const telnyxWs = telnyxStreams.get(callControlId);
   
@@ -139,9 +149,16 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
         payload: audioPayload
       }
     }));
-    console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} bytes)`);
+    
+    // Log tous les 50 packets
+    if (sentPacketCount % 50 === 0) {
+      console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars)`);
+    }
+    sentPacketCount++;
   } else {
-    console.log(`⚠️ Impossible d'envoyer audio - Stream non disponible pour ${callControlId}`);
+    if (sentPacketCount % 10 === 0) {
+      console.log(`⚠️ Stream non disponible pour ${callControlId} (readyState: ${telnyxWs ? telnyxWs.readyState : 'no WS'})`);
+    }
   }
 }
 
