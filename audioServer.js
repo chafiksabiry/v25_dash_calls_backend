@@ -22,13 +22,16 @@ function initializeAudioServer(server) {
       console.log('Initiation appel:', from, '->', to);
 
       try {
-        // Créer l'appel avec Telnyx Call Control
+        // Créer l'appel avec Telnyx Call Control + Media Stream pour l'audio
         const call = await telnyx.calls.create({
           connection_id: process.env.TELNYX_APPLICATION_ID || process.env.TELNYX_CONNECTION_ID,
           to: to,
           from: from,
-          webhook_url: process.env.WEBHOOK_URL || 'http://localhost:5000/webhook',
-          webhook_url_method: 'POST'
+          webhook_url: process.env.WEBHOOK_URL || 'https://api-calls.harx.ai/webhook',
+          webhook_url_method: 'POST',
+          // Configuration Media Stream pour l'audio
+          stream_url: process.env.TELNYX_MEDIA_STREAM_URL || 'wss://api-calls.harx.ai/audio-stream',
+          stream_track: 'both_tracks' // Recevoir audio du caller ET du callee
         });
 
         const callControlId = call.data.call_control_id;
@@ -180,10 +183,16 @@ function updateCallStatus(callControlId, status, data = {}) {
   }
 }
 
+// Obtenir la référence au serveur Socket.IO
+function getIO() {
+  return io;
+}
+
 module.exports = {
   initializeAudioServer,
   receiveAudioFromTelnyx,
   updateCallStatus,
-  activeCalls
+  activeCalls,
+  getIO
 };
 
