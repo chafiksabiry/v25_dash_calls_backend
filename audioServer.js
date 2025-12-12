@@ -8,8 +8,13 @@ let activeCalls = new Map(); // Stocker les appels actifs
 function initializeAudioServer(server) {
   io = new Server(server, {
     cors: {
-      origin: '*',
-      methods: ['GET', 'POST']
+      origin: [
+        'https://copilot.harx.ai',
+        'http://localhost:3000',
+        'http://localhost:3001'
+      ],
+      methods: ['GET', 'POST'],
+      credentials: true
     }
   });
 
