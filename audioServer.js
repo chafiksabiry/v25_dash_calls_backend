@@ -101,26 +101,8 @@ function initializeAudioServer(server) {
       try {
         const axios = require('axios');
         
-        // 1. Arrêter l'enregistrement explicitement AVANT le hangup
-        try {
-          await axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_stop`, {}, {
-            headers: {
-              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          });
-          console.log(`🎙️ Enregistrement arrêté pour ${callControlId}`);
-        } catch (recordErr) {
-          // Ignorer si l'enregistrement n'existe pas ou est déjà arrêté
-          if (recordErr.response?.status !== 404 && recordErr.response?.status !== 422) {
-            console.error('⚠️ Erreur arrêt enregistrement:', recordErr.response?.data || recordErr.message);
-          }
-        }
-        
-        // 2. Attendre un peu pour que l'enregistrement se finalise
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // 3. Terminer l'appel via Telnyx
+        // 1. Terminer l'appel via Telnyx (l'enregistrement s'arrêtera automatiquement)
+        // Ne pas appeler record_stop ici car cela peut causer des problèmes de timing
         await telnyx.calls.hangup({
           call_control_id: callControlId
         });

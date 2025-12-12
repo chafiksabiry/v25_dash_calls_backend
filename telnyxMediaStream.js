@@ -39,17 +39,31 @@ function handleTelnyxMediaStream(ws, req) {
       case 'media':
         // Audio reçu de Telnyx (voix du receiver)
         // Telnyx envoie PCMA (A-Law), Frontend attend PCMU (u-Law) → CONVERSION REQUISE
-        if (currentCallId && data.media && data.media.payload) {
-          try {
-            const alawBuffer = Buffer.from(data.media.payload, 'base64');
-            const mulawBuffer = alawToMulaw(alawBuffer);
-            const mulawPayload = mulawBuffer.toString('base64');
-            sendAudioToFrontend(currentCallId, mulawPayload);
-          } catch (error) {
-            console.error('❌ Erreur conversion A-Law → u-Law:', error);
-            // En cas d'erreur, essayer sans conversion (peut fonctionner si Telnyx change de format)
-            sendAudioToFrontend(currentCallId, data.media.payload);
+        if (!currentCallId) {
+          console.log('⚠️ Media reçu mais pas de currentCallId');
+          break;
+        }
+        
+        if (!data.media || !data.media.payload) {
+          console.log('⚠️ Media reçu mais pas de payload');
+          break;
+        }
+        
+        try {
+          const alawBuffer = Buffer.from(data.media.payload, 'base64');
+          const mulawBuffer = alawToMulaw(alawBuffer);
+          const mulawPayload = mulawBuffer.toString('base64');
+          sendAudioToFrontend(currentCallId, mulawPayload);
+          
+          // Log tous les 10 packets pour debug
+          if (receivedPacketCount % 10 === 0) {
+            console.log(`🎧 Audio media reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
           }
+          receivedPacketCount++;
+        } catch (error) {
+          console.error('❌ Erreur conversion A-Law → u-Law:', error);
+          // En cas d'erreur, essayer sans conversion (peut fonctionner si Telnyx change de format)
+          sendAudioToFrontend(currentCallId, data.media.payload);
         }
         break;
         
@@ -82,8 +96,14 @@ function handleTelnyxMediaStream(ws, req) {
           if (data.event !== 'media') {
             console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
           } else {
-             if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (JSON)');
-             receivedPacketCount++;
+            // Log le premier packet media pour debug
+            if (receivedPacketCount === 0) {
+              console.log('🎧 PREMIER AUDIO REÇU (JSON)', JSON.stringify({
+                hasPayload: !!(data.media && data.media.payload),
+                payloadLength: data.media?.payload?.length || 0,
+                currentCallId: currentCallId
+              }));
+            }
           }
           
           handleJsonMessage(data);
@@ -112,10 +132,8 @@ function handleTelnyxMediaStream(ws, req) {
       const data = JSON.parse(message.toString());
       if (data.event !== 'media') {
         console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
-      } else {
-         if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (STRING)');
-         receivedPacketCount++;
       }
+      // Note: Le compteur receivedPacketCount est maintenant géré dans handleJsonMessage pour 'media'
       handleJsonMessage(data);
     } catch (error) {
       console.error('❌ Erreur parsing message Telnyx:', error);
@@ -163,10 +181,19 @@ function sendAudioToFrontend(callControlId, audioPayload) {
         timestamp: Date.now()
       });
       
-      if (frontendSentCount % 50 === 0) { // Moins de logs
+      // Log tous les 10 packets pour debug
+      if (frontendSentCount % 10 === 0) {
         console.log(`📤 Audio envoyé au frontend (#${frontendSentCount}, ${audioPayload.length} chars)`);
       }
       frontendSentCount++;
+    } else {
+      if (frontendSentCount % 50 === 0) {
+        console.log(`⚠️ Socket not found pour call ${callControlId} (socketId: ${call.socketId})`);
+      }
+    }
+  } else {
+    if (frontendSentCount % 50 === 0) {
+      console.log(`⚠️ Call not found dans activeCalls pour ${callControlId}`);
     }
   }
 }

@@ -175,7 +175,20 @@ app.post('/webhook', (req, res) => {
       case 'call.active': // Ou quand l'appel est répondu
       case 'call.answered':
         status = 'active';
-          // L'appel est actif, démarrer le Media Stream maintenant
+        
+        // Vérifier si l'enregistrement/stream n'a pas déjà été démarré pour éviter les doublons
+        const callIndex = callHistory.findIndex(call => call.id === callControlId);
+        if (callIndex !== -1 && callHistory[callIndex].streamStarted) {
+          console.log(`⚠️ Stream déjà démarré pour ${callControlId}, ignoré`);
+          break;
+        }
+        
+        // Marquer comme démarré pour éviter les doublons
+        if (callIndex !== -1) {
+          callHistory[callIndex].streamStarted = true;
+        }
+        
+        // L'appel est actif, démarrer le Media Stream maintenant
         console.log('✅ Appel répondu - Démarrage de l\'enregistrement et du Media Stream...');
 
         // 1. Démarrer l'enregistrement
@@ -222,20 +235,8 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.hangup':
         status = 'ended';
-        // Arrêter l'enregistrement explicitement avant que Telnyx ne finalise l'appel
-        axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_stop`, {}, {
-          headers: {
-            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-            'Content-Type': 'application/json'
-          }
-        }).then(() => {
-          console.log(`🎙️ Enregistrement arrêté (webhook) pour ${callControlId}`);
-        }).catch(err => {
-          // Ignorer si déjà arrêté ou inexistant
-          if (err.response?.status !== 404 && err.response?.status !== 422) {
-            console.error('⚠️ Erreur arrêt enregistrement (webhook):', err.response?.data || err.message);
-          }
-        });
+        // L'enregistrement s'arrêtera automatiquement quand l'appel se termine
+        // Pas besoin d'appeler record_stop explicitement ici
         break;
       case 'call.speak.ended':
         status = 'active';
