@@ -180,16 +180,21 @@ app.post('/webhook', (req, res) => {
         // Utiliser l'API HTTP directement car le SDK peut ne pas avoir cette méthode
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
           stream_url: 'wss://api-calls.harx.ai/audio-stream',
-          stream_track: 'both_tracks'
+          stream_track: 'both_tracks',
+          enable_dialogflow: false,
+          client_state: btoa(JSON.stringify({ callControlId }))
         }, {
           headers: {
             'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
             'Content-Type': 'application/json'
           }
         }).then(response => {
-          console.log(`🎵 Media Stream démarré pour ${callControlId}`);
+          console.log(`🎵 Media Stream démarré pour ${callControlId}`, JSON.stringify(response.data, null, 2));
         }).catch(err => {
           console.error('❌ Erreur démarrage stream:', err.response?.data || err.message);
+          if (err.response?.data) {
+            console.error('Details:', JSON.stringify(err.response.data, null, 2));
+          }
         });
         break;
       case 'call.hangup':
