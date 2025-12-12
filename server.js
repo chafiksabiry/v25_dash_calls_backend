@@ -15,16 +15,8 @@ app.use(express.json());
 const telnyx = require('telnyx')(process.env.TELNYX_API_KEY);
 
 // Initialiser le serveur audio WebSocket (Socket.IO)
-const { initializeAudioServer, updateCallStatus, getIO } = require('./audioServer');
+const { initializeAudioServer, updateCallStatus, speakOnCall } = require('./audioServer');
 initializeAudioServer(server);
-
-// Initialiser le serveur Media Stream WebSocket (pour Telnyx audio)
-// TEMPORAIREMENT DÉSACTIVÉ - Cause "Invalid frame header"
-// const { initializeMediaStreamServer } = require('./mediaStreamServer');
-// Attendre que Socket.IO soit initialisé
-// setTimeout(() => {
-//   initializeMediaStreamServer(server, getIO());
-// }, 100);
 
 // Numéro Telnyx
 const TELNYX_NUMBER = '+33423340775';
@@ -157,6 +149,8 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.answered':
         status = 'active';
+        // Faire parler un message TTS quand l'appel est répondu
+        speakOnCall(callControlId, 'Bonjour, ceci est un test du système d\'appels Telnyx. L\'audio fonctionne correctement.');
         break;
       case 'call.hangup':
         status = 'ended';

@@ -22,16 +22,14 @@ function initializeAudioServer(server) {
       console.log('Initiation appel:', from, '->', to);
 
       try {
-        // Créer l'appel avec Telnyx Call Control + Media Stream pour l'audio
+        // Créer l'appel avec Telnyx Call Control
         const call = await telnyx.calls.create({
           connection_id: process.env.TELNYX_APPLICATION_ID || process.env.TELNYX_CONNECTION_ID,
           to: to,
           from: from,
           webhook_url: process.env.WEBHOOK_URL || 'https://api-calls.harx.ai/webhook',
-          webhook_url_method: 'POST',
-          // Configuration Media Stream pour l'audio
-          stream_url: process.env.TELNYX_MEDIA_STREAM_URL || 'wss://api-calls.harx.ai/audio-stream',
-          stream_track: 'both_tracks' // Recevoir audio du caller ET du callee
+          webhook_url_method: 'POST'
+          // Note: Audio TTS sera ajouté via call.speak() quand l'appel est répondu
         });
 
         const callControlId = call.data.call_control_id;
@@ -153,12 +151,28 @@ function receiveAudioFromTelnyx(callControlId, audioData) {
     const socket = io.sockets.sockets.get(call.socketId);
     
     if (socket) {
-      // Envoyer l'audio au client frontend
+      // Envoyer l'audio au client frontend via Socket.IO
       socket.emit('audio-received', {
         callControlId,
-        audioChunk: audioData
+        audioChunk: audioData,
+        timestamp: Date.now()
       });
+      console.log('🎵 Audio envoyé au client:', audioData.length, 'bytes');
     }
+  }
+}
+
+// Envoyer un message TTS à l'appelé quand il répond
+async function speakOnCall(callControlId, message) {
+  try {
+    await telnyx.calls.speak(callControlId, {
+      payload: message,
+      voice: 'female',
+      language: 'fr-FR'
+    });
+    console.log('🗣️ Message TTS envoyé:', message);
+  } catch (error) {
+    console.error('❌ Erreur TTS:', error);
   }
 }
 
@@ -192,6 +206,7 @@ module.exports = {
   initializeAudioServer,
   receiveAudioFromTelnyx,
   updateCallStatus,
+  speakOnCall,
   activeCalls,
   getIO
 };
