@@ -6,32 +6,45 @@ let telnyxStreams = new Map(); // Map des streams Telnyx par call_control_id
 
 // Gérer le Media Stream de Telnyx (audio bidirectionnel)
 function handleTelnyxMediaStream(ws, req) {
-  // Extraire le call_control_id de l'URL
-  const url = new URL(req.url, 'wss://localhost');
-  const currentCallId = url.searchParams.get('callControlId');
+  console.log('🎵 Telnyx Media Stream connecté');
   
-  console.log(`🎵 Telnyx Media Stream connecté pour call: ${currentCallId}`);
-  
-  if (!currentCallId) {
-    console.error('❌ Pas de callControlId dans l\'URL du stream');
-    ws.close();
-    return;
-  }
-  
-  // Stocker le stream dès la connexion
-  telnyxStreams.set(currentCallId, ws);
+  let currentCallId = null;
 
   ws.on('message', (message) => {
     try {
-      const data = JSON.parse(message);
+      // Vérifier si c'est un message binaire ou JSON
+      if (Buffer.isBuffer(message)) {
+        // Audio binaire reçu de Telnyx
+        if (currentCallId) {
+          const audioBase64 = message.toString('base64');
+          sendAudioToFrontend(currentCallId, audioBase64);
+        }
+        return;
+      }
+
+      // Message JSON
+      const data = JSON.parse(message.toString());
+      
+      // Log pour déboguer les messages Telnyx
+      if (data.event === 'start') {
+        console.log('📨 Message Telnyx start:', JSON.stringify(data, null, 2));
+      }
       
       switch(data.event) {
         case 'start':
-          console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
+          // Telnyx envoie le call_control_id dans le message start
+          currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id;
+          
+          if (currentCallId) {
+            telnyxStreams.set(currentCallId, ws);
+            console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
+          } else {
+            console.error('❌ Pas de call_control_id dans le message start:', data);
+          }
           break;
           
         case 'media':
-          // Audio reçu de Telnyx (voix du receiver)
+          // Audio reçu de Telnyx (voix du receiver) au format JSON
           if (currentCallId && data.media && data.media.payload) {
             sendAudioToFrontend(currentCallId, data.media.payload);
           }
@@ -101,6 +114,9 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
         payload: audioPayload
       }
     }));
+    console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} bytes)`);
+  } else {
+    console.log(`⚠️ Impossible d'envoyer audio - Stream non disponible pour ${callControlId}`);
   }
 }
 
