@@ -165,7 +165,9 @@ function receiveAudioFromTelnyx(callControlId, audioData) {
 // Envoyer un message TTS à l'appelé quand il répond
 async function speakOnCall(callControlId, message) {
   try {
-    await telnyx.calls.speak(callControlId, {
+    // Syntaxe correcte de l'API Telnyx pour speak
+    await telnyx.calls.speak({
+      call_control_id: callControlId,
       payload: message,
       voice: 'female',
       language: 'fr-FR'
@@ -173,6 +175,7 @@ async function speakOnCall(callControlId, message) {
     console.log('🗣️ Message TTS envoyé:', message);
   } catch (error) {
     console.error('❌ Erreur TTS:', error);
+    console.error('Détails:', error.message);
   }
 }
 
