@@ -11,10 +11,25 @@ function handleTelnyxMediaStream(ws, req) {
   let currentCallId = null;
 
   ws.on('message', (message) => {
+    console.log(`📩 Message reçu de Telnyx (type: ${Buffer.isBuffer(message) ? 'Buffer' : typeof message}, length: ${message.length})`);
+    
     try {
       // Vérifier si c'est un message binaire ou JSON
       if (Buffer.isBuffer(message)) {
-        // Audio binaire reçu de Telnyx
+        // Essayer de parser en JSON d'abord
+        const strMessage = message.toString('utf8');
+        
+        // Si ça ressemble à du JSON, essayer de le parser
+        if (strMessage.startsWith('{')) {
+          const data = JSON.parse(strMessage);
+          console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+          
+          // Traiter comme un message JSON
+          handleJsonMessage(data);
+          return;
+        }
+        
+        // Sinon, c'est de l'audio binaire
         if (currentCallId) {
           const audioBase64 = message.toString('base64');
           sendAudioToFrontend(currentCallId, audioBase64);
@@ -22,46 +37,48 @@ function handleTelnyxMediaStream(ws, req) {
         return;
       }
 
-      // Message JSON
+      // Message JSON string
       const data = JSON.parse(message.toString());
-      
-      // Log pour déboguer les messages Telnyx
-      if (data.event === 'start') {
-        console.log('📨 Message Telnyx start:', JSON.stringify(data, null, 2));
-      }
-      
-      switch(data.event) {
-        case 'start':
-          // Telnyx envoie le call_control_id dans le message start
-          currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id;
-          
-          if (currentCallId) {
-            telnyxStreams.set(currentCallId, ws);
-            console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
-          } else {
-            console.error('❌ Pas de call_control_id dans le message start:', data);
-          }
-          break;
-          
-        case 'media':
-          // Audio reçu de Telnyx (voix du receiver) au format JSON
-          if (currentCallId && data.media && data.media.payload) {
-            sendAudioToFrontend(currentCallId, data.media.payload);
-          }
-          break;
-          
-        case 'stop':
-          console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
-          telnyxStreams.delete(currentCallId); // Retirer le stream
-          break;
-      }
+      console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+      handleJsonMessage(data);
     } catch (error) {
-      console.error('❌ Erreur Media Stream:', error);
+      console.error('❌ Erreur parsing message Telnyx:', error);
+      console.error('Message brut:', message.toString('utf8').substring(0, 200));
     }
   });
+  
+  // Fonction pour traiter les messages JSON
+  function handleJsonMessage(data) {
+    switch(data.event) {
+      case 'start':
+        // Telnyx envoie le call_control_id dans le message start
+        currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id;
+        
+        if (currentCallId) {
+          telnyxStreams.set(currentCallId, ws);
+          console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
+        } else {
+          console.error('❌ Pas de call_control_id dans le message start:', data);
+        }
+        break;
+        
+      case 'media':
+        // Audio reçu de Telnyx (voix du receiver) au format JSON
+        if (currentCallId && data.media && data.media.payload) {
+          sendAudioToFrontend(currentCallId, data.media.payload);
+        }
+        break;
+        
+      case 'stop':
+        console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
+        telnyxStreams.delete(currentCallId); // Retirer le stream
+        break;
+    }
+  }
+  });
 
-  ws.on('close', () => {
-    console.log('🔌 Telnyx Media Stream déconnecté');
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 Telnyx Media Stream déconnecté - Code: ${code}, Raison: ${reason}`);
     if (currentCallId) {
       telnyxStreams.delete(currentCallId);
     }
