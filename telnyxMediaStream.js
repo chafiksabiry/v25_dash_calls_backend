@@ -6,9 +6,20 @@ let telnyxStreams = new Map(); // Map des streams Telnyx par call_control_id
 
 // Gérer le Media Stream de Telnyx (audio bidirectionnel)
 function handleTelnyxMediaStream(ws, req) {
-  console.log('🎵 Telnyx Media Stream connecté');
+  // Extraire le call_control_id de l'URL
+  const url = new URL(req.url, 'wss://localhost');
+  const currentCallId = url.searchParams.get('callControlId');
   
-  let currentCallId = null;
+  console.log(`🎵 Telnyx Media Stream connecté pour call: ${currentCallId}`);
+  
+  if (!currentCallId) {
+    console.error('❌ Pas de callControlId dans l\'URL du stream');
+    ws.close();
+    return;
+  }
+  
+  // Stocker le stream dès la connexion
+  telnyxStreams.set(currentCallId, ws);
 
   ws.on('message', (message) => {
     try {
@@ -16,8 +27,6 @@ function handleTelnyxMediaStream(ws, req) {
       
       switch(data.event) {
         case 'start':
-          currentCallId = data.call_control_id;
-          telnyxStreams.set(currentCallId, ws); // Stocker le stream Telnyx
           console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
           break;
           
@@ -31,7 +40,6 @@ function handleTelnyxMediaStream(ws, req) {
         case 'stop':
           console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
           telnyxStreams.delete(currentCallId); // Retirer le stream
-          currentCallId = null;
           break;
       }
     } catch (error) {

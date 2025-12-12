@@ -22,19 +22,23 @@ function initializeAudioServer(server) {
       console.log('Initiation appel:', from, '->', to);
 
       try {
-        // Créer l'appel avec Telnyx Call Control + Media Stream
+        // Créer l'appel avec Telnyx Call Control
         const call = await telnyx.calls.create({
           connection_id: process.env.TELNYX_APPLICATION_ID || process.env.TELNYX_CONNECTION_ID,
           to: to,
           from: from,
           webhook_url: process.env.WEBHOOK_URL || 'https://api-calls.harx.ai/webhook',
-          webhook_url_method: 'POST',
-          // Activer le streaming audio bidirectionnel
-          stream_url: 'wss://api-calls.harx.ai/audio-stream',
-          stream_track: 'both_tracks'
+          webhook_url_method: 'POST'
         });
 
         const callControlId = call.data.call_control_id;
+        
+        // Démarrer le Media Stream avec le call_control_id dans l'URL
+        await telnyx.calls.streamStart({
+          call_control_id: callControlId,
+          stream_url: `wss://api-calls.harx.ai/audio-stream?callControlId=${callControlId}`,
+          stream_track: 'both_tracks'
+        });
         
         // Stocker l'appel actif
         activeCalls.set(callControlId, {
