@@ -38,14 +38,17 @@ function handleTelnyxMediaStream(ws, req) {
         
       case 'media':
         // Audio reçu de Telnyx (voix du receiver)
-        // Telnyx envoie PCMA (A-Law), Frontend attend PCMU (u-Law) -> CONVERSION REQUISE
+        // Telnyx envoie PCMA (A-Law), Frontend attend PCMU (u-Law) → CONVERSION REQUISE
         if (currentCallId && data.media && data.media.payload) {
           try {
             const alawBuffer = Buffer.from(data.media.payload, 'base64');
             const mulawBuffer = alawToMulaw(alawBuffer);
-            sendAudioToFrontend(currentCallId, mulawBuffer.toString('base64'));
-          } catch (err) {
-            console.error('❌ Erreur conversion A-Law -> u-Law:', err.message);
+            const mulawPayload = mulawBuffer.toString('base64');
+            sendAudioToFrontend(currentCallId, mulawPayload);
+          } catch (error) {
+            console.error('❌ Erreur conversion A-Law → u-Law:', error);
+            // En cas d'erreur, essayer sans conversion (peut fonctionner si Telnyx change de format)
+            sendAudioToFrontend(currentCallId, data.media.payload);
           }
         }
         break;
@@ -88,17 +91,18 @@ function handleTelnyxMediaStream(ws, req) {
         }
         
         // Sinon, c'est de l'audio binaire (Raw PCMA de Telnyx)
+        // Conversion A-Law → u-Law pour le frontend
         if (currentCallId) {
           try {
-            // CONVERSION A-Law (PCMA) -> u-Law (PCMU)
-            const mulawBuffer = alawToMulaw(message);
+            const alawBuffer = message; // C'est déjà un Buffer
+            const mulawBuffer = alawToMulaw(alawBuffer);
             const audioBase64 = mulawBuffer.toString('base64');
             sendAudioToFrontend(currentCallId, audioBase64);
             
-            if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (BINAIRE CONVERTI)');
+            if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO BINAIRE REÇU (converti A→u)');
             receivedPacketCount++;
-          } catch (err) {
-            console.error('❌ Erreur conversion binaire A-Law -> u-Law:', err.message);
+          } catch (error) {
+            console.error('❌ Erreur conversion binaire:', error);
           }
         }
         return;
@@ -173,22 +177,26 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
   const telnyxWs = telnyxStreams.get(callControlId);
   
   if (telnyxWs && telnyxWs.readyState === WebSocket.OPEN) {
-    // CONVERSION : Frontend envoie u-Law (PCMU), Telnyx attend A-Law (PCMA)
-    const ulawBuffer = Buffer.from(audioPayload, 'base64');
-    const alawBuffer = mulawToAlaw(ulawBuffer);
-    const alawPayload = alawBuffer.toString('base64');
-    
-    telnyxWs.send(JSON.stringify({
-      event: 'media',
-      media: {
-        payload: alawPayload
+    // CONVERSION REQUISE : Frontend envoie u-Law (PCMU), Telnyx attend PCMA (A-Law)
+    try {
+      const ulawBuffer = Buffer.from(audioPayload, 'base64');
+      const alawBuffer = mulawToAlaw(ulawBuffer);
+      const alawPayload = alawBuffer.toString('base64');
+      
+      telnyxWs.send(JSON.stringify({
+        event: 'media',
+        media: {
+          payload: alawPayload
+        }
+      }));
+      
+      if (sentPacketCount % 50 === 0) {
+        console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars → converti u→A)`);
       }
-    }));
-    
-    if (sentPacketCount % 50 === 0) { // Moins de logs
-      console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars -> converted)`);
+      sentPacketCount++;
+    } catch (error) {
+      console.error('❌ Erreur conversion u-Law → A-Law:', error);
     }
-    sentPacketCount++;
   }
 }
 

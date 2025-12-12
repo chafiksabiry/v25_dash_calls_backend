@@ -181,7 +181,7 @@ app.post('/webhook', (req, res) => {
         // 1. Démarrer l'enregistrement
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
           format: 'mp3',
-          channels: 'single'
+          channels: 'dual'
         }, {
           headers: {
             'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
