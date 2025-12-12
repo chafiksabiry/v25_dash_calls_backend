@@ -9,6 +9,35 @@ function handleTelnyxMediaStream(ws, req) {
   console.log('🎵 Telnyx Media Stream connecté');
   
   let currentCallId = null;
+  
+  // Fonction pour traiter les messages JSON
+  function handleJsonMessage(data) {
+    switch(data.event) {
+      case 'start':
+        // Telnyx envoie le call_control_id dans le message start
+        currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id;
+        
+        if (currentCallId) {
+          telnyxStreams.set(currentCallId, ws);
+          console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
+        } else {
+          console.error('❌ Pas de call_control_id dans le message start:', data);
+        }
+        break;
+        
+      case 'media':
+        // Audio reçu de Telnyx (voix du receiver) au format JSON
+        if (currentCallId && data.media && data.media.payload) {
+          sendAudioToFrontend(currentCallId, data.media.payload);
+        }
+        break;
+        
+      case 'stop':
+        console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
+        telnyxStreams.delete(currentCallId); // Retirer le stream
+        break;
+    }
+  }
 
   ws.on('message', (message) => {
     console.log(`📩 Message reçu de Telnyx (type: ${Buffer.isBuffer(message) ? 'Buffer' : typeof message}, length: ${message.length})`);
@@ -45,36 +74,6 @@ function handleTelnyxMediaStream(ws, req) {
       console.error('❌ Erreur parsing message Telnyx:', error);
       console.error('Message brut:', message.toString('utf8').substring(0, 200));
     }
-  });
-  
-  // Fonction pour traiter les messages JSON
-  function handleJsonMessage(data) {
-    switch(data.event) {
-      case 'start':
-        // Telnyx envoie le call_control_id dans le message start
-        currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id;
-        
-        if (currentCallId) {
-          telnyxStreams.set(currentCallId, ws);
-          console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
-        } else {
-          console.error('❌ Pas de call_control_id dans le message start:', data);
-        }
-        break;
-        
-      case 'media':
-        // Audio reçu de Telnyx (voix du receiver) au format JSON
-        if (currentCallId && data.media && data.media.payload) {
-          sendAudioToFrontend(currentCallId, data.media.payload);
-        }
-        break;
-        
-      case 'stop':
-        console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
-        telnyxStreams.delete(currentCallId); // Retirer le stream
-        break;
-    }
-  }
   });
 
   ws.on('close', (code, reason) => {
