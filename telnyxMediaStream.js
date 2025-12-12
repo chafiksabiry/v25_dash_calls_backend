@@ -164,18 +164,20 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
   const telnyxWs = telnyxStreams.get(callControlId);
   
   if (telnyxWs && telnyxWs.readyState === WebSocket.OPEN) {
-    // PLUS DE CONVERSION : Frontend envoie u-Law (PCMU), Telnyx attend PCMU (car demandé)
-    // On transfère tel quel
+    // CONVERSION : Frontend envoie u-Law (PCMU), Telnyx attend A-Law (PCMA)
+    const ulawBuffer = Buffer.from(audioPayload, 'base64');
+    const alawBuffer = mulawToAlaw(ulawBuffer);
+    const alawPayload = alawBuffer.toString('base64');
     
     telnyxWs.send(JSON.stringify({
       event: 'media',
       media: {
-        payload: audioPayload
+        payload: alawPayload
       }
     }));
     
     if (sentPacketCount % 50 === 0) { // Moins de logs
-      console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars)`);
+      console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars -> converted)`);
     }
     sentPacketCount++;
   }
