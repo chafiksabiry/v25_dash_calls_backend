@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 const { activeCalls } = require('./audioServer');
-const { alawToMulaw, mulawToAlaw } = require('./g711');
+// const { alawToMulaw, mulawToAlaw } = require('./g711'); // Conversion désactivée car on demande PCMU
 
 let io; // Référence Socket.IO
 let telnyxStreams = new Map(); // Map des streams Telnyx par call_control_id
@@ -26,20 +26,25 @@ function handleTelnyxMediaStream(ws, req) {
         if (currentCallId) {
           telnyxStreams.set(currentCallId, ws);
           console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
+          
+          // Log du format média négocié
+          if (data.start && data.start.media_format) {
+             console.log('ℹ️ Format média Telnyx négocié:', JSON.stringify(data.start.media_format));
+          }
         } else {
           console.error('❌ Pas de call_control_id dans le message start:', JSON.stringify(data, null, 2));
         }
         break;
         
       case 'media':
-        // NOTE: Le traitement media est maintenant fait en amont pour la conversion
-        // Ce case reste pour backup si le code du dessus est contourné
+        // Audio reçu de Telnyx (voix du receiver)
+        // On a demandé PCMU, donc on reçoit du u-Law directement.
+        // On transfère tel quel au frontend qui attend du u-Law.
         if (currentCallId && data.media && data.media.payload) {
-           // Conversion de secours si nécessaire
-           const alawBuffer = Buffer.from(data.media.payload, 'base64');
-           const mulawBuffer = alawToMulaw(alawBuffer);
-           sendAudioToFrontend(currentCallId, mulawBuffer.toString('base64'));
-        } 
+          sendAudioToFrontend(currentCallId, data.media.payload);
+        } else if (data.media && !currentCallId) {
+          // console.log('⚠️ Media reçu mais pas de currentCallId');
+        }
         break;
         
       case 'stop':
@@ -48,7 +53,8 @@ function handleTelnyxMediaStream(ws, req) {
         break;
         
       default:
-        console.log(`⚠️ Événement Telnyx non géré: ${data.event}`, JSON.stringify(data, null, 2));
+        // Ignorer les autres événements pour ne pas polluer
+        // console.log(`⚠️ Événement Telnyx non géré: ${data.event}`);
         break;
     }
   }
@@ -66,61 +72,40 @@ function handleTelnyxMediaStream(ws, req) {
         if (strMessage.startsWith('{')) {
           const data = JSON.parse(strMessage);
           
-          // Log TOUS les messages media pour debug
-          if (data.event === 'media') {
-            if (receivedPacketCount === 0) {
-              console.log('🎧 PREMIER MESSAGE MEDIA REÇU DE TELNYX !', JSON.stringify(data, null, 2));
-            } else if (receivedPacketCount % 10 === 0) {
-              console.log(`📨 Audio reçu de Telnyx (packet #${receivedPacketCount})`);
-            }
-            receivedPacketCount++;
-          } else {
+          // Log pour debug (uniquement start/stop ou erreur)
+          if (data.event !== 'media') {
             console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
+          } else {
+             if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (JSON)');
+             receivedPacketCount++;
           }
           
-          // Traiter comme un message JSON
           handleJsonMessage(data);
           return;
         }
         
-        // Sinon, c'est de l'audio binaire
+        // Sinon, c'est de l'audio binaire (Raw PCMU car demandé)
         if (currentCallId) {
-          const audioBuffer = message; // C'est déjà un buffer
-          
-          // CONVERSION : Telnyx envoie A-Law (PCMA), Frontend attend u-Law (PCMU)
-          const mulawBuffer = alawToMulaw(audioBuffer);
-          const audioBase64 = mulawBuffer.toString('base64');
-          
+          const audioBase64 = message.toString('base64');
           sendAudioToFrontend(currentCallId, audioBase64);
-          console.log('🎧 Audio binaire reçu de Telnyx (converti)');
+          
+          if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (BINAIRE)');
+          receivedPacketCount++;
         }
         return;
       }
 
       // Message JSON string
       const data = JSON.parse(message.toString());
-      if (data.event === 'media' && data.media && data.media.payload) {
-        if (currentCallId) {
-           // CONVERSION : Telnyx envoie A-Law (PCMA), Frontend attend u-Law (PCMU)
-           const alawBuffer = Buffer.from(data.media.payload, 'base64');
-           const mulawBuffer = alawToMulaw(alawBuffer);
-           const audioBase64 = mulawBuffer.toString('base64');
-           
-           // Remplacer le payload par la version convertie avant envoi
-           sendAudioToFrontend(currentCallId, audioBase64);
-        }
-        return; // Ne pas appeler handleJsonMessage pour 'media' car on l'a déjà traité
-      }
-
       if (data.event !== 'media') {
         console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
       } else {
-        console.log('🎧 Message media reçu (string)');
+         if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (STRING)');
+         receivedPacketCount++;
       }
       handleJsonMessage(data);
     } catch (error) {
       console.error('❌ Erreur parsing message Telnyx:', error);
-      console.error('Message brut:', message.toString('utf8').substring(0, 200));
     }
   });
 
@@ -153,10 +138,7 @@ function handleTelnyxMediaStream(ws, req) {
 // Envoyer l'audio au client frontend via Socket.IO
 let frontendSentCount = 0;
 function sendAudioToFrontend(callControlId, audioPayload) {
-  if (!io) {
-    console.log('⚠️ IO not available pour sendAudioToFrontend');
-    return;
-  }
+  if (!io) return;
   
   const call = activeCalls.get(callControlId);
   if (call) {
@@ -168,18 +150,10 @@ function sendAudioToFrontend(callControlId, audioPayload) {
         timestamp: Date.now()
       });
       
-      // Log tous les 10 packets
-      if (frontendSentCount % 10 === 0) {
+      if (frontendSentCount % 50 === 0) { // Moins de logs
         console.log(`📤 Audio envoyé au frontend (#${frontendSentCount}, ${audioPayload.length} chars)`);
       }
       frontendSentCount++;
-    } else {
-      console.log('⚠️ Socket not found pour call', callControlId);
-    }
-  } else {
-    // Supprimer le log excessif "Call not found" car cela arrive souvent au démarrage
-    if (frontendSentCount % 100 === 0) {
-      console.log('⚠️ Call not found dans activeCalls pour', callControlId);
     }
   }
 }
@@ -190,34 +164,20 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
   const telnyxWs = telnyxStreams.get(callControlId);
   
   if (telnyxWs && telnyxWs.readyState === WebSocket.OPEN) {
-    // CONVERSION : Frontend envoie u-Law (PCMU), Telnyx attend A-Law (PCMA)
-    // 1. Décoder base64 vers Buffer
-    const ulawBuffer = Buffer.from(audioPayload, 'base64');
+    // PLUS DE CONVERSION : Frontend envoie u-Law (PCMU), Telnyx attend PCMU (car demandé)
+    // On transfère tel quel
     
-    // 2. Convertir u-Law vers A-Law
-    const alawBuffer = mulawToAlaw(ulawBuffer);
-    
-    // 3. Encoder en base64 pour Telnyx
-    const alawPayload = alawBuffer.toString('base64');
-
     telnyxWs.send(JSON.stringify({
       event: 'media',
       media: {
-        payload: alawPayload
+        payload: audioPayload
       }
     }));
     
-    // Log tous les 10 packets
-    if (sentPacketCount % 10 === 0) {
-      console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars -> converted)`);
+    if (sentPacketCount % 50 === 0) { // Moins de logs
+      console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars)`);
     }
     sentPacketCount++;
-  } else {
-    // Supprimer le log "Stream non disponible" excessif
-    // On ne log que si ça persiste longtemps ou sur changement d'état
-    if (sentPacketCount % 100 === 0) {
-      // console.log(`⚠️ Stream non disponible pour ${callControlId}`);
-    }
   }
 }
 
@@ -230,4 +190,3 @@ module.exports = {
   sendAudioToTelnyx,
   setIO
 };
-

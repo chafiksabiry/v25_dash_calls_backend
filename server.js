@@ -174,14 +174,34 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.answered':
         status = 'active';
-        // L'appel est actif, démarrer le Media Stream maintenant
-        console.log('✅ Appel répondu - Démarrage du Media Stream...');
+          // L'appel est actif, démarrer le Media Stream maintenant
+        console.log('✅ Appel répondu - Démarrage de l\'enregistrement et du Media Stream...');
+
+        // 1. Démarrer l'enregistrement
+        axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
+          format: 'mp3',
+          channels: 'dual'
+        }, {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        }).then(() => {
+          console.log(`🎙️ Enregistrement démarré pour ${callControlId}`);
+        }).catch(err => {
+          console.error('❌ Erreur démarrage enregistrement:', err.response?.data || err.message);
+        });
         
-        // Démarrer le streaming audio bidirectionnel
-        // Utiliser l'API HTTP directement car le SDK peut ne pas avoir cette méthode
+        // 2. Démarrer le streaming audio bidirectionnel
+        // Demander explicitement du PCMU (u-Law) pour éviter la conversion manuelle
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
           stream_url: 'wss://api-calls.harx.ai/audio-stream',
           stream_track: 'inbound_track',
+          media_format: {
+            encoding: 'PCMU',
+            sample_rate: 8000,
+            channels: 1
+          },
           enable_dialogflow: false,
           client_state: Buffer.from(JSON.stringify({ callControlId })).toString('base64')
         }, {
