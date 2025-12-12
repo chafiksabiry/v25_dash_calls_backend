@@ -42,11 +42,24 @@ function handleTelnyxMediaStream(ws, req) {
         if (currentCallId && data.media && data.media.payload) {
           try {
             const alawBuffer = Buffer.from(data.media.payload, 'base64');
+            if (alawBuffer.length === 0) {
+              console.log('⚠️ Buffer A-Law vide');
+              return;
+            }
             const mulawBuffer = alawToMulaw(alawBuffer);
+            if (mulawBuffer.length === 0) {
+              console.log('⚠️ Buffer u-Law vide après conversion');
+              return;
+            }
             sendAudioToFrontend(currentCallId, mulawBuffer.toString('base64'));
           } catch (err) {
             console.error('❌ Erreur conversion A-Law -> u-Law:', err.message);
+            console.error('Stack:', err.stack);
           }
+        } else {
+          if (!currentCallId) console.log('⚠️ Media reçu mais pas de currentCallId');
+          if (!data.media) console.log('⚠️ Media reçu mais pas de data.media');
+          if (!data.media?.payload) console.log('⚠️ Media reçu mais pas de payload');
         }
         break;
         
@@ -75,12 +88,17 @@ function handleTelnyxMediaStream(ws, req) {
         if (strMessage.startsWith('{')) {
           const data = JSON.parse(strMessage);
           
-          // Log pour debug (uniquement start/stop ou erreur)
+          // Log pour debug
           if (data.event !== 'media') {
             console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
           } else {
-             if (receivedPacketCount === 0) console.log('🎧 PREMIER AUDIO REÇU (JSON)');
+             if (receivedPacketCount === 0) {
+               console.log('🎧 PREMIER AUDIO REÇU (JSON)', JSON.stringify(data, null, 2).substring(0, 200));
+             }
              receivedPacketCount++;
+             if (receivedPacketCount % 10 === 0) {
+               console.log(`🎧 Audio reçu de Telnyx (packet #${receivedPacketCount})`);
+             }
           }
           
           handleJsonMessage(data);
@@ -106,7 +124,15 @@ function handleTelnyxMediaStream(ws, req) {
 
       // Message JSON string
       const data = JSON.parse(message.toString());
-      if (data.event !== 'media') {
+      if (data.event === 'media') {
+        if (receivedPacketCount === 0) {
+          console.log('🎧 PREMIER AUDIO REÇU (STRING)', JSON.stringify(data, null, 2).substring(0, 200));
+        }
+        receivedPacketCount++;
+        if (receivedPacketCount % 10 === 0) {
+          console.log(`🎧 Audio reçu de Telnyx (packet #${receivedPacketCount})`);
+        }
+      } else {
         console.log('📨 Message JSON Telnyx:', JSON.stringify(data, null, 2));
       }
       handleJsonMessage(data);
@@ -156,7 +182,7 @@ function sendAudioToFrontend(callControlId, audioPayload) {
         timestamp: Date.now()
       });
       
-      if (frontendSentCount % 50 === 0) { // Moins de logs
+      if (frontendSentCount === 0 || frontendSentCount % 50 === 0) {
         console.log(`📤 Audio envoyé au frontend (#${frontendSentCount}, ${audioPayload.length} chars)`);
       }
       frontendSentCount++;
