@@ -1,61 +1,33 @@
-FROM node:18
+# Backend Dockerfile - Telnyx Call Manager
+FROM node:18-alpine
 
+# Définir le répertoire de travail
 WORKDIR /app
 
+# Copier les fichiers de dépendances
 COPY package*.json ./
 
-RUN npm install
+# Installer les dépendances
+RUN npm ci --only=production
 
+# Copier le code source
 COPY . .
 
-ENV MONGODB_URI=mongodb://harx:gcZ62rl8hoME@38.242.208.242:27018/V25_CompanySearchWizard
-ENV PORT=5006
-ENV OVH_APPLICATION_KEY=951ed23a2d85dc98
-ENV OVH_APPLICATION_SECRET=f084e28c889418c3093aed237a8b7198
-ENV OVH_DEFAULT_NUMBER=+33183643948
-ENV OVH_CONSUMER_KEY1=10b0ff940492f37a012605512e54cc85
-
-ENV OVH_APP_KEY=951ed23a2d85dc98
-ENV OVH_APP_SECRET=f084e28c889418c3093aed237a8b7198
-ENV OVH_CONSUMER_KEY=f0571ddbe535f8b38c02274b577165cf
-ENV OVH_SERVICE_NAME=sc899836-ovh-1
-ENV OVH_BILLING_ACCOUNT=sc899836-ovh
-
-
-#twilio calls
-ENV TWILIO_APP_SID=AP19e09bae9f403a65fc515a281a7cee51
-ENV TWILIO_ACCOUNT_SID=AC8a453959a6cb01cbbd1c819b00c5782f
-ENV TWILIO_AUTH_TOKEN=7ade91a170bff98bc625543287ee62c8
-ENV TWILIO_API_KEY=SK908469d0b7edc841c8782bf0b53627a1
-ENV TWILIO_API_SECRET=JHobczfW647YMOJqA2BBxcQqylu5FLYA
-ENV TWILIO_PHONE_NUMBER=+16185185941
-
-#cloudinary
-ENV CLOUDINARY_CLOUD_NAME=dyqg8x26j
-ENV CLOUDINARY_API_KEY=981166483223979
-ENV CLOUDINARY_API_SECRET=i3nxRvfOF1jjfLzMHKE8mP4aXVM
-
-#integration twilio
-ENV INTEGRATIONS_SERVICE_URL=https://api-dash-integrations.harx.ai
-
-#qalqul
-ENV QALQUL_API=https://digital-works.qalqul.io/discovery/v1/calls
-ENV QALQUL_KEY=k0HDn140xJM6WGoAMmX2U.17084ed7cc245f6d9f707538ebd90d60
-
-#openai
-ENV OPENAI_API_KEY=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
-
-#vertex
-ENV GOOGLE_CLOUD_PROJECT=harx-technologies-inc
-ENV GOOGLE_CLOUD_LOCATION=us-central1
-ENV GOOGLE_APPLICATION_CREDENTIALS=./config/vertex-service-account.json
-
-#telnyx
 ENV TELNYX_API_KEY=KEY019690D1904628BDD9BA5E852B56E231_pje6tiJqaeCqb5uD9Z586f
 ENV TELNYX_APPLICATION_ID=2800936068575135000
-ENV TELNYX_PUBLIC_KEY=p6hE3S51+5lFB/wyde20BZjcamw1QGBMUrBjQp3oe1A=
-ENV TELNYX_WEBHOOK_URL=https://api-calls.harx.ai/api/calls/telnyx/webhook
+ENV WEBHOOK_URL=https://api-calls.harx.ai/webhook
+ENV TELNYX_MEDIA_STREAM_URL=wss://https://api-calls.harx.ai/audio-stream
+ENV NODE_ENV=production
+ENV PORT=5006
+
+# Exposer le port
 EXPOSE 5006
 
-CMD ["npm", "start"]
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('https://api-calls.harx.ai/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+
+# Démarrer l'application
+CMD ["node", "server.js"]
 

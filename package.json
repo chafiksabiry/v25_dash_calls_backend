@@ -1,32 +1,25 @@
 {
-  "name": "harx-backend",
+  "name": "telnyx-backend",
   "version": "1.0.0",
-  "description": "Backend for HARX application",
-  "main": "src/app.js",
+  "description": "Backend Node.js pour les appels Telnyx",
+  "main": "server.js",
   "scripts": {
-    "start": "node src/app.js",
-    "dev": "nodemon src/app.js",
-    "test": "jest"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
+  "keywords": ["telnyx", "voip", "calls"],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "@google-cloud/speech": "^7.0.0",
-    "@google-cloud/vertexai": "^1.9.3",
-    "bcryptjs": "^2.4.3",
-    "cloudinary": "^2.5.1",
+    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.18.3",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.2.0",
-    "node-fetch": "^2.7.0",
-    "openai": "^4.87.3",
-    "ovh": "^2.0.3",
-    "telnyx": "^1.25.5",
-    "twilio": "^5.8.0",
-    "ws": "^8.18.1"
+    "dotenv": "^16.3.1",
+    "telnyx": "^2.0.0",
+    "ws": "^8.14.2",
+    "socket.io": "^4.6.1"
   },
   "devDependencies": {
-    "jest": "^29.7.0",
-    "nodemon": "^3.1.9"
+    "nodemon": "^3.0.1"
   }
 }
+
