@@ -19,11 +19,12 @@ const { initializeAudioServer, updateCallStatus, getIO } = require('./audioServe
 initializeAudioServer(server);
 
 // Initialiser le serveur Media Stream WebSocket (pour Telnyx audio)
-const { initializeMediaStreamServer } = require('./mediaStreamServer');
+// TEMPORAIREMENT DÉSACTIVÉ - Cause "Invalid frame header"
+// const { initializeMediaStreamServer } = require('./mediaStreamServer');
 // Attendre que Socket.IO soit initialisé
-setTimeout(() => {
-  initializeMediaStreamServer(server, getIO());
-}, 100);
+// setTimeout(() => {
+//   initializeMediaStreamServer(server, getIO());
+// }, 100);
 
 // Numéro Telnyx
 const TELNYX_NUMBER = '+33423340775';
