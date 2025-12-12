@@ -22,14 +22,16 @@ function initializeAudioServer(server) {
       console.log('Initiation appel:', from, '->', to);
 
       try {
-        // Créer l'appel avec Telnyx Call Control
+        // Créer l'appel avec Telnyx Call Control + Media Stream
         const call = await telnyx.calls.create({
           connection_id: process.env.TELNYX_APPLICATION_ID || process.env.TELNYX_CONNECTION_ID,
           to: to,
           from: from,
           webhook_url: process.env.WEBHOOK_URL || 'https://api-calls.harx.ai/webhook',
-          webhook_url_method: 'POST'
-          // Note: Audio TTS sera ajouté via call.speak() quand l'appel est répondu
+          webhook_url_method: 'POST',
+          // Activer le streaming audio bidirectionnel
+          stream_url: 'wss://api-calls.harx.ai/audio-stream',
+          stream_track: 'both_tracks'
         });
 
         const callControlId = call.data.call_control_id;
@@ -62,13 +64,14 @@ function initializeAudioServer(server) {
       }
     });
 
-    // Événement : Envoyer de l'audio au serveur
+    // Événement : Recevoir de l'audio du frontend (microphone)
     socket.on('audio-data', (data) => {
       const { callControlId, audioChunk } = data;
       
-      // Transférer l'audio vers Telnyx (RTP/PCMU)
+      // Transférer l'audio vers Telnyx via Media Stream
       if (activeCalls.has(callControlId)) {
-        forwardAudioToTelnyx(callControlId, audioChunk);
+        const { sendAudioToTelnyx } = require('./telnyxMediaStream');
+        sendAudioToTelnyx(callControlId, audioChunk);
       }
     });
 
@@ -78,8 +81,10 @@ function initializeAudioServer(server) {
       console.log('📴 Terminer appel:', callControlId);
 
       try {
-        // Terminer l'appel via Telnyx
-        await telnyx.calls.hangup(callControlId);
+        // Terminer l'appel via Telnyx (syntaxe correcte)
+        await telnyx.calls.hangup({
+          call_control_id: callControlId
+        });
         
         activeCalls.delete(callControlId);
         
@@ -98,13 +103,19 @@ function initializeAudioServer(server) {
       const { callControlId, muted } = data;
       
       try {
+        // Syntaxe correcte pour l'API Telnyx
         if (muted) {
-          await telnyx.calls.mute(callControlId);
+          await telnyx.calls.mute({
+            call_control_id: callControlId
+          });
         } else {
-          await telnyx.calls.unmute(callControlId);
+          await telnyx.calls.unmute({
+            call_control_id: callControlId
+          });
         }
         
         socket.emit('mute-status', { callControlId, muted });
+        console.log(`🔇 Mute: ${muted} pour call ${callControlId}`);
         
       } catch (error) {
         console.error('Erreur mute/unmute:', error);
@@ -117,7 +128,9 @@ function initializeAudioServer(server) {
       // Terminer tous les appels actifs de ce client
       for (const [callControlId, call] of activeCalls.entries()) {
         if (call.socketId === socket.id) {
-          telnyx.calls.hangup(callControlId).catch(console.error);
+          telnyx.calls.hangup({
+            call_control_id: callControlId
+          }).catch(console.error);
           activeCalls.delete(callControlId);
         }
       }
@@ -125,23 +138,12 @@ function initializeAudioServer(server) {
   });
 
   console.log('Serveur audio WebSocket initialise');
+  
+  return io; // Retourner l'instance pour utilisation ailleurs
 }
 
-// Transférer l'audio vers Telnyx (RTP/PCMU)
-function forwardAudioToTelnyx(callControlId, audioChunk) {
-  // Cette fonction envoie l'audio au stream Telnyx
-  // L'audio doit être encodé en PCMU (G.711 µ-law) à 8000Hz
-  
-  // Note: Telnyx gère le streaming via leur infrastructure
-  // On envoie les données via leur API de streaming
-  try {
-    // Le streaming audio réel est géré par Telnyx via le stream_url
-    // spécifié lors de la création de l'appel
-    console.log('Audio envoye pour call', callControlId, ':', audioChunk.length, 'bytes');
-  } catch (error) {
-    console.error('Erreur envoi audio:', error);
-  }
-}
+// Note: La fonction forwardAudioToTelnyx a été déplacée vers telnyxMediaStream.js
+// L'audio est maintenant envoyé via le Media Stream WebSocket
 
 // Recevoir de l'audio depuis Telnyx et l'envoyer au client
 function receiveAudioFromTelnyx(callControlId, audioData) {

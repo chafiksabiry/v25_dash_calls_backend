@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const WebSocket = require('ws');
+const url = require('url');
 require('dotenv').config();
 
 const app = express();
@@ -16,7 +18,28 @@ const telnyx = require('telnyx')(process.env.TELNYX_API_KEY);
 
 // Initialiser le serveur audio WebSocket (Socket.IO)
 const { initializeAudioServer, updateCallStatus, speakOnCall } = require('./audioServer');
-initializeAudioServer(server);
+const audioIO = initializeAudioServer(server);
+
+// Importer le handler Telnyx Media Stream
+const { handleTelnyxMediaStream, setIO } = require('./telnyxMediaStream');
+setIO(audioIO);
+
+// Gérer les upgrade requests pour le Media Stream
+server.on('upgrade', (request, socket, head) => {
+  const pathname = url.parse(request.url).pathname;
+  
+  console.log('🔌 Upgrade request:', pathname);
+  
+  // Route /audio-stream vers le handler Telnyx Media Stream
+  if (pathname === '/audio-stream') {
+    const wss = new WebSocket.Server({ noServer: true });
+    
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      handleTelnyxMediaStream(ws, request);
+    });
+  }
+  // Les autres routes (comme /socket.io/) sont gérées par Socket.IO automatiquement
+});
 
 // Numéro Telnyx
 const TELNYX_NUMBER = '+33423340775';
@@ -149,8 +172,8 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.answered':
         status = 'active';
-        // Faire parler un message TTS quand l'appel est répondu
-        speakOnCall(callControlId, 'Bonjour, ceci est un test du système d\'appels Telnyx. L\'audio fonctionne correctement.');
+        // L'appel est actif, l'audio bidirectionnel via Media Stream est maintenant disponible
+        console.log('✅ Appel actif - Audio bidirectionnel prêt');
         break;
       case 'call.hangup':
         status = 'ended';
