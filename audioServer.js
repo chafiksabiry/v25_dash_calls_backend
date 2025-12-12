@@ -119,22 +119,21 @@ function initializeAudioServer(server) {
       const { callControlId, muted } = data;
       
       try {
-        // Syntaxe correcte pour l'API Telnyx
-        if (muted) {
-          await telnyx.calls.mute({
-            call_control_id: callControlId
-          });
-        } else {
-          await telnyx.calls.unmute({
-            call_control_id: callControlId
-          });
-        }
+        const axios = require('axios');
+        const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/${muted ? 'mute' : 'unmute'}`;
+        
+        await axios.post(url, {}, {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        });
         
         socket.emit('mute-status', { callControlId, muted });
         console.log(`🔇 Mute: ${muted} pour call ${callControlId}`);
         
       } catch (error) {
-        console.error('Erreur mute/unmute:', error);
+        console.error('Erreur mute/unmute:', error.response?.data || error.message);
       }
     });
 
