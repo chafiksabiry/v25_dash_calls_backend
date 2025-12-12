@@ -18,10 +18,10 @@ ENV TELNYX_APPLICATION_ID=2800936068575135000
 ENV WEBHOOK_URL=https://api-calls.harx.ai/webhook
 ENV TELNYX_MEDIA_STREAM_URL=wss://https://api-calls.harx.ai/audio-stream
 ENV NODE_ENV=production
-ENV PORT=5007
+ENV PORT=5006
 
 # Exposer le port
-EXPOSE 5007
+EXPOSE 5006
 
 
 # Healthcheck
