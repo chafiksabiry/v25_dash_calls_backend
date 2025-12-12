@@ -49,17 +49,36 @@ function handleTelnyxMediaStream(ws, req) {
           break;
         }
         
+        // Vérifier le track (inbound = voix de l'interlocuteur, outbound = votre voix)
+        const track = data.media.track || 'unknown';
+        
         try {
           const alawBuffer = Buffer.from(data.media.payload, 'base64');
           const mulawBuffer = alawToMulaw(alawBuffer);
           const mulawPayload = mulawBuffer.toString('base64');
-          sendAudioToFrontend(currentCallId, mulawPayload);
           
-          // Log tous les 10 packets pour debug
-          if (receivedPacketCount % 10 === 0) {
-            console.log(`🎧 Audio media reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
+          // Envoyer seulement l'audio inbound (voix de l'interlocuteur) au frontend
+          if (track === 'inbound') {
+            sendAudioToFrontend(currentCallId, mulawPayload);
+            
+            // Log tous les 10 packets pour debug
+            if (receivedPacketCount % 10 === 0) {
+              console.log(`🎧 Audio inbound reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
+            }
+            receivedPacketCount++;
+          } else if (track === 'outbound') {
+            // Audio outbound = votre voix, on ne l'envoie pas au frontend (évite l'écho)
+            if (receivedPacketCount % 50 === 0) {
+              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}`);
+            }
+          } else {
+            // Track inconnu, envoyer quand même au cas où
+            sendAudioToFrontend(currentCallId, mulawPayload);
+            if (receivedPacketCount % 10 === 0) {
+              console.log(`🎧 Audio ${track} reçu et envoyé au frontend (packet #${receivedPacketCount})`);
+            }
+            receivedPacketCount++;
           }
-          receivedPacketCount++;
         } catch (error) {
           console.error('❌ Erreur conversion A-Law → u-Law:', error);
           // En cas d'erreur, essayer sans conversion (peut fonctionner si Telnyx change de format)
@@ -70,6 +89,10 @@ function handleTelnyxMediaStream(ws, req) {
       case 'stop':
         console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
         telnyxStreams.delete(currentCallId); // Retirer le stream
+        // Nettoyer le flag de stream démarré
+        if (global.startedStreams) {
+          global.startedStreams.delete(currentCallId);
+        }
         break;
         
       default:

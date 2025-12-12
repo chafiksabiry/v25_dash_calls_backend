@@ -177,16 +177,18 @@ app.post('/webhook', (req, res) => {
         status = 'active';
         
         // Vérifier si l'enregistrement/stream n'a pas déjà été démarré pour éviter les doublons
-        const callIndex = callHistory.findIndex(call => call.id === callControlId);
-        if (callIndex !== -1 && callHistory[callIndex].streamStarted) {
+        // Utiliser un Set global pour tracker les streams démarrés (plus fiable que callHistory)
+        if (!global.startedStreams) {
+          global.startedStreams = new Set();
+        }
+        
+        if (global.startedStreams.has(callControlId)) {
           console.log(`⚠️ Stream déjà démarré pour ${callControlId}, ignoré`);
           break;
         }
         
         // Marquer comme démarré pour éviter les doublons
-        if (callIndex !== -1) {
-          callHistory[callIndex].streamStarted = true;
-        }
+        global.startedStreams.add(callControlId);
         
         // L'appel est actif, démarrer le Media Stream maintenant
         console.log('✅ Appel répondu - Démarrage de l\'enregistrement et du Media Stream...');
@@ -208,12 +210,13 @@ app.post('/webhook', (req, res) => {
         });
         
         // 2. Démarrer le streaming audio bidirectionnel
+        // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
         // Demander explicitement du PCMA (A-Law) pour l'Europe
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
           stream_url: 'wss://api-calls.harx.ai/audio-stream',
-          stream_track: 'inbound_track',
+          stream_track: 'both_tracks', // CHANGED: both_tracks pour audio bidirectionnel complet
           media_format: {
-            encoding: 'PCMA', // CHANGED: PCMA pour A-Law (Europe)
+            encoding: 'PCMA', // PCMA pour A-Law (Europe)
             sample_rate: 8000,
             channels: 1
           },
@@ -235,6 +238,10 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.hangup':
         status = 'ended';
+        // Nettoyer le flag de stream démarré
+        if (global.startedStreams) {
+          global.startedStreams.delete(callControlId);
+        }
         // L'enregistrement s'arrêtera automatiquement quand l'appel se termine
         // Pas besoin d'appeler record_stop explicitement ici
         break;
