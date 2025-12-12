@@ -3,6 +3,7 @@ const cors = require('cors');
 const http = require('http');
 const WebSocket = require('ws');
 const url = require('url');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -172,8 +173,24 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.answered':
         status = 'active';
-        // L'appel est actif, l'audio bidirectionnel via Media Stream est maintenant disponible
-        console.log('✅ Appel actif - Audio bidirectionnel prêt');
+        // L'appel est actif, démarrer le Media Stream maintenant
+        console.log('✅ Appel répondu - Démarrage du Media Stream...');
+        
+        // Démarrer le streaming audio bidirectionnel
+        // Utiliser l'API HTTP directement car le SDK peut ne pas avoir cette méthode
+        axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
+          stream_url: 'wss://api-calls.harx.ai/audio-stream',
+          stream_track: 'both_tracks'
+        }, {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        }).then(response => {
+          console.log(`🎵 Media Stream démarré pour ${callControlId}`);
+        }).catch(err => {
+          console.error('❌ Erreur démarrage stream:', err.response?.data || err.message);
+        });
         break;
       case 'call.hangup':
         status = 'ended';

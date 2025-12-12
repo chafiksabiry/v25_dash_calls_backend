@@ -13,15 +13,20 @@ function handleTelnyxMediaStream(ws, req) {
   // Fonction pour traiter les messages JSON
   function handleJsonMessage(data) {
     switch(data.event) {
+      case 'connected':
+        // Première connexion établie - attendre le message "start"
+        console.log(`✅ Connexion Media Stream établie (version: ${data.version})`);
+        break;
+        
       case 'start':
         // Telnyx envoie le call_control_id dans le message start
-        currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id;
+        currentCallId = data.call_control_id || data.callControlId || data.metadata?.call_control_id || data.start?.call_control_id;
         
         if (currentCallId) {
           telnyxStreams.set(currentCallId, ws);
           console.log(`🎤 Stream démarré pour call: ${currentCallId}`);
         } else {
-          console.error('❌ Pas de call_control_id dans le message start:', data);
+          console.error('❌ Pas de call_control_id dans le message start:', JSON.stringify(data, null, 2));
         }
         break;
         
@@ -35,6 +40,10 @@ function handleTelnyxMediaStream(ws, req) {
       case 'stop':
         console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
         telnyxStreams.delete(currentCallId); // Retirer le stream
+        break;
+        
+      default:
+        console.log(`⚠️ Événement Telnyx non géré: ${data.event}`, JSON.stringify(data, null, 2));
         break;
     }
   }
