@@ -10,19 +10,8 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 
-// Middleware CORS - Autoriser les requêtes depuis le frontend
-app.use(cors({
-  origin: [
-    'https://copilot.harx.ai',
-    'http://localhost:3000',
-    'http://localhost:3001'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-// Middleware pour parser JSON
+// Middleware
+app.use(cors());
 app.use(express.json());
 
 // Configuration Telnyx
