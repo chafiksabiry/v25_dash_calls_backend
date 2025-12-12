@@ -179,9 +179,10 @@ app.post('/webhook', (req, res) => {
         console.log('✅ Appel répondu - Démarrage de l\'enregistrement et du Media Stream...');
 
         // 1. Démarrer l'enregistrement
+        // Utiliser 'single' au lieu de 'dual' pour éviter les problèmes avec les appels longs
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
           format: 'mp3',
-          channels: 'dual'
+          channels: 'single'
         }, {
           headers: {
             'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
@@ -221,6 +222,20 @@ app.post('/webhook', (req, res) => {
         break;
       case 'call.hangup':
         status = 'ended';
+        // Arrêter l'enregistrement explicitement avant que Telnyx ne finalise l'appel
+        axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_stop`, {}, {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        }).then(() => {
+          console.log(`🎙️ Enregistrement arrêté (webhook) pour ${callControlId}`);
+        }).catch(err => {
+          // Ignorer si déjà arrêté ou inexistant
+          if (err.response?.status !== 404 && err.response?.status !== 422) {
+            console.error('⚠️ Erreur arrêt enregistrement (webhook):', err.response?.data || err.message);
+          }
+        });
         break;
       case 'call.speak.ended':
         status = 'active';
