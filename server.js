@@ -181,9 +181,9 @@ app.post('/webhook', (req, res) => {
         // Utiliser l'API HTTP directement car le SDK peut ne pas avoir cette méthode
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
           stream_url: 'wss://api-calls.harx.ai/audio-stream',
-          stream_track: 'both_tracks',
+          stream_track: 'inbound_track',
           enable_dialogflow: false,
-          client_state: btoa(JSON.stringify({ callControlId }))
+          client_state: Buffer.from(JSON.stringify({ callControlId })).toString('base64')
         }, {
           headers: {
             'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,

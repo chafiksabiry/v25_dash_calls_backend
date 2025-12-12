@@ -69,7 +69,7 @@ function handleTelnyxMediaStream(ws, req) {
           if (data.event === 'media') {
             if (receivedPacketCount === 0) {
               console.log('🎧 PREMIER MESSAGE MEDIA REÇU DE TELNYX !', JSON.stringify(data, null, 2));
-            } else if (receivedPacketCount % 50 === 0) {
+            } else if (receivedPacketCount % 10 === 0) {
               console.log(`📨 Audio reçu de Telnyx (packet #${receivedPacketCount})`);
             }
             receivedPacketCount++;
@@ -149,8 +149,8 @@ function sendAudioToFrontend(callControlId, audioPayload) {
         timestamp: Date.now()
       });
       
-      // Log tous les 50 packets
-      if (frontendSentCount % 50 === 0) {
+      // Log tous les 10 packets
+      if (frontendSentCount % 10 === 0) {
         console.log(`📤 Audio envoyé au frontend (#${frontendSentCount}, ${audioPayload.length} chars)`);
       }
       frontendSentCount++;
@@ -177,8 +177,8 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
       }
     }));
     
-    // Log tous les 50 packets
-    if (sentPacketCount % 50 === 0) {
+    // Log tous les 10 packets
+    if (sentPacketCount % 10 === 0) {
       console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars)`);
     }
     sentPacketCount++;

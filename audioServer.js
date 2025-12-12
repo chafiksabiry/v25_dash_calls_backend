@@ -89,13 +89,20 @@ function initializeAudioServer(server) {
       const { callControlId } = data;
       console.log('📴 Terminer appel:', callControlId);
 
+      // Retirer immédiatement de la liste pour éviter les doublons (race condition avec disconnect)
+      const call = activeCalls.get(callControlId);
+      if (call) {
+        activeCalls.delete(callControlId);
+      } else {
+        // Déjà traité ou inexistant
+        return;
+      }
+
       try {
         // Terminer l'appel via Telnyx (syntaxe correcte)
         await telnyx.calls.hangup({
           call_control_id: callControlId
         });
-        
-        activeCalls.delete(callControlId);
         
         socket.emit('call-ended', {
           callControlId,
