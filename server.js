@@ -172,6 +172,7 @@ app.post('/webhook', (req, res) => {
       case 'call.ringing':
         status = 'ringing';
         break;
+      case 'call.active': // Ou quand l'appel est répondu
       case 'call.answered':
         status = 'active';
           // L'appel est actif, démarrer le Media Stream maintenant
@@ -193,12 +194,12 @@ app.post('/webhook', (req, res) => {
         });
         
         // 2. Démarrer le streaming audio bidirectionnel
-        // Demander explicitement du PCMU (u-Law) pour éviter la conversion manuelle
+        // Demander explicitement du PCMA (A-Law) pour l'Europe
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
           stream_url: 'wss://api-calls.harx.ai/audio-stream',
           stream_track: 'inbound_track',
           media_format: {
-            encoding: 'PCMU',
+            encoding: 'PCMA', // CHANGED: PCMA pour A-Law (Europe)
             sample_rate: 8000,
             channels: 1
           },
@@ -241,6 +242,15 @@ app.post('/webhook', (req, res) => {
       callHistory[callIndex].status = status;
       callHistory[callIndex].state = state;
       callHistory[callIndex].lastUpdate = new Date().toISOString();
+      
+      // Calculer la durée si l'appel se termine
+      if (status === 'ended') {
+        const startTime = new Date(callHistory[callIndex].timestamp);
+        const endTime = new Date();
+        const durationSeconds = Math.floor((endTime - startTime) / 1000);
+        callHistory[callIndex].duration = durationSeconds;
+        console.log(`⏱️ Durée appel calculée: ${durationSeconds} secondes`);
+      }
     }
   }
 
