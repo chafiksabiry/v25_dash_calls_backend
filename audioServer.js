@@ -110,7 +110,12 @@ function initializeAudioServer(server) {
         });
 
       } catch (error) {
-        console.error('Erreur hangup:', error);
+        // Ignorer l'erreur si l'appel est déjà terminé (404 ou 422)
+        if (error.raw?.statusCode === 404 || error.raw?.statusCode === 422) {
+            console.log(`⚠️ Hangup ignoré (appel déjà terminé ou invalide): ${error.raw?.statusCode}`);
+        } else {
+            console.error('Erreur hangup:', error.message);
+        }
       }
     });
 
