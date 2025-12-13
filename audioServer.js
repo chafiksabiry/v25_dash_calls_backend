@@ -43,6 +43,24 @@ function initializeAudioServer(server) {
           callControlId
         });
 
+        // Ajouter à l'historique dans server.js pour que le socketId soit disponible pour les événements post-appel
+        try {
+          const { addToCallHistory } = require('./server');
+          const callRecord = {
+            id: callControlId,
+            to: to,
+            from: from,
+            status: 'initiated',
+            timestamp: new Date().toISOString(),
+            socketId: socket.id, // Stocker le socketId dès le début
+            raw: call.data
+          };
+          addToCallHistory(callRecord);
+          console.log(`📝 Appel ajouté à callHistory avec socketId: ${socket.id}`);
+        } catch (error) {
+          console.warn('⚠️ Erreur ajout à callHistory:', error.message);
+        }
+
         // Envoyer la confirmation au client
         socket.emit('call-initiated', {
           success: true,

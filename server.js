@@ -60,6 +60,15 @@ const FRENCH_NUMBERS = [
 // Stockage des appels (en mémoire pour la démo)
 let callHistory = [];
 
+// Fonction pour ajouter un appel à l'historique (utilisée par audioServer.js)
+function addToCallHistory(callRecord) {
+  callHistory.push(callRecord);
+}
+
+// Exporter callHistory et la fonction pour l'ajouter
+module.exports.callHistory = callHistory;
+module.exports.addToCallHistory = addToCallHistory;
+
 // Route pour obtenir la liste des numéros
 app.get('/api/numbers', (req, res) => {
   res.json({
