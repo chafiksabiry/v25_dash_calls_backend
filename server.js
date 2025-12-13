@@ -208,6 +208,13 @@ app.post('/webhook', async (req, res) => {
           global.startedRecordings = new Set();
         }
         
+        // TEST: Ne pas démarrer l'enregistrement manuellement pour voir si Telnyx en crée un automatiquement
+        // Si Telnyx crée automatiquement un enregistrement, on aura un seul enregistrement au lieu de 2
+        // Si Telnyx n'en crée pas, on devra réactiver cette section
+        console.log(`ℹ️ Enregistrement manuel désactivé temporairement pour tester les doublons (callControlId: ${callControlId})`);
+        
+        // CODE COMMENTÉ TEMPORAIREMENT POUR TESTER LES DOUBLONS
+        /*
         if (!global.startedRecordings.has(callControlId)) {
           global.startedRecordings.add(callControlId);
           console.log(`🎙️ Démarrage enregistrement pour ${callControlId} (première fois, événement: ${eventType})`);
@@ -231,6 +238,7 @@ app.post('/webhook', async (req, res) => {
         } else {
           console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId} (événement: ${eventType}), ignoré (évite doublons)`);
         }
+        */
         
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre

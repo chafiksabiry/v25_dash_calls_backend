@@ -89,6 +89,43 @@ Après avoir réorganisé les codecs :
 
 ---
 
+---
+
+## 5. ⚠️ Enregistrement automatique (CAUSE DES DOUBLONS)
+
+**Problème actuel :**
+- Telnyx crée **2 enregistrements** pour chaque appel
+- Un enregistrement automatique (configuré dans Telnyx Portal)
+- Un enregistrement manuel (démarré par notre code)
+
+**Solution étape par étape :**
+
+1. **Vous êtes déjà sur la bonne page** : "Number settings" pour `+33 4 23 34 07 75`
+
+2. **Cliquer sur l'onglet "Voice"** (à côté de "Settings" en haut de la page)
+
+3. **Dans l'onglet "Voice", chercher :**
+   - Une section **"Inbound Call Recording"** ou **"Call Recording"**
+   - OU une option **"Record Calls"** ou **"Enable Recording"**
+   - OU une section **"Recording Settings"**
+
+4. **Désactiver l'enregistrement automatique** :
+   - Mettre sur **"Disabled"** ou **"Off"**
+   - OU décocher la case si c'est une checkbox
+
+5. **Sauvegarder les modifications** (bouton "Save" ou "Update" en bas de la page)
+
+**Alternative si l'option n'est pas dans "Voice" :**
+- Aller dans l'onglet **"Settings"** → Chercher dans **"Advanced settings"** ou **"Call Settings"**
+- OU aller dans **Voice API Applications** → **Edit Application** → **Inbound** → Chercher les options d'enregistrement
+
+**Pourquoi :** Notre code démarre déjà l'enregistrement manuellement via `record_start` quand l'appel est répondu. Si Telnyx démarre aussi automatiquement l'enregistrement, cela crée des doublons.
+
+**Note :** Si vous ne trouvez pas l'option d'enregistrement au niveau du numéro, elle pourrait être configurée au niveau de l'application Voice API. Dans ce cas :
+- Aller dans **Voice** → **Programmable Voice** → **Edit Application** → **Inbound** → Chercher les options d'enregistrement
+
+---
+
 ## 🔍 Diagnostic si le problème persiste
 
 Si après ces modifications vous ne recevez toujours qu'un seul packet audio :
@@ -97,4 +134,5 @@ Si après ces modifications vous ne recevez toujours qu'un seul packet audio :
 2. **Vérifier les logs backend** : Chercher `"encoding"` dans le message `start` pour voir quel codec est négocié
 3. **Tester avec un autre numéro** : Pour vérifier si c'est spécifique à un numéro
 4. **Vérifier la limite de canaux** : Si vous avez plusieurs appels simultanés, vérifiez que vous n'avez pas atteint la limite de 3
+5. **Vérifier l'enregistrement automatique** : Si vous voyez toujours 2 enregistrements, vérifiez que l'enregistrement automatique est bien désactivé dans Telnyx Portal
 
