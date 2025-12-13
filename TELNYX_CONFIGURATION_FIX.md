@@ -1,0 +1,100 @@
+# 🔧 Corrections à apporter dans Telnyx Portal
+
+## Problèmes identifiés dans la configuration actuelle
+
+### 1. ⚠️ Ordre des Codecs (CRITIQUE)
+**Problème actuel :**
+- G722 est en premier dans la liste
+- G711A (PCMA) est en deuxième position
+- G711U (PCMU) est en troisième position
+
+**Solution :**
+1. Aller dans **Inbound** → **Codecs**
+2. **Réorganiser** les codecs pour mettre **G711A en PREMIER** :
+   - Glisser-déposer G711A en haut de la liste
+   - Ordre recommandé :
+     1. **G711A** (PCMA - A-Law) ← PRIORITÉ
+     2. **G711U** (PCMU - u-Law)
+     3. G722
+     4. VP8
+     5. H.264
+
+**Pourquoi :** Telnyx négocie les codecs dans l'ordre de la liste. Si G722 est en premier, il peut être sélectionné au lieu de G711A, ce qui cause des problèmes de compatibilité avec notre conversion G.711.
+
+---
+
+### 2. ⚠️ HD Voice désactivé
+**Problème actuel :**
+- HD Voice est **désactivé** sur les numéros
+
+**Solution :**
+1. Aller dans **Numbers** → Sélectionner le numéro
+2. Activer **HD Voice** si disponible
+
+**Note :** HD Voice améliore la qualité audio mais n'est pas obligatoire pour le fonctionnement de base.
+
+---
+
+### 3. ✅ Configuration actuelle correcte
+- **Webhook URL** : `https://api-calls.harx.ai/webhook` ✅
+- **API Version** : v2 ✅
+- **Codecs G711A et G711U** : Activés ✅
+
+---
+
+## 🧪 Test après modifications
+
+Après avoir réorganisé les codecs :
+
+1. **Redémarrer le serveur backend**
+2. **Faire un nouvel appel**
+3. **Vérifier les logs** :
+   - Vous devriez voir : `"encoding": "PCMA"` dans le message `start`
+   - Vous devriez recevoir plus de packets audio (pas seulement 1)
+
+---
+
+## 📋 Checklist de vérification
+
+- [ ] G711A est en **première position** dans la liste des codecs
+- [ ] G711U est en **deuxième position**
+- [ ] HD Voice activé (optionnel mais recommandé)
+- [ ] Webhook URL correcte : `https://api-calls.harx.ai/webhook`
+- [ ] API Version : v2
+
+---
+
+---
+
+## 4. ⚠️ Configuration Outbound
+
+**Configuration actuelle :**
+- **Outbound Voice Profile** : "Default" ✅
+- **Outbound Channel Limit** : "3" ⚠️
+
+**Analyse :**
+
+### Outbound Voice Profile : "Default"
+✅ **C'est correct** - Le profil "Default" devrait fonctionner pour la plupart des cas. Si vous avez besoin de paramètres spécifiques (codecs, qualité audio, etc.), vous pouvez créer un profil personnalisé, mais "Default" est suffisant pour commencer.
+
+### Outbound Channel Limit : "3"
+⚠️ **Attention** - Cette limite de 3 canaux signifie que vous ne pouvez faire que **3 appels simultanés maximum**. 
+
+**Recommandations :**
+- Si vous avez besoin de faire plus d'appels simultanés, augmentez cette limite
+- Pour un usage de test/développement, 3 est suffisant
+- Pour la production, considérez une limite plus élevée selon vos besoins
+
+**Note importante :** Cette limite ne devrait **PAS** affecter la qualité audio ou le fonctionnement d'un appel unique. Elle limite seulement le nombre d'appels simultanés.
+
+---
+
+## 🔍 Diagnostic si le problème persiste
+
+Si après ces modifications vous ne recevez toujours qu'un seul packet audio :
+
+1. **Vérifier que l'interlocuteur parle** : Telnyx n'envoie des packets que s'il y a de l'audio
+2. **Vérifier les logs backend** : Chercher `"encoding"` dans le message `start` pour voir quel codec est négocié
+3. **Tester avec un autre numéro** : Pour vérifier si c'est spécifique à un numéro
+4. **Vérifier la limite de canaux** : Si vous avez plusieurs appels simultanés, vérifiez que vous n'avez pas atteint la limite de 3
+

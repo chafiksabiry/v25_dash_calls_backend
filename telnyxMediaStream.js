@@ -52,32 +52,34 @@ function handleTelnyxMediaStream(ws, req) {
         // Vérifier le track (inbound = voix de l'interlocuteur, outbound = votre voix)
         const track = data.media.track || 'unknown';
         
+        // Log le premier packet pour voir la structure
+        if (receivedPacketCount === 0) {
+          console.log(`🎧 PREMIER PACKET MEDIA - track: "${track}", hasTrack: ${!!data.media.track}, payloadLength: ${data.media.payload?.length || 0}`);
+        }
+        
         try {
           const alawBuffer = Buffer.from(data.media.payload, 'base64');
           const mulawBuffer = alawToMulaw(alawBuffer);
           const mulawPayload = mulawBuffer.toString('base64');
           
-          // Envoyer seulement l'audio inbound (voix de l'interlocuteur) au frontend
-          if (track === 'inbound') {
+          // Envoyer l'audio au frontend si c'est inbound OU si le track n'est pas spécifié (fallback)
+          // Avec 'both_tracks', Telnyx devrait envoyer les deux tracks séparément
+          if (track === 'inbound' || track === 'unknown' || !data.media.track) {
+            // Envoyer au frontend (voix de l'interlocuteur)
             sendAudioToFrontend(currentCallId, mulawPayload);
             
             // Log tous les 10 packets pour debug
             if (receivedPacketCount % 10 === 0) {
-              console.log(`🎧 Audio inbound reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
+              console.log(`🎧 Audio ${track || 'unknown'} reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
             }
             receivedPacketCount++;
           } else if (track === 'outbound') {
             // Audio outbound = votre voix, on ne l'envoie pas au frontend (évite l'écho)
+            // Mais on incrémente quand même le compteur pour le logging
             if (receivedPacketCount % 50 === 0) {
               console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}`);
             }
-          } else {
-            // Track inconnu, envoyer quand même au cas où
-            sendAudioToFrontend(currentCallId, mulawPayload);
-            if (receivedPacketCount % 10 === 0) {
-              console.log(`🎧 Audio ${track} reçu et envoyé au frontend (packet #${receivedPacketCount})`);
-            }
-            receivedPacketCount++;
+            // Ne pas incrémenter receivedPacketCount pour outbound car on ne l'envoie pas
           }
         } catch (error) {
           console.error('❌ Erreur conversion A-Law → u-Law:', error);
