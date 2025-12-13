@@ -208,37 +208,10 @@ app.post('/webhook', async (req, res) => {
           global.startedRecordings = new Set();
         }
         
-        // TEST: Ne pas démarrer l'enregistrement manuellement pour voir si Telnyx en crée un automatiquement
-        // Si Telnyx crée automatiquement un enregistrement, on aura un seul enregistrement au lieu de 2
-        // Si Telnyx n'en crée pas, on devra réactiver cette section
-        console.log(`ℹ️ Enregistrement manuel désactivé temporairement pour tester les doublons (callControlId: ${callControlId})`);
-        
-        // CODE COMMENTÉ TEMPORAIREMENT POUR TESTER LES DOUBLONS
-        /*
-        if (!global.startedRecordings.has(callControlId)) {
-          global.startedRecordings.add(callControlId);
-          console.log(`🎙️ Démarrage enregistrement pour ${callControlId} (première fois, événement: ${eventType})`);
-          
-          // Utiliser 'single' au lieu de 'dual' pour éviter les problèmes avec les appels longs
-          axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
-            format: 'mp3',
-            channels: 'single'
-          }, {
-            headers: {
-              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }).then(() => {
-            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId} (événement: ${eventType})`);
-          }).catch(err => {
-            console.error(`❌ Erreur démarrage enregistrement (événement: ${eventType}):`, err.response?.data || err.message);
-            // Retirer du Set en cas d'erreur pour permettre une nouvelle tentative
-            global.startedRecordings.delete(callControlId);
-          });
-        } else {
-          console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId} (événement: ${eventType}), ignoré (évite doublons)`);
-        }
-        */
+        // Ne PAS démarrer l'enregistrement manuellement car Telnyx le crée automatiquement
+        // Cela évite les doublons d'enregistrements
+        // L'enregistrement automatique de Telnyx sera utilisé (configuré dans le Portal)
+        console.log(`ℹ️ Enregistrement géré automatiquement par Telnyx (callControlId: ${callControlId})`);
         
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre

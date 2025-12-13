@@ -68,16 +68,16 @@ function handleTelnyxMediaStream(ws, req) {
             // Envoyer au frontend (voix de l'interlocuteur)
             sendAudioToFrontend(currentCallId, mulawPayload);
             
-            // Log tous les 10 packets pour debug
-            if (receivedPacketCount % 10 === 0) {
-              console.log(`🎧 Audio ${track || 'unknown'} reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
+            // Log tous les packets pour les 20 premiers, puis tous les 10
+            if (receivedPacketCount < 20 || receivedPacketCount % 10 === 0) {
+              console.log(`🎧 Audio ${track || 'unknown'} reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars, ${alawBuffer.length} bytes A-Law)`);
             }
             receivedPacketCount++;
           } else if (track === 'outbound') {
             // Audio outbound = votre voix, on ne l'envoie pas au frontend (évite l'écho)
-            // Mais on incrémente quand même le compteur pour le logging
-            if (receivedPacketCount % 50 === 0) {
-              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}`);
+            // Log pour voir si on reçoit beaucoup d'audio outbound
+            if (receivedPacketCount < 20 || receivedPacketCount % 50 === 0) {
+              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}, ${alawBuffer.length} bytes`);
             }
             // Ne pas incrémenter receivedPacketCount pour outbound car on ne l'envoie pas
           }
