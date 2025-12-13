@@ -220,8 +220,13 @@ function updateCallStatus(callControlId, status, data = {}) {
         ...data
       });
       
-      console.log('Statut appel', callControlId, ':', status);
+      console.log(`📤 Statut appel ${callControlId}: ${status} envoyé au socket ${call.socketId}`);
+    } else {
+      console.warn(`⚠️ Socket non trouvé pour ${callControlId} (socketId: ${call.socketId})`);
+      console.log(`📋 Sockets disponibles:`, Array.from(io.sockets.sockets.keys()));
     }
+  } else {
+    console.warn(`⚠️ Appel ${callControlId} non trouvé dans activeCalls pour updateCallStatus`);
   }
 }
 

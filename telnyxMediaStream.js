@@ -69,6 +69,12 @@ function handleTelnyxMediaStream(ws, req) {
         
         try {
           const alawBuffer = Buffer.from(data.media.payload, 'base64');
+          
+          // Log pour les premiers packets pour diagnostiquer
+          if (receivedPacketCount === 0) {
+            console.log(`📊 PREMIER PACKET AUDIO - Bytes de test: ${Array.from(alawBuffer.slice(0, 5)).join(', ')}, taille: ${alawBuffer.length} bytes`);
+          }
+          
           const mulawBuffer = alawToMulaw(alawBuffer);
           const mulawPayload = mulawBuffer.toString('base64');
           

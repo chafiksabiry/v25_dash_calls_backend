@@ -116,13 +116,18 @@ app.post('/api/call', async (req, res) => {
       call_session_id: call.data.call_session_id
     });
 
-    // Ajouter à l'historique
+    // Récupérer le socketId depuis activeCalls si disponible
+    const { activeCalls } = require('./audioServer');
+    const activeCall = activeCalls.get(call.data.call_control_id);
+    
+    // Ajouter à l'historique avec le socketId pour pouvoir envoyer des événements plus tard
     const callRecord = {
       id: call.data.call_control_id,
       to: to,
       from: TELNYX_NUMBER,
       status: 'initiated',
       timestamp: new Date().toISOString(),
+      socketId: activeCall ? activeCall.socketId : null, // Stocker le socketId dès le début
       raw: call.data // Garder toutes les données pour debug
     };
     callHistory.push(callRecord);
@@ -333,29 +338,51 @@ app.post('/webhook', async (req, res) => {
             }
           } else {
             // Si l'appel n'est plus dans activeCalls, chercher dans callHistory
+            console.log(`⚠️ Appel ${callControlId} non trouvé dans activeCalls, recherche dans callHistory...`);
             const callIndex = callHistory.findIndex(c => c.id === callControlId);
-            if (callIndex !== -1 && callHistory[callIndex].socketId && audioIO) {
-              const socket = audioIO.sockets.sockets.get(callHistory[callIndex].socketId);
-              if (socket) {
-                socket.emit('call-status', {
-                  callControlId,
-                  status: 'recording-saved',
+            if (callIndex !== -1) {
+              console.log(`📋 Appel trouvé dans callHistory à l'index ${callIndex}, socketId: ${callHistory[callIndex].socketId}`);
+              if (callHistory[callIndex].socketId && audioIO) {
+                const socket = audioIO.sockets.sockets.get(callHistory[callIndex].socketId);
+                if (socket) {
+                  socket.emit('call-status', {
+                    callControlId,
+                    status: 'recording-saved',
+                    recordingId,
+                    recordingUrl,
+                    originalEvent: eventType
+                  });
+                  console.log(`✅ URL enregistrement envoyée au frontend via callHistory pour ${callControlId}`);
+                } else {
+                  console.warn(`⚠️ Socket non trouvé dans callHistory pour ${callControlId} (socketId: ${callHistory[callIndex].socketId})`);
+                  console.log(`📋 Sockets disponibles:`, Array.from(audioIO.sockets.sockets.keys()));
+                  // En dernier recours, utiliser updateCallStatus
+                  updateCallStatus(callControlId, 'recording-saved', {
+                    recordingId,
+                    recordingUrl,
+                    originalEvent: eventType
+                  });
+                  console.log(`✅ URL enregistrement envoyée au frontend via updateCallStatus (fallback) pour ${callControlId}`);
+                }
+              } else {
+                console.warn(`⚠️ Pas de socketId dans callHistory pour ${callControlId}`);
+                // En dernier recours, utiliser updateCallStatus
+                updateCallStatus(callControlId, 'recording-saved', {
                   recordingId,
                   recordingUrl,
                   originalEvent: eventType
                 });
-                console.log(`✅ URL enregistrement envoyée au frontend via callHistory pour ${callControlId}`);
-              } else {
-                console.warn(`⚠️ Socket non trouvé dans callHistory pour ${callControlId}`);
+                console.log(`✅ URL enregistrement envoyée au frontend via updateCallStatus (fallback) pour ${callControlId}`);
               }
             } else {
+              console.warn(`⚠️ Appel ${callControlId} non trouvé dans callHistory non plus`);
               // En dernier recours, utiliser updateCallStatus
               updateCallStatus(callControlId, 'recording-saved', {
                 recordingId,
                 recordingUrl,
                 originalEvent: eventType
               });
-              console.log(`✅ URL enregistrement envoyée au frontend via updateCallStatus pour ${callControlId}`);
+              console.log(`✅ URL enregistrement envoyée au frontend via updateCallStatus (dernier recours) pour ${callControlId}`);
             }
           }
         } else {
