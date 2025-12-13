@@ -68,9 +68,12 @@ function handleTelnyxMediaStream(ws, req) {
             // Envoyer au frontend (voix de l'interlocuteur)
             sendAudioToFrontend(currentCallId, mulawPayload);
             
-            // Log tous les packets pour les 20 premiers, puis tous les 10
-            if (receivedPacketCount < 20 || receivedPacketCount % 10 === 0) {
-              console.log(`🎧 Audio ${track || 'unknown'} reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars, ${alawBuffer.length} bytes A-Law)`);
+            // Log tous les packets pour les 50 premiers pour diagnostiquer
+            const sampleRate = 8000; // G.711 utilise 8kHz
+            if (receivedPacketCount < 50) {
+              console.log(`🎧 Audio ${track || 'unknown'} reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars, ${alawBuffer.length} bytes A-Law = ${(alawBuffer.length / sampleRate * 1000).toFixed(1)}ms)`);
+            } else if (receivedPacketCount % 50 === 0) {
+              console.log(`🎧 Audio ${track || 'unknown'} reçu et envoyé au frontend (packet #${receivedPacketCount}, ${mulawPayload.length} chars)`);
             }
             receivedPacketCount++;
           } else if (track === 'outbound') {

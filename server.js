@@ -208,10 +208,35 @@ app.post('/webhook', async (req, res) => {
           global.startedRecordings = new Set();
         }
         
-        // Ne PAS démarrer l'enregistrement manuellement car Telnyx le crée automatiquement
-        // Cela évite les doublons d'enregistrements
-        // L'enregistrement automatique de Telnyx sera utilisé (configuré dans le Portal)
-        console.log(`ℹ️ Enregistrement géré automatiquement par Telnyx (callControlId: ${callControlId})`);
+        // Démarrer l'enregistrement manuellement car l'enregistrement automatique de Telnyx est vide
+        // L'enregistrement automatique de Telnyx ne capture pas l'audio correctement avec le Media Stream
+        if (!global.startedRecordings) {
+          global.startedRecordings = new Set();
+        }
+        
+        if (!global.startedRecordings.has(callControlId)) {
+          global.startedRecordings.add(callControlId);
+          console.log(`🎙️ Démarrage enregistrement manuel pour ${callControlId} (événement: ${eventType})`);
+          
+          // Utiliser 'single' channel pour éviter les problèmes
+          axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
+            format: 'mp3',
+            channels: 'single'
+          }, {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }).then(() => {
+            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId}`);
+          }).catch(err => {
+            console.error(`❌ Erreur démarrage enregistrement:`, err.response?.data || err.message);
+            // Retirer du Set en cas d'erreur
+            global.startedRecordings.delete(callControlId);
+          });
+        } else {
+          console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId}, ignoré`);
+        }
         
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
