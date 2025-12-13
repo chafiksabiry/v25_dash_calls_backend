@@ -231,6 +231,7 @@ app.post('/webhook', async (req, res) => {
         // L'appel est actif, démarrer l'enregistrement et le Media Stream maintenant
         console.log(`✅ Appel répondu (${eventType}) - Démarrage de l'enregistrement et du Media Stream...`);
 
+<<<<<<< HEAD
         // 1. Démarrer l'enregistrement (seulement si pas déjà démarré)
         // Telnyx ne permet pas de démarrer l'enregistrement avant que l'appel soit répondu
         // Mais une fois démarré, il capture tout jusqu'à la fin de l'appel
@@ -271,6 +272,22 @@ app.post('/webhook', async (req, res) => {
         } else {
           console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId}, ignoré`);
         }
+=======
+        // 1. Démarrer l'enregistrement
+        axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
+          format: 'mp3',
+          channels: 'single'
+        }, {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        }).then(() => {
+          console.log(`🎙️ Enregistrement démarré pour ${callControlId}`);
+        }).catch(err => {
+          console.error('❌ Erreur démarrage enregistrement:', err.response?.data || err.message);
+        });
+>>>>>>> parent of 72486ef (Update')
         
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
