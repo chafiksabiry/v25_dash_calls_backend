@@ -10,6 +10,7 @@ function handleTelnyxMediaStream(ws, req) {
   console.log('🎵 Telnyx Media Stream connecté');
   
   let currentCallId = null;
+  let totalMediaPacketsReceived = 0; // Compteur total de tous les packets media (inbound + outbound)
   
   // Fonction pour traiter les messages JSON
   function handleJsonMessage(data) {
@@ -39,6 +40,8 @@ function handleTelnyxMediaStream(ws, req) {
       case 'media':
         // Audio reçu de Telnyx (voix du receiver)
         // Telnyx envoie PCMA (A-Law), Frontend attend PCMU (u-Law) → CONVERSION REQUISE
+        totalMediaPacketsReceived++; // Incrémenter le compteur total
+        
         if (!currentCallId) {
           console.log('⚠️ Media reçu mais pas de currentCallId');
           break;
@@ -53,8 +56,13 @@ function handleTelnyxMediaStream(ws, req) {
         const track = data.media.track || 'unknown';
         
         // Log le premier packet pour voir la structure
-        if (receivedPacketCount === 0) {
+        if (totalMediaPacketsReceived === 1) {
           console.log(`🎧 PREMIER PACKET MEDIA - track: "${track}", hasTrack: ${!!data.media.track}, payloadLength: ${data.media.payload?.length || 0}`);
+        }
+        
+        // Log tous les 10 packets pour voir la fréquence
+        if (totalMediaPacketsReceived <= 50 || totalMediaPacketsReceived % 10 === 0) {
+          console.log(`📊 Packet media #${totalMediaPacketsReceived} - track: "${track}"`);
         }
         
         try {
@@ -78,9 +86,25 @@ function handleTelnyxMediaStream(ws, req) {
             receivedPacketCount++;
           } else if (track === 'outbound') {
             // Audio outbound = votre voix, on ne l'envoie pas au frontend (évite l'écho)
-            // Log pour voir si on reçoit beaucoup d'audio outbound
-            if (receivedPacketCount < 20 || receivedPacketCount % 50 === 0) {
-              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}, ${alawBuffer.length} bytes`);
+            // Log tous les packets outbound pour les 50 premiers pour diagnostiquer
+            const sampleRate = 8000;
+            if (receivedPacketCount < 50) {
+              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}, ${alawBuffer.length} bytes A-Law = ${(alawBuffer.length / sampleRate * 1000).toFixed(1)}ms`);
+            } else if (receivedPacketCount % 50 === 0) {
+              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet #${receivedPacketCount}`);
+            }
+            // Créer un compteur séparé pour outbound
+            if (!global.outboundPacketCount) {
+              global.outboundPacketCount = new Map();
+            }
+            const outboundCount = (global.outboundPacketCount.get(currentCallId) || 0) + 1;
+            global.outboundPacketCount.set(currentCallId, outboundCount);
+            
+            // Log avec le compteur outbound correct
+            if (outboundCount <= 50) {
+              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet outbound #${outboundCount}, ${alawBuffer.length} bytes A-Law = ${(alawBuffer.length / sampleRate * 1000).toFixed(1)}ms`);
+            } else if (outboundCount % 50 === 0) {
+              console.log(`🎤 Audio outbound reçu (votre voix, ignoré) - packet outbound #${outboundCount}`);
             }
             // Ne pas incrémenter receivedPacketCount pour outbound car on ne l'envoie pas
           }
@@ -171,7 +195,15 @@ function handleTelnyxMediaStream(ws, req) {
   ws.on('close', (code, reason) => {
     console.log(`🔌 Telnyx Media Stream déconnecté - Code: ${code}, Raison: ${reason}`);
     if (currentCallId) {
+      const outboundCount = global.outboundPacketCount?.get(currentCallId) || 0;
+      console.log(`📊 Résumé stream pour ${currentCallId}: ${receivedPacketCount} packets inbound envoyés au frontend, ${outboundCount} packets outbound reçus (ignorés), ${totalMediaPacketsReceived} packets media totaux`);
       telnyxStreams.delete(currentCallId);
+      if (global.startedStreams) {
+        global.startedStreams.delete(currentCallId);
+      }
+      if (global.outboundPacketCount) {
+        global.outboundPacketCount.delete(currentCallId);
+      }
     }
   });
 
