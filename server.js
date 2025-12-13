@@ -157,7 +157,22 @@ app.post('/api/call', async (req, res) => {
 
 // Route pour obtenir l'historique des appels
 app.get('/api/call-history', (req, res) => {
-  res.json({ calls: callHistory });
+  // Nettoyer les références circulaires avant d'envoyer
+  const cleanedHistory = callHistory.map(call => {
+    const cleaned = { ...call };
+    // Supprimer la propriété 'raw' qui peut contenir des références circulaires
+    if (cleaned.raw) {
+      // Garder seulement les propriétés essentielles de raw
+      cleaned.raw = {
+        call_control_id: cleaned.raw.call_control_id,
+        call_leg_id: cleaned.raw.call_leg_id,
+        call_session_id: cleaned.raw.call_session_id,
+        // Ne pas inclure d'autres propriétés qui pourraient avoir des références circulaires
+      };
+    }
+    return cleaned;
+  });
+  res.json({ calls: cleanedHistory });
 });
 
 // Webhook pour recevoir les événements Telnyx
@@ -236,17 +251,20 @@ app.post('/webhook', async (req, res) => {
               'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
               'Content-Type': 'application/json'
             }
-          }).then(() => {
+          }).then((response) => {
             console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId}`);
+            console.log(`📋 Réponse record_start:`, JSON.stringify(response.data, null, 2));
             
             // Stocker l'heure de début pour calculer la durée plus tard
             if (!global.callStartTimes) {
               global.callStartTimes = {};
             }
-            global.callStartTimes[callControlId] = Date.now();
-            console.log(`⏱️ Heure de début enregistrement stockée pour ${callControlId}`);
+            const startTime = Date.now();
+            global.callStartTimes[callControlId] = startTime;
+            console.log(`⏱️ Heure de début enregistrement stockée pour ${callControlId} à ${new Date(startTime).toISOString()}`);
           }).catch(err => {
             console.error(`❌ Erreur démarrage enregistrement:`, err.response?.data || err.message);
+            console.error(`❌ Détails complets de l'erreur:`, JSON.stringify(err.response?.data || { message: err.message }, null, 2));
             // Retirer du Set en cas d'erreur
             global.startedRecordings.delete(callControlId);
           });
