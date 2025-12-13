@@ -262,6 +262,7 @@ function sendAudioToFrontend(callControlId, audioPayload) {
   } else {
     if (frontendSentCount % 50 === 0) {
       console.log(`⚠️ Call not found dans activeCalls pour ${callControlId}`);
+      console.log(`📋 Appels actifs:`, Array.from(activeCalls.keys()));
     }
   }
 }

@@ -173,33 +173,6 @@ app.post('/webhook', async (req, res) => {
     switch(eventType) {
       case 'call.initiated':
         status = 'calling';
-        
-        // Démarrer l'enregistrement dès le début de l'appel pour capturer TOUT l'appel
-        if (!global.startedRecordings) {
-          global.startedRecordings = new Set();
-        }
-        
-        if (!global.startedRecordings.has(callControlId)) {
-          global.startedRecordings.add(callControlId);
-          console.log(`🎙️ Démarrage enregistrement dès le début de l'appel pour ${callControlId}`);
-          
-          // Utiliser 'single' channel pour éviter les problèmes
-          axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
-            format: 'mp3',
-            channels: 'single'
-          }, {
-            headers: {
-              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }).then(() => {
-            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId} (dès le début)`);
-          }).catch(err => {
-            console.error(`❌ Erreur démarrage enregistrement:`, err.response?.data || err.message);
-            // Retirer du Set en cas d'erreur
-            global.startedRecordings.delete(callControlId);
-          });
-        }
         break;
       case 'call.ringing':
         status = 'ringing';
@@ -226,8 +199,46 @@ app.post('/webhook', async (req, res) => {
         global.startedStreams.add(callControlId);
         console.log(`✅ Stream marqué comme démarré pour ${callControlId} (événement: ${eventType}, total: ${global.startedStreams.size})`);
         
-        // L'appel est actif, démarrer le Media Stream maintenant
-        console.log(`✅ Appel répondu (${eventType}) - Démarrage du Media Stream...`);
+        // L'appel est actif, démarrer l'enregistrement et le Media Stream maintenant
+        console.log(`✅ Appel répondu (${eventType}) - Démarrage de l'enregistrement et du Media Stream...`);
+
+        // 1. Démarrer l'enregistrement (seulement si pas déjà démarré)
+        // Telnyx ne permet pas de démarrer l'enregistrement avant que l'appel soit répondu
+        // Mais une fois démarré, il capture tout jusqu'à la fin de l'appel
+        if (!global.startedRecordings) {
+          global.startedRecordings = new Set();
+        }
+        
+        if (!global.startedRecordings.has(callControlId)) {
+          global.startedRecordings.add(callControlId);
+          console.log(`🎙️ Démarrage enregistrement pour ${callControlId} (événement: ${eventType})`);
+          
+          // Utiliser 'single' channel pour éviter les problèmes
+          axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
+            format: 'mp3',
+            channels: 'single'
+          }, {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }).then(() => {
+            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId}`);
+            
+            // Stocker l'heure de début pour calculer la durée plus tard
+            if (!global.callStartTimes) {
+              global.callStartTimes = {};
+            }
+            global.callStartTimes[callControlId] = Date.now();
+            console.log(`⏱️ Heure de début enregistrement stockée pour ${callControlId}`);
+          }).catch(err => {
+            console.error(`❌ Erreur démarrage enregistrement:`, err.response?.data || err.message);
+            // Retirer du Set en cas d'erreur
+            global.startedRecordings.delete(callControlId);
+          });
+        } else {
+          console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId}, ignoré`);
+        }
         
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
@@ -258,6 +269,24 @@ app.post('/webhook', async (req, res) => {
         break;
       case 'call.hangup':
         status = 'ended';
+        
+        // Calculer la durée si on a l'heure de début
+        if (global.callStartTimes && global.callStartTimes[callControlId]) {
+          const startTime = global.callStartTimes[callControlId];
+          const duration = Math.floor((Date.now() - startTime) / 1000);
+          console.log(`⏱️ Durée appel calculée: ${duration} secondes pour ${callControlId}`);
+          
+          // Stocker la durée dans l'historique
+          const callIndex = callHistory.findIndex(call => call.id === callControlId);
+          if (callIndex !== -1) {
+            callHistory[callIndex].duration = duration;
+            callHistory[callIndex].lastUpdate = new Date().toISOString();
+          }
+          
+          // Nettoyer
+          delete global.callStartTimes[callControlId];
+        }
+        
         // Nettoyer les flags de stream et enregistrement démarrés
         if (global.startedStreams) {
           global.startedStreams.delete(callControlId);
@@ -270,12 +299,16 @@ app.post('/webhook', async (req, res) => {
         break;
       case 'call.recording.saved':
         // L'enregistrement est sauvegardé, récupérer l'URL et l'envoyer au frontend
-        const recordingId = event.data?.payload?.recording_id || event.data?.payload?.id;
-        const recordingUrl = event.data?.payload?.recording_urls?.mp3 || event.data?.payload?.download_url;
+        console.log(`💾 Événement call.recording.saved reçu pour ${callControlId}`);
+        console.log(`📋 Données complètes de l'événement:`, JSON.stringify(event.data?.payload || event.data, null, 2));
+        
+        const recordingId = event.data?.payload?.recording_id || event.data?.payload?.id || event.data?.id;
+        const recordingUrl = event.data?.payload?.recording_urls?.mp3 || event.data?.payload?.download_url || event.data?.download_url;
         
         console.log(`💾 Enregistrement sauvegardé pour ${callControlId}:`, {
           recordingId,
-          recordingUrl
+          recordingUrl,
+          fullPayload: event.data?.payload
         });
         
         if (recordingUrl) {
