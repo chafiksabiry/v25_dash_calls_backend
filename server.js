@@ -147,17 +147,22 @@ app.get('/api/call-history', (req, res) => {
 });
 
 // Webhook pour recevoir les événements Telnyx
-app.post('/webhook', (req, res) => {
+app.post('/webhook', async (req, res) => {
   const event = req.body;
   
   const eventType = event.data?.event_type;
   const callControlId = event.data?.payload?.call_control_id;
   const state = event.data?.payload?.state;
   
+  // Répondre immédiatement à Telnyx pour éviter les timeouts
+  // (on traite l'événement de manière asynchrone après)
+  res.sendStatus(200);
+  
   console.log('📞 Événement Telnyx reçu:', {
     event_type: eventType,
     call_control_id: callControlId,
-    state: state
+    state: state,
+    timestamp: new Date().toISOString()
   });
 
   // Mettre à jour le statut via WebSocket
@@ -176,6 +181,9 @@ app.post('/webhook', (req, res) => {
       case 'call.answered':
         status = 'active';
         
+        // Log pour voir si les deux événements sont reçus
+        console.log(`🔔 Événement ${eventType} reçu pour ${callControlId}`);
+        
         // Vérifier si l'enregistrement/stream n'a pas déjà été démarré pour éviter les doublons
         // Utiliser un Set global pour tracker les streams démarrés (plus fiable que callHistory)
         if (!global.startedStreams) {
@@ -183,16 +191,16 @@ app.post('/webhook', (req, res) => {
         }
         
         if (global.startedStreams.has(callControlId)) {
-          console.log(`⚠️ Stream déjà démarré pour ${callControlId}, ignoré (évite doublons)`);
+          console.log(`⚠️ Stream déjà démarré pour ${callControlId} (événement: ${eventType}), ignoré (évite doublons)`);
           break;
         }
         
         // Marquer comme démarré IMMÉDIATEMENT pour éviter les race conditions
         global.startedStreams.add(callControlId);
-        console.log(`✅ Stream marqué comme démarré pour ${callControlId} (total: ${global.startedStreams.size})`);
+        console.log(`✅ Stream marqué comme démarré pour ${callControlId} (événement: ${eventType}, total: ${global.startedStreams.size})`);
         
         // L'appel est actif, démarrer le Media Stream maintenant
-        console.log('✅ Appel répondu - Démarrage de l\'enregistrement et du Media Stream...');
+        console.log(`✅ Appel répondu (${eventType}) - Démarrage de l'enregistrement et du Media Stream...`);
 
         // 1. Démarrer l'enregistrement (seulement si pas déjà démarré)
         // Vérifier si l'enregistrement n'a pas déjà été démarré
@@ -202,7 +210,7 @@ app.post('/webhook', (req, res) => {
         
         if (!global.startedRecordings.has(callControlId)) {
           global.startedRecordings.add(callControlId);
-          console.log(`🎙️ Démarrage enregistrement pour ${callControlId} (première fois)`);
+          console.log(`🎙️ Démarrage enregistrement pour ${callControlId} (première fois, événement: ${eventType})`);
           
           // Utiliser 'single' au lieu de 'dual' pour éviter les problèmes avec les appels longs
           axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
@@ -214,14 +222,14 @@ app.post('/webhook', (req, res) => {
               'Content-Type': 'application/json'
             }
           }).then(() => {
-            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId}`);
+            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId} (événement: ${eventType})`);
           }).catch(err => {
-            console.error('❌ Erreur démarrage enregistrement:', err.response?.data || err.message);
+            console.error(`❌ Erreur démarrage enregistrement (événement: ${eventType}):`, err.response?.data || err.message);
             // Retirer du Set en cas d'erreur pour permettre une nouvelle tentative
             global.startedRecordings.delete(callControlId);
           });
         } else {
-          console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId}, ignoré (évite doublons)`);
+          console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId} (événement: ${eventType}), ignoré (évite doublons)`);
         }
         
         // 2. Démarrer le streaming audio bidirectionnel
@@ -294,8 +302,9 @@ app.post('/webhook', (req, res) => {
       }
     }
   }
-
-  res.sendStatus(200);
+  
+  // Note: On répond déjà au début du handler pour éviter les timeouts
+  // Pas besoin de répondre à nouveau ici
 });
 
 // Route de test
