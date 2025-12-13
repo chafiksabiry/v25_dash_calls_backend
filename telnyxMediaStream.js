@@ -60,8 +60,10 @@ function handleTelnyxMediaStream(ws, req) {
           console.log(`🎧 PREMIER PACKET MEDIA - track: "${track}", hasTrack: ${!!data.media.track}, payloadLength: ${data.media.payload?.length || 0}`);
         }
         
-        // Log tous les 10 packets pour voir la fréquence
-        if (totalMediaPacketsReceived <= 50 || totalMediaPacketsReceived % 10 === 0) {
+        // Log tous les packets pour les 50 premiers pour diagnostiquer
+        if (totalMediaPacketsReceived <= 50) {
+          console.log(`📊 Packet media #${totalMediaPacketsReceived} - track: "${track}", payloadLength: ${data.media.payload?.length || 0} chars`);
+        } else if (totalMediaPacketsReceived % 50 === 0) {
           console.log(`📊 Packet media #${totalMediaPacketsReceived} - track: "${track}"`);
         }
         
@@ -117,10 +119,16 @@ function handleTelnyxMediaStream(ws, req) {
         
       case 'stop':
         console.log(`🔇 Stream terminé pour call: ${currentCallId}`);
+        // Afficher le résumé avant de nettoyer
+        const outboundCount = global.outboundPacketCount?.get(currentCallId) || 0;
+        console.log(`📊 Résumé stream (stop event) pour ${currentCallId}: ${receivedPacketCount} packets inbound envoyés au frontend, ${outboundCount} packets outbound reçus (ignorés), ${totalMediaPacketsReceived} packets media totaux`);
         telnyxStreams.delete(currentCallId); // Retirer le stream
         // Nettoyer le flag de stream démarré
         if (global.startedStreams) {
           global.startedStreams.delete(currentCallId);
+        }
+        if (global.outboundPacketCount) {
+          global.outboundPacketCount.delete(currentCallId);
         }
         break;
         

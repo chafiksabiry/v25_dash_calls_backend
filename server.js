@@ -173,6 +173,33 @@ app.post('/webhook', async (req, res) => {
     switch(eventType) {
       case 'call.initiated':
         status = 'calling';
+        
+        // Démarrer l'enregistrement dès le début de l'appel pour capturer TOUT l'appel
+        if (!global.startedRecordings) {
+          global.startedRecordings = new Set();
+        }
+        
+        if (!global.startedRecordings.has(callControlId)) {
+          global.startedRecordings.add(callControlId);
+          console.log(`🎙️ Démarrage enregistrement dès le début de l'appel pour ${callControlId}`);
+          
+          // Utiliser 'single' channel pour éviter les problèmes
+          axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
+            format: 'mp3',
+            channels: 'single'
+          }, {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }).then(() => {
+            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId} (dès le début)`);
+          }).catch(err => {
+            console.error(`❌ Erreur démarrage enregistrement:`, err.response?.data || err.message);
+            // Retirer du Set en cas d'erreur
+            global.startedRecordings.delete(callControlId);
+          });
+        }
         break;
       case 'call.ringing':
         status = 'ringing';
@@ -200,43 +227,7 @@ app.post('/webhook', async (req, res) => {
         console.log(`✅ Stream marqué comme démarré pour ${callControlId} (événement: ${eventType}, total: ${global.startedStreams.size})`);
         
         // L'appel est actif, démarrer le Media Stream maintenant
-        console.log(`✅ Appel répondu (${eventType}) - Démarrage de l'enregistrement et du Media Stream...`);
-
-        // 1. Démarrer l'enregistrement (seulement si pas déjà démarré)
-        // Vérifier si l'enregistrement n'a pas déjà été démarré
-        if (!global.startedRecordings) {
-          global.startedRecordings = new Set();
-        }
-        
-        // Démarrer l'enregistrement manuellement car l'enregistrement automatique de Telnyx est vide
-        // L'enregistrement automatique de Telnyx ne capture pas l'audio correctement avec le Media Stream
-        if (!global.startedRecordings) {
-          global.startedRecordings = new Set();
-        }
-        
-        if (!global.startedRecordings.has(callControlId)) {
-          global.startedRecordings.add(callControlId);
-          console.log(`🎙️ Démarrage enregistrement manuel pour ${callControlId} (événement: ${eventType})`);
-          
-          // Utiliser 'single' channel pour éviter les problèmes
-          axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
-            format: 'mp3',
-            channels: 'single'
-          }, {
-            headers: {
-              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }).then(() => {
-            console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId}`);
-          }).catch(err => {
-            console.error(`❌ Erreur démarrage enregistrement:`, err.response?.data || err.message);
-            // Retirer du Set en cas d'erreur
-            global.startedRecordings.delete(callControlId);
-          });
-        } else {
-          console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId}, ignoré`);
-        }
+        console.log(`✅ Appel répondu (${eventType}) - Démarrage du Media Stream...`);
         
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
@@ -276,6 +267,47 @@ app.post('/webhook', async (req, res) => {
         }
         // L'enregistrement s'arrêtera automatiquement quand l'appel se termine
         // Pas besoin d'appeler record_stop explicitement ici
+        break;
+      case 'call.recording.saved':
+        // L'enregistrement est sauvegardé, récupérer l'URL et l'envoyer au frontend
+        const recordingId = event.data?.payload?.recording_id || event.data?.payload?.id;
+        const recordingUrl = event.data?.payload?.recording_urls?.mp3 || event.data?.payload?.download_url;
+        
+        console.log(`💾 Enregistrement sauvegardé pour ${callControlId}:`, {
+          recordingId,
+          recordingUrl
+        });
+        
+        if (recordingUrl) {
+          // Envoyer l'URL de l'enregistrement au frontend via WebSocket
+          updateCallStatus(callControlId, 'recording-saved', {
+            recordingId,
+            recordingUrl,
+            originalEvent: eventType
+          });
+        } else {
+          console.warn(`⚠️ Pas d'URL d'enregistrement dans l'événement pour ${callControlId}`);
+          // Essayer de récupérer l'enregistrement via l'API Telnyx
+          if (recordingId) {
+            axios.get(`https://api.telnyx.com/v2/recordings/${recordingId}`, {
+              headers: {
+                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`
+              }
+            }).then(response => {
+              const downloadUrl = response.data?.data?.download_url || response.data?.data?.recording_urls?.mp3;
+              if (downloadUrl) {
+                console.log(`✅ URL d'enregistrement récupérée via API: ${downloadUrl}`);
+                updateCallStatus(callControlId, 'recording-saved', {
+                  recordingId,
+                  recordingUrl: downloadUrl,
+                  originalEvent: eventType
+                });
+              }
+            }).catch(err => {
+              console.error(`❌ Erreur récupération enregistrement via API:`, err.response?.data || err.message);
+            });
+          }
+        }
         break;
       case 'call.speak.ended':
         status = 'active';
