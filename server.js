@@ -18,7 +18,7 @@ app.use(express.json());
 const telnyx = require('telnyx')(process.env.TELNYX_API_KEY);
 
 // Initialiser le serveur audio WebSocket (Socket.IO)
-const { initializeAudioServer, updateCallStatus, speakOnCall } = require('./audioServer');
+const { initializeAudioServer, updateCallStatus, speakOnCall, activeCalls } = require('./audioServer');
 const audioIO = initializeAudioServer(server);
 
 // Importer le handler Telnyx Media Stream
@@ -313,11 +313,51 @@ app.post('/webhook', async (req, res) => {
         
         if (recordingUrl) {
           // Envoyer l'URL de l'enregistrement au frontend via WebSocket
-          updateCallStatus(callControlId, 'recording-saved', {
-            recordingId,
-            recordingUrl,
-            originalEvent: eventType
-          });
+          console.log(`📤 Envoi URL enregistrement au frontend pour ${callControlId}: ${recordingUrl.substring(0, 100)}...`);
+          
+          // Essayer d'abord avec activeCalls
+          const call = activeCalls.get(callControlId);
+          if (call && call.socketId && audioIO) {
+            const socket = audioIO.sockets.sockets.get(call.socketId);
+            if (socket) {
+              socket.emit('call-status', {
+                callControlId,
+                status: 'recording-saved',
+                recordingId,
+                recordingUrl,
+                originalEvent: eventType
+              });
+              console.log(`✅ URL enregistrement envoyée au frontend via activeCalls pour ${callControlId}`);
+            } else {
+              console.warn(`⚠️ Socket non trouvé pour ${callControlId} (socketId: ${call.socketId})`);
+            }
+          } else {
+            // Si l'appel n'est plus dans activeCalls, chercher dans callHistory
+            const callIndex = callHistory.findIndex(c => c.id === callControlId);
+            if (callIndex !== -1 && callHistory[callIndex].socketId && audioIO) {
+              const socket = audioIO.sockets.sockets.get(callHistory[callIndex].socketId);
+              if (socket) {
+                socket.emit('call-status', {
+                  callControlId,
+                  status: 'recording-saved',
+                  recordingId,
+                  recordingUrl,
+                  originalEvent: eventType
+                });
+                console.log(`✅ URL enregistrement envoyée au frontend via callHistory pour ${callControlId}`);
+              } else {
+                console.warn(`⚠️ Socket non trouvé dans callHistory pour ${callControlId}`);
+              }
+            } else {
+              // En dernier recours, utiliser updateCallStatus
+              updateCallStatus(callControlId, 'recording-saved', {
+                recordingId,
+                recordingUrl,
+                originalEvent: eventType
+              });
+              console.log(`✅ URL enregistrement envoyée au frontend via updateCallStatus pour ${callControlId}`);
+            }
+          }
         } else {
           console.warn(`⚠️ Pas d'URL d'enregistrement dans l'événement pour ${callControlId}`);
           // Essayer de récupérer l'enregistrement via l'API Telnyx
@@ -362,6 +402,13 @@ app.post('/webhook', async (req, res) => {
       callHistory[callIndex].status = status;
       callHistory[callIndex].state = state;
       callHistory[callIndex].lastUpdate = new Date().toISOString();
+      
+      // Stocker le socketId si disponible pour pouvoir envoyer des événements après la fin de l'appel
+      const { activeCalls } = require('./audioServer');
+      const activeCall = activeCalls.get(callControlId);
+      if (activeCall && activeCall.socketId) {
+        callHistory[callIndex].socketId = activeCall.socketId;
+      }
       
       // Calculer la durée si l'appel se termine
       if (status === 'ended') {
