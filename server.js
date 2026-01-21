@@ -28,13 +28,13 @@ setIO(audioIO);
 // Gérer les upgrade requests pour le Media Stream
 server.on('upgrade', (request, socket, head) => {
   const pathname = url.parse(request.url).pathname;
-  
+
   console.log('🔌 Upgrade request:', pathname);
-  
+
   // Route /audio-stream vers le handler Telnyx Media Stream
   if (pathname === '/audio-stream') {
     const wss = new WebSocket.Server({ noServer: true });
-    
+
     wss.handleUpgrade(request, socket, head, (ws) => {
       handleTelnyxMediaStream(ws, request);
     });
@@ -128,7 +128,7 @@ app.post('/api/call', async (req, res) => {
     // Récupérer le socketId depuis activeCalls si disponible
     const { activeCalls } = require('./audioServer');
     const activeCall = activeCalls.get(call.data.call_control_id);
-    
+
     // Ajouter à l'historique avec le socketId pour pouvoir envoyer des événements plus tard
     const callRecord = {
       id: call.data.call_control_id,
@@ -178,15 +178,15 @@ app.get('/api/call-history', (req, res) => {
 // Webhook pour recevoir les événements Telnyx
 app.post('/webhook', async (req, res) => {
   const event = req.body;
-  
+
   const eventType = event.data?.event_type;
   const callControlId = event.data?.payload?.call_control_id;
   const state = event.data?.payload?.state;
-  
+
   // Répondre immédiatement à Telnyx pour éviter les timeouts
   // (on traite l'événement de manière asynchrone après)
   res.sendStatus(200);
-  
+
   console.log('📞 Événement Telnyx reçu:', {
     event_type: eventType,
     call_control_id: callControlId,
@@ -198,8 +198,8 @@ app.post('/webhook', async (req, res) => {
   if (callControlId) {
     // Mapper les événements Telnyx vers des statuts utilisateur
     let status = eventType;
-    
-    switch(eventType) {
+
+    switch (eventType) {
       case 'call.initiated':
         status = 'calling';
         break;
@@ -209,40 +209,39 @@ app.post('/webhook', async (req, res) => {
       case 'call.active': // Ou quand l'appel est répondu
       case 'call.answered':
         status = 'active';
-        
+
         // Log pour voir si les deux événements sont reçus
         console.log(`🔔 Événement ${eventType} reçu pour ${callControlId}`);
-        
+
         // Vérifier si l'enregistrement/stream n'a pas déjà été démarré pour éviter les doublons
         // Utiliser un Set global pour tracker les streams démarrés (plus fiable que callHistory)
         if (!global.startedStreams) {
           global.startedStreams = new Set();
         }
-        
+
         if (global.startedStreams.has(callControlId)) {
           console.log(`⚠️ Stream déjà démarré pour ${callControlId} (événement: ${eventType}), ignoré (évite doublons)`);
           break;
         }
-        
+
         // Marquer comme démarré IMMÉDIATEMENT pour éviter les race conditions
         global.startedStreams.add(callControlId);
         console.log(`✅ Stream marqué comme démarré pour ${callControlId} (événement: ${eventType}, total: ${global.startedStreams.size})`);
-        
+
         // L'appel est actif, démarrer l'enregistrement et le Media Stream maintenant
         console.log(`✅ Appel répondu (${eventType}) - Démarrage de l'enregistrement et du Media Stream...`);
 
-<<<<<<< HEAD
         // 1. Démarrer l'enregistrement (seulement si pas déjà démarré)
         // Telnyx ne permet pas de démarrer l'enregistrement avant que l'appel soit répondu
         // Mais une fois démarré, il capture tout jusqu'à la fin de l'appel
         if (!global.startedRecordings) {
           global.startedRecordings = new Set();
         }
-        
+
         if (!global.startedRecordings.has(callControlId)) {
           global.startedRecordings.add(callControlId);
           console.log(`🎙️ Démarrage enregistrement pour ${callControlId} (événement: ${eventType})`);
-          
+
           // Utiliser 'single' channel pour éviter les problèmes
           axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
             format: 'mp3',
@@ -255,7 +254,7 @@ app.post('/webhook', async (req, res) => {
           }).then((response) => {
             console.log(`🎙️ Enregistrement démarré avec succès pour ${callControlId}`);
             console.log(`📋 Réponse record_start:`, JSON.stringify(response.data, null, 2));
-            
+
             // Stocker l'heure de début pour calculer la durée plus tard
             if (!global.callStartTimes) {
               global.callStartTimes = {};
@@ -272,23 +271,8 @@ app.post('/webhook', async (req, res) => {
         } else {
           console.log(`⚠️ Enregistrement déjà démarré pour ${callControlId}, ignoré`);
         }
-=======
-        // 1. Démarrer l'enregistrement
-        axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`, {
-          format: 'mp3',
-          channels: 'single'
-        }, {
-          headers: {
-            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-            'Content-Type': 'application/json'
-          }
-        }).then(() => {
-          console.log(`🎙️ Enregistrement démarré pour ${callControlId}`);
-        }).catch(err => {
-          console.error('❌ Erreur démarrage enregistrement:', err.response?.data || err.message);
-        });
->>>>>>> parent of 72486ef (Update')
-        
+
+
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
         // Demander explicitement du PCMA (A-Law) pour l'Europe
@@ -318,24 +302,24 @@ app.post('/webhook', async (req, res) => {
         break;
       case 'call.hangup':
         status = 'ended';
-        
+
         // Calculer la durée si on a l'heure de début
         if (global.callStartTimes && global.callStartTimes[callControlId]) {
           const startTime = global.callStartTimes[callControlId];
           const duration = Math.floor((Date.now() - startTime) / 1000);
           console.log(`⏱️ Durée appel calculée: ${duration} secondes pour ${callControlId}`);
-          
+
           // Stocker la durée dans l'historique
           const callIndex = callHistory.findIndex(call => call.id === callControlId);
           if (callIndex !== -1) {
             callHistory[callIndex].duration = duration;
             callHistory[callIndex].lastUpdate = new Date().toISOString();
           }
-          
+
           // Nettoyer
           delete global.callStartTimes[callControlId];
         }
-        
+
         // Nettoyer les flags de stream et enregistrement démarrés
         if (global.startedStreams) {
           global.startedStreams.delete(callControlId);
@@ -350,20 +334,20 @@ app.post('/webhook', async (req, res) => {
         // L'enregistrement est sauvegardé, récupérer l'URL et l'envoyer au frontend
         console.log(`💾 Événement call.recording.saved reçu pour ${callControlId}`);
         console.log(`📋 Données complètes de l'événement:`, JSON.stringify(event.data?.payload || event.data, null, 2));
-        
+
         const recordingId = event.data?.payload?.recording_id || event.data?.payload?.id || event.data?.id;
         const recordingUrl = event.data?.payload?.recording_urls?.mp3 || event.data?.payload?.download_url || event.data?.download_url;
-        
+
         console.log(`💾 Enregistrement sauvegardé pour ${callControlId}:`, {
           recordingId,
           recordingUrl,
           fullPayload: event.data?.payload
         });
-        
+
         if (recordingUrl) {
           // Envoyer l'URL de l'enregistrement au frontend via WebSocket
           console.log(`📤 Envoi URL enregistrement au frontend pour ${callControlId}: ${recordingUrl.substring(0, 100)}...`);
-          
+
           // Essayer d'abord avec activeCalls
           const call = activeCalls.get(callControlId);
           if (call && call.socketId && audioIO) {
@@ -457,30 +441,30 @@ app.post('/webhook', async (req, res) => {
         status = 'active';
         break;
     }
-    
+
     // Notifier le client via WebSocket
-    updateCallStatus(callControlId, status, { 
+    updateCallStatus(callControlId, status, {
       originalEvent: eventType,
-      state: state 
+      state: state
     });
 
     // Mettre à jour l'historique
     const callIndex = callHistory.findIndex(
       call => call.id === callControlId
     );
-    
+
     if (callIndex !== -1) {
       callHistory[callIndex].status = status;
       callHistory[callIndex].state = state;
       callHistory[callIndex].lastUpdate = new Date().toISOString();
-      
+
       // Stocker le socketId si disponible pour pouvoir envoyer des événements après la fin de l'appel
       const { activeCalls } = require('./audioServer');
       const activeCall = activeCalls.get(callControlId);
       if (activeCall && activeCall.socketId) {
         callHistory[callIndex].socketId = activeCall.socketId;
       }
-      
+
       // Calculer la durée si l'appel se termine
       if (status === 'ended') {
         const startTime = new Date(callHistory[callIndex].timestamp);
@@ -491,7 +475,7 @@ app.post('/webhook', async (req, res) => {
       }
     }
   }
-  
+
   // Note: On répond déjà au début du handler pour éviter les timeouts
   // Pas besoin de répondre à nouveau ici
 });
@@ -508,7 +492,7 @@ app.get('/api/health', (req, res) => {
       telnyxNumber: TELNYX_NUMBER
     }
   };
-  
+
   res.json(config);
 });
 
