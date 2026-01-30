@@ -34,29 +34,35 @@ const { handleFrontendAudioStream, setTelnyxMediaStreamModule } = frontendAudioS
 setTelnyxMediaStreamModule(telnyxMediaStream);
 setFrontendAudioStreamModule(frontendAudioStream);
 
-// Gérer les upgrade requests pour le Media Stream
+// Create WebSocket servers (Global instances)
+const wssTelnyx = new WebSocket.Server({ noServer: true });
+const wssFrontend = new WebSocket.Server({ noServer: true });
+
+// Handle upgrade requests
 server.on('upgrade', (request, socket, head) => {
   const pathname = url.parse(request.url).pathname;
 
   console.log('🔌 Upgrade request:', pathname);
 
-  // Route /audio-stream vers le handler Telnyx Media Stream
   if (pathname === '/audio-stream') {
-    const wss = new WebSocket.Server({ noServer: true });
-
-    wss.handleUpgrade(request, socket, head, (ws) => {
+    wssTelnyx.handleUpgrade(request, socket, head, (ws) => {
       handleTelnyxMediaStream(ws, request);
     });
-  }
-  // Route /frontend-audio vers le handler Frontend Media Stream
-  else if (pathname === '/frontend-audio') {
-    const wss = new WebSocket.Server({ noServer: true });
-
-    wss.handleUpgrade(request, socket, head, (ws) => {
+  } else if (pathname === '/frontend-audio') {
+    wssFrontend.handleUpgrade(request, socket, head, (ws) => {
       handleFrontendAudioStream(ws, request);
     });
+  } else {
+    // If it's a socket.io request, let it pass (or handle it if necessary, but usually socket.io attaches its own listener)
+    // However, if we don't destroy the socket here and it's NOT socket.io, it might hang.
+    // Socket.IO handles its own paths (usually /socket.io/).
+    // If this listener is added AFTER socket.io init, Socket.IO might have already handled it ??
+    // Actually, http server emits 'upgrade' to all listeners. 
+    // If pathname starts with /socket.io/, do nothing here.
+    if (!pathname.startsWith('/socket.io/')) {
+      // socket.destroy(); // Don't indiscriminately destroy, might break other things if any
+    }
   }
-  // Les autres routes (comme /socket.io/) sont gérées par Socket.IO automatiquement
 });
 
 // Numéro Telnyx
