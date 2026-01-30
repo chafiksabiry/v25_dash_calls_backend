@@ -78,6 +78,26 @@ app.get('/api/numbers', (req, res) => {
 });
 
 
+// Route pour vérifier le numéro de téléphone d'un gig (mock pour la démo)
+app.get('/phone-numbers/gig/:gigId/check', (req, res) => {
+  const { gigId } = req.params;
+
+  // Pour la démo, on retourne toujours true avec le numéro Telnyx de test
+  res.json({
+    hasNumber: true,
+    number: {
+      phoneNumber: TELNYX_NUMBER,
+      provider: 'telnyx',
+      status: 'active',
+      features: {
+        voice: true,
+        sms: true
+      }
+    },
+    message: 'Numéro disponible'
+  });
+});
+
 // Route pour passer un appel
 app.post('/api/call', async (req, res) => {
   const { to } = req.body;
