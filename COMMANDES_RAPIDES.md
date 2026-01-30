@@ -69,7 +69,7 @@ sudo systemctl status nginx
 ### 6️⃣ Tester l'API
 
 ```bash
-curl https://api-calls.harx.ai/api/health
+curl https://v25dashcallsbackend-production.up.railway.app/api/health
 ```
 
 **Attendu** : `{"status":"OK",...}`
@@ -81,7 +81,7 @@ curl https://api-calls.harx.ai/api/health
 **Console navigateur (F12) :**
 
 ```javascript
-const socket = io('https://api-calls.harx.ai');
+const socket = io('https://v25dashcallsbackend-production.up.railway.app');
 socket.on('connect', () => console.log('✅ FONCTIONNE !', socket.id));
 socket.on('connect_error', (err) => console.error('❌ ERREUR:', err));
 ```

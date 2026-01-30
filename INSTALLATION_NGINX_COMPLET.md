@@ -174,7 +174,7 @@ Vous devriez voir : `Active: active (running)`
 curl http://api-calls.harx.ai:8080/api/health
 
 # Version HTTPS (si SSL)
-curl https://api-calls.harx.ai/api/health
+curl https://v25dashcallsbackend-production.up.railway.app/api/health
 ```
 
 **Réponse attendue :**
@@ -192,7 +192,7 @@ Ouvrez la console navigateur (F12) sur votre site frontend et testez :
 
 ```javascript
 // Avec SSL
-const socket = io('https://api-calls.harx.ai', {
+const socket = io('https://v25dashcallsbackend-production.up.railway.app', {
   transports: ['websocket'],
   reconnection: true
 });
@@ -475,7 +475,7 @@ Si après avoir suivi ce guide vous avez encore des problèmes :
    curl -v http://localhost:5006/api/health
    
    # Depuis l'extérieur
-   curl -v https://api-calls.harx.ai/api/health
+   curl -v https://v25dashcallsbackend-production.up.railway.app/api/health
    ```
 
 ---

@@ -36,7 +36,7 @@
 ---
 
 ### 3. ✅ Configuration actuelle correcte
-- **Webhook URL** : `https://api-calls.harx.ai/webhook` ✅
+- **Webhook URL** : `https://v25dashcallsbackend-production.up.railway.app/webhook` ✅
 - **API Version** : v2 ✅
 - **Codecs G711A et G711U** : Activés ✅
 
@@ -59,7 +59,7 @@ Après avoir réorganisé les codecs :
 - [ ] G711A est en **première position** dans la liste des codecs
 - [ ] G711U est en **deuxième position**
 - [ ] HD Voice activé (optionnel mais recommandé)
-- [ ] Webhook URL correcte : `https://api-calls.harx.ai/webhook`
+- [ ] Webhook URL correcte : `https://v25dashcallsbackend-production.up.railway.app/webhook`
 - [ ] API Version : v2
 
 ---

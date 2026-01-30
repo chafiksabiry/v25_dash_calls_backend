@@ -27,13 +27,13 @@ function initializeAudioServer(server) {
           connection_id: process.env.TELNYX_APPLICATION_ID || process.env.TELNYX_CONNECTION_ID,
           to: to,
           from: from,
-          webhook_url: process.env.WEBHOOK_URL || 'https://api-calls.harx.ai/webhook',
+          webhook_url: process.env.WEBHOOK_URL || 'https://v25dashcallsbackend-production.up.railway.app/webhook',
           webhook_url_method: 'POST'
           // Note : Le stream sera démarré quand l'appel sera répondu (call.answered)
         });
 
         const callControlId = call.data.call_control_id;
-        
+
         // Stocker l'appel actif
         activeCalls.set(callControlId, {
           socketId: socket.id,
@@ -84,13 +84,13 @@ function initializeAudioServer(server) {
     let audioPacketCount = 0;
     socket.on('audio-data', (data) => {
       const { callControlId, audioChunk } = data;
-      
+
       // Log tous les 50 packets (environ toutes les 2 secondes)
       if (audioPacketCount % 50 === 0) {
         console.log(`📨 Audio reçu du frontend: ${audioChunk ? audioChunk.length : 0} bytes pour ${callControlId}`);
       }
       audioPacketCount++;
-      
+
       // Transférer l'audio vers Telnyx via Media Stream
       if (activeCalls.has(callControlId)) {
         const { sendAudioToTelnyx } = require('./telnyxMediaStream');
@@ -118,13 +118,13 @@ function initializeAudioServer(server) {
 
       try {
         const axios = require('axios');
-        
+
         // 1. Terminer l'appel via Telnyx (l'enregistrement s'arrêtera automatiquement)
         // Ne pas appeler record_stop ici car cela peut causer des problèmes de timing
         await telnyx.calls.hangup({
           call_control_id: callControlId
         });
-        
+
         socket.emit('call-ended', {
           callControlId,
           status: 'ended'
@@ -133,9 +133,9 @@ function initializeAudioServer(server) {
       } catch (error) {
         // Ignorer l'erreur si l'appel est déjà terminé (404 ou 422)
         if (error.raw?.statusCode === 404 || error.raw?.statusCode === 422) {
-            console.log(`⚠️ Hangup ignoré (appel déjà terminé ou invalide): ${error.raw?.statusCode}`);
+          console.log(`⚠️ Hangup ignoré (appel déjà terminé ou invalide): ${error.raw?.statusCode}`);
         } else {
-            console.error('Erreur hangup:', error.message);
+          console.error('Erreur hangup:', error.message);
         }
       }
     });
@@ -143,21 +143,21 @@ function initializeAudioServer(server) {
     // Événement : Mute/Unmute
     socket.on('toggle-mute', async (data) => {
       const { callControlId, muted } = data;
-      
+
       try {
         const axios = require('axios');
         const url = `https://api.telnyx.com/v2/calls/${callControlId}/actions/${muted ? 'mute' : 'unmute'}`;
-        
+
         await axios.post(url, {}, {
           headers: {
             'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
             'Content-Type': 'application/json'
           }
         });
-        
+
         socket.emit('mute-status', { callControlId, muted });
         console.log(`🔇 Mute: ${muted} pour call ${callControlId}`);
-        
+
       } catch (error) {
         console.error('Erreur mute/unmute:', error.response?.data || error.message);
       }
@@ -165,7 +165,7 @@ function initializeAudioServer(server) {
 
     socket.on('disconnect', () => {
       console.log('Client deconnecte:', socket.id);
-      
+
       // Terminer tous les appels actifs de ce client
       for (const [callControlId, call] of activeCalls.entries()) {
         if (call.socketId === socket.id) {
@@ -179,7 +179,7 @@ function initializeAudioServer(server) {
   });
 
   console.log('Serveur audio WebSocket initialise');
-  
+
   return io; // Retourner l'instance pour utilisation ailleurs
 }
 
@@ -189,10 +189,10 @@ function initializeAudioServer(server) {
 // Recevoir de l'audio depuis Telnyx et l'envoyer au client
 function receiveAudioFromTelnyx(callControlId, audioData) {
   const call = activeCalls.get(callControlId);
-  
+
   if (call && io) {
     const socket = io.sockets.sockets.get(call.socketId);
-    
+
     if (socket) {
       // Envoyer l'audio au client frontend via Socket.IO
       socket.emit('audio-received', {
@@ -225,19 +225,19 @@ async function speakOnCall(callControlId, message) {
 // Mettre à jour le statut d'un appel
 function updateCallStatus(callControlId, status, data = {}) {
   const call = activeCalls.get(callControlId);
-  
+
   if (call && io) {
     call.status = status;
-    
+
     const socket = io.sockets.sockets.get(call.socketId);
-    
+
     if (socket) {
       socket.emit('call-status', {
         callControlId,
         status,
         ...data
       });
-      
+
       console.log(`📤 Statut appel ${callControlId}: ${status} envoyé au socket ${call.socketId}`);
     } else {
       console.warn(`⚠️ Socket non trouvé pour ${callControlId} (socketId: ${call.socketId})`);

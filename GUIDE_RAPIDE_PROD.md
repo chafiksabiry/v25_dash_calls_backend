@@ -42,7 +42,7 @@ sudo systemctl reload nginx
 
 ```javascript
 // Test rapide
-const socket = io('https://api-calls.harx.ai');
+const socket = io('https://v25dashcallsbackend-production.up.railway.app');
 socket.on('connect', () => console.log('✅ CONNECTÉ!', socket.id));
 socket.on('connect_error', (err) => console.error('❌ ERREUR:', err));
 ```
@@ -127,7 +127,7 @@ sudo certbot --nginx -d api-calls.harx.ai
 - [ ] Configuration nginx copiée
 - [ ] `sudo nginx -t` → OK
 - [ ] `sudo systemctl reload nginx` → OK
-- [ ] Frontend `.env` a `REACT_APP_API_URL=https://api-calls.harx.ai`
+- [ ] Frontend `.env` a `REACT_APP_API_URL=https://v25dashcallsbackend-production.up.railway.app`
 - [ ] Console frontend montre : `✅ WebSocket connecté`
 - [ ] Logs nginx montrent : `HTTP/1.1" 101`
 
