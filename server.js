@@ -22,8 +22,17 @@ const { initializeAudioServer, updateCallStatus, speakOnCall, activeCalls } = re
 const audioIO = initializeAudioServer(server);
 
 // Importer le handler Telnyx Media Stream
-const { handleTelnyxMediaStream, setIO } = require('./telnyxMediaStream');
+const telnyxMediaStream = require('./telnyxMediaStream');
+const { handleTelnyxMediaStream, setIO, setFrontendAudioStreamModule } = telnyxMediaStream;
 setIO(audioIO);
+
+// Importer le handler Frontend Media Stream (Raw WebSocket)
+const frontendAudioStream = require('./frontendAudioStream');
+const { handleFrontendAudioStream, setTelnyxMediaStreamModule } = frontendAudioStream;
+
+// Wire up dependencies (Circular dependency resolution)
+setTelnyxMediaStreamModule(telnyxMediaStream);
+setFrontendAudioStreamModule(frontendAudioStream);
 
 // Gérer les upgrade requests pour le Media Stream
 server.on('upgrade', (request, socket, head) => {
@@ -37,6 +46,14 @@ server.on('upgrade', (request, socket, head) => {
 
     wss.handleUpgrade(request, socket, head, (ws) => {
       handleTelnyxMediaStream(ws, request);
+    });
+  }
+  // Route /frontend-audio vers le handler Frontend Media Stream
+  else if (pathname === '/frontend-audio') {
+    const wss = new WebSocket.Server({ noServer: true });
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      handleFrontendAudioStream(ws, request);
     });
   }
   // Les autres routes (comme /socket.io/) sont gérées par Socket.IO automatiquement

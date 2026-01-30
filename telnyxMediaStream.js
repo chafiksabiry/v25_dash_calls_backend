@@ -240,9 +240,36 @@ function handleTelnyxMediaStream(ws, req) {
   return ws;
 }
 
-// Envoyer l'audio au client frontend via Socket.IO
+// Support for raw WebSocket frontend (frontendAudioStream.js)
+let frontendAudioStream;
+
+function setFrontendAudioStreamModule(module) {
+  frontendAudioStream = module;
+}
+
+// Envoyer l'audio au client frontend
 let frontendSentCount = 0;
 function sendAudioToFrontend(callControlId, audioPayload) {
+  let sent = false;
+
+  // 1. Try sending via Raw WebSocket (frontendAudioStream) FIRST
+  if (frontendAudioStream && frontendAudioStream.sendAudioToFrontend) {
+    sent = frontendAudioStream.sendAudioToFrontend(callControlId, audioPayload);
+    if (sent) {
+      if (frontendSentCount % 50 === 0) {
+        console.log(`📤 Audio sent via Raw WebSocket for ${callControlId}`);
+      }
+      frontendSentCount++;
+      return; // Success, skip Socket.IO fallback
+    } else {
+      // Debug logs only occasionally
+      if (frontendSentCount % 100 === 0) {
+        console.warn(`⚠️ WebSocket not found for ${callControlId}, falling back to Socket.IO...`);
+      }
+    }
+  }
+
+  // 2. Fallback to Socket.IO (original logic)
   if (!io) return;
 
   const call = activeCalls.get(callControlId);
@@ -255,20 +282,18 @@ function sendAudioToFrontend(callControlId, audioPayload) {
         timestamp: Date.now()
       });
 
-      // Log tous les 10 packets pour debug
-      if (frontendSentCount % 10 === 0) {
-        console.log(`📤 Audio envoyé au frontend (#${frontendSentCount}, ${audioPayload.length} chars)`);
+      if (frontendSentCount % 50 === 0) {
+        console.log(`📤 Audio sent via Socket.IO (#${frontendSentCount}, ${audioPayload.length} chars)`);
       }
       frontendSentCount++;
     } else {
-      if (frontendSentCount % 50 === 0) {
-        console.log(`⚠️ Socket not found pour call ${callControlId} (socketId: ${call.socketId})`);
+      if (frontendSentCount % 100 === 0) {
+        console.log(`⚠️ Socket.IO socket not found for call ${callControlId} (socketId: ${call.socketId})`);
       }
     }
   } else {
-    if (frontendSentCount % 50 === 0) {
-      console.log(`⚠️ Call not found dans activeCalls pour ${callControlId}`);
-      console.log(`📋 Appels actifs:`, Array.from(activeCalls.keys()));
+    if (frontendSentCount % 100 === 0) {
+      console.log(`⚠️ Call not found in activeCalls for ${callControlId}`);
     }
   }
 }
@@ -291,10 +316,15 @@ function sendAudioToTelnyx(callControlId, audioPayload) {
       }
     }));
 
-    if (sentPacketCount % 50 === 0) { // Moins de logs
+    if (sentPacketCount % 50 === 0) {
       console.log(`🎵 Audio envoyé vers Telnyx (${audioPayload.length} chars -> converted)`);
     }
     sentPacketCount++;
+  } else {
+    // Debug
+    if (sentPacketCount % 100 === 0) {
+      console.warn(`⚠️ Telnyx stream not ready for ${callControlId}`);
+    }
   }
 }
 
@@ -305,5 +335,6 @@ function setIO(socketIO) {
 module.exports = {
   handleTelnyxMediaStream,
   sendAudioToTelnyx,
-  setIO
+  setIO,
+  setFrontendAudioStreamModule
 };
