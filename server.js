@@ -348,8 +348,15 @@ app.post('/webhook', async (req, res) => {
         // 2. Démarrer le streaming audio bidirectionnel
         // Utiliser 'both_tracks' pour recevoir l'audio de l'interlocuteur ET envoyer le vôtre
         // Demander explicitement du PCMA (A-Law) pour l'Europe
+        // Determine stream URL based on WEBHOOK_URL or default to Railway domain
+        const webhookUrl = new URL(process.env.WEBHOOK_URL || 'https://v25dashcallsbackend-production.up.railway.app/webhook');
+        const streamHost = webhookUrl.host;
+        const streamUrl = `wss://${streamHost}/audio-stream`;
+
+        console.log(`🔗 Configuration URL Stream: ${streamUrl}`);
+
         axios.post(`https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`, {
-          stream_url: 'wss://api-calls.harx.ai/audio-stream',
+          stream_url: streamUrl,
           stream_track: 'both_tracks', // CHANGED: both_tracks pour audio bidirectionnel complet
           media_format: {
             encoding: 'PCMA', // PCMA pour A-Law (Europe)

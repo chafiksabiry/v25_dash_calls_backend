@@ -108,13 +108,17 @@ function initializeAudioServer(server) {
       console.log('📴 Terminer appel:', callControlId);
 
       // Retirer immédiatement de la liste pour éviter les doublons (race condition avec disconnect)
+      // MODIFICATION: On ne retire pas tout de suite pour permettre les derniers logs/updates
       const call = activeCalls.get(callControlId);
+      /*
       if (call) {
         activeCalls.delete(callControlId);
       } else {
         // Déjà traité ou inexistant
         return;
       }
+      */
+      if (!call) return;
 
       try {
         const axios = require('axios');
