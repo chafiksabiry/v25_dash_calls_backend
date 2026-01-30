@@ -159,7 +159,8 @@ app.post('/api/call', async (req, res) => {
       to: to,
       from: TELNYX_NUMBER,
       webhook_url: process.env.WEBHOOK_URL || `http://localhost:${PORT}/webhook`,
-      webhook_url_method: 'POST'
+      webhook_url_method: 'POST',
+      answering_machine_detection: 'premium' // Activates voicemail detection
     });
 
     console.log('✅ Appel créé avec succès:', {
@@ -194,6 +195,34 @@ app.post('/api/call', async (req, res) => {
     res.status(500).json({
       error: 'Erreur lors de l\'initiation de l\'appel',
       details: error.response?.data?.errors?.[0]?.detail || error.message
+    });
+  }
+});
+
+// Route pour couper un appel
+app.post('/api/call/hangup', async (req, res) => {
+  const { callControlId } = req.body;
+
+  if (!callControlId) {
+    return res.status(400).json({ error: 'callControlId requis' });
+  }
+
+  try {
+    console.log(`📴 Tentative de fin d'appel pour ${callControlId}`);
+
+    // Utiliser l'objet call pour raccrocher
+    const call = new telnyx.Call({
+      call_control_id: callControlId
+    });
+
+    await call.hangup();
+
+    res.json({ success: true, message: 'Appel terminé' });
+  } catch (error) {
+    console.error(`❌ Erreur lors de la fin d'appel ${callControlId}:`, error.message);
+    res.status(500).json({
+      error: 'Erreur lors de la fin de l\'appel',
+      details: error.message
     });
   }
 });
@@ -372,6 +401,24 @@ app.post('/webhook', async (req, res) => {
         }
         // L'enregistrement s'arrêtera automatiquement quand l'appel se termine
         // Pas besoin d'appeler record_stop explicitement ici
+        break;
+      case 'call.machine.detection.ended':
+        const detectionResult = event.data?.payload?.result;
+        console.log(`🤖 Détection répondeur terminée pour ${callControlId}: ${detectionResult}`);
+
+        status = 'machine_detection';
+
+        // Si c'est un répondeur, on met à jour le statut
+        if (detectionResult === 'machine' || detectionResult === 'voicemail') {
+          console.log(`📠 Répondeur détecté pour ${callControlId}`);
+          // Optionnel : raccrocher automatiquement si c'est un répondeur ?
+          // Pour l'instant on notifie juste le frontend qui décidera
+        }
+
+        updateCallStatus(callControlId, 'voicemail-detected', {
+          result: detectionResult,
+          originalEvent: eventType
+        });
         break;
       case 'call.recording.saved':
         // L'enregistrement est sauvegardé, récupérer l'URL et l'envoyer au frontend
