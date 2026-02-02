@@ -25,7 +25,7 @@ router.route('/')
 
 router.get('/agent/:agentId', callController.getCallsByAgent);
 
-  
+
 router.post('/token', (req, res, next) => {
   console.log('Requête reçue sur la route');
   next();
@@ -65,7 +65,13 @@ router.post('/call', callController.launchOutboundCall);
 // Route pour suivre l'état de l'appel
 //router.get('/call/status/:callId', callController.trackCallStatus);
 //twilio
-router.post('/twilio-voice', callController.handleVoice);
+//twilio
+router.all('/twilio-voice', (req, res, next) => {
+  console.log(`[Twilio Route] ${req.method} request to /twilio-voice`);
+  console.log('Body:', req.body);
+  console.log('Query:', req.query);
+  next();
+}, callController.handleVoice);
 router.post('/outgoing', callController.initiateCall);
 //router.get('/status/:callSid', callController.trackCallStatus);
 // routes/callRoutes.js
