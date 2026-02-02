@@ -7,7 +7,7 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 const Call = mongoose.model('Call')
-const path = require("path"); 
+const path = require("path");
 const fetch = require('node-fetch');
 
 cloudinary.config({
@@ -20,12 +20,12 @@ cloudinary.config({
 const getTwilioCredentials = async (userId) => {
   console.log("we are in the service function getTwilioCredentials");
   try {
-/*     const response = await axios.get(`${process.env.INTEGRATIONS_SERVICE_URL}/api/twilio/config/${userId}`);
-    console.log("response:", response.data);
-    if (!response.data.success) {
-      throw new Error('Failed to get Twilio credentials');
-    }
-    return response.data.integration; */
+    /*     const response = await axios.get(`${process.env.INTEGRATIONS_SERVICE_URL}/api/twilio/config/${userId}`);
+        console.log("response:", response.data);
+        if (!response.data.success) {
+          throw new Error('Failed to get Twilio credentials');
+        }
+        return response.data.integration; */
     const twilioConfig = {
       accountSid: process.env.TWILIO_ACCOUNT_SID,
       authToken: process.env.TWILIO_AUTH_TOKEN
@@ -86,11 +86,11 @@ const getChildCalls = async (parentCallSid, userId) => {
     const credentials = await getTwilioCredentials(userId);
     console.log("credentials:", credentials);
     const client = twilio(credentials.accountSid, credentials.authToken);
-        const childCalls = await client.calls.list({
+    const childCalls = await client.calls.list({
       parentCallSid: parentCallSid,
       limit: 1,
     });
-    
+
     return childCalls.map(call => ({
       sid: call.sid,
       from: call.from,
@@ -176,9 +176,19 @@ const makeCall = async (to, userId) => {
 
 const generateTwimlResponse = async (to) => {
   const twiml = new twilio.twiml.VoiceResponse();
-  
+  const callerId = process.env.TWILIO_PHONE_NUMBER;
+
+  console.log("Generating TwiML for:", to, "CallerID:", callerId);
+
+  if (!callerId) {
+    console.error("❌ Missing TWILIO_PHONE_NUMBER in environment variables");
+    twiml.say("System configuration error: Missing Caller ID.");
+    return twiml.toString();
+  }
+
   if (to) {
-    const dial = twiml.dial({ callerId: process.env.TWILIO_PHONE_NUMBER, record: 'record-from-answer' });
+    // Validating 'to' format could be done here as well
+    const dial = twiml.dial({ callerId: callerId, record: 'record-from-answer' });
     dial.number(to);
   } else {
     twiml.say("Invalid number");
@@ -191,7 +201,7 @@ const trackCallStatus = async (callSid, userId) => {
   try {
     const client = await getTwilioClient(userId);
     const call = await client.calls(callSid).fetch();
-    
+
     if (call && call.status) {
       console.log(`Call status for SID ${callSid}: ${call.status}`);
       return call.status;
@@ -245,7 +255,7 @@ const generateTwilioToken = async (identity) => {
     try {
       const voiceGrant = new VoiceGrant({
         outgoingApplicationSid: process.env.TWILIO_APP_SID, // ✅ TwiML App SID
-       // incomingAllow: true, // Autorise les appels entrants (optionnel)
+        // incomingAllow: true, // Autorise les appels entrants (optionnel)
       });
 
       const token = new AccessToken(
@@ -268,7 +278,7 @@ const fetchTwilioRecording = async (recordingUrl, userId) => {
   try {
     const credentials = await getTwilioCredentials(userId);
     const auth = `Basic ${Buffer.from(`${credentials.accountSid}:${credentials.authToken}`).toString('base64')}`;
-    
+
     const response = await axios.get(recordingUrl, {
       headers: {
         'Content-Type': 'audio/mpeg',

@@ -53,9 +53,9 @@ exports.getCallsByAgent = async (req, res) => {
     const agentId = req.params.agentId; // Fixed incorrect destructuring
 
     if (!agentId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Agent ID est requis" 
+        message: "Agent ID est requis"
       });
     }
 
@@ -71,10 +71,10 @@ exports.getCallsByAgent = async (req, res) => {
     });
   } catch (error) {
     console.error("Erreur lors de la récupération des appels :", error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       message: "Erreur serveur",
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -384,8 +384,12 @@ exports.handleVoice = async (req, res) => {
     res.type("text/xml");
     res.send(responseXml);
   } catch (error) {
+  } catch (error) {
     console.error("Error generating TwiML:", error);
-    res.status(500).json({ error: "Erreur interne du serveur" });
+    const twiml = new (require('twilio').twiml.VoiceResponse)();
+    twiml.say("An application error occurred.");
+    res.type("text/xml");
+    res.status(200).send(twiml.toString());
   }
 };
 
