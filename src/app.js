@@ -21,16 +21,37 @@ connectDB();
 
 const app = express();
 
-// Enable CORS with specific configuration
-app.use(cors({
-  origin: ['http://localhost:5180', 'http://localhost:5183', 'https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai', 'https://v25.harx.ai', 'https://copilot.harx.ai', 'http://38.242.208.242:5186', 'http://localhost:5173', 'https://harx25pageslinks.netlify.app'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
+app.set('trust proxy', 1);
 
-// Enable pre-flight requests for all routes
-app.options('*', cors());
+// Manual CORS Middleware
+app.use((req, res, next) => {
+  const allowedOrigins = [
+    'http://localhost:5180',
+    'http://localhost:5183',
+    'https://v25-preprod.harx.ai',
+    'https://preprod-api-dash-calls.harx.ai',
+    'https://v25.harx.ai',
+    'https://copilot.harx.ai',
+    'http://38.242.208.242:5186',
+    'http://localhost:5173',
+    'https://harx25pageslinks.netlify.app'
+  ];
+
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
 
 app.use(express.urlencoded({ extended: true }));
 
