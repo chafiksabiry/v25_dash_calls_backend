@@ -6,7 +6,7 @@ const VoiceGrant = AccessToken.VoiceGrant;
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
-const mongoose = require('mongoose');
+
 // const Call = mongoose.model('Call') -- Moved inside functions
 const path = require("path");
 const fetch = require('node-fetch');
@@ -21,12 +21,6 @@ cloudinary.config({
 const getTwilioCredentials = async (userId) => {
   console.log("we are in the service function getTwilioCredentials");
   try {
-    /*     const response = await axios.get(`${process.env.INTEGRATIONS_SERVICE_URL}/api/twilio/config/${userId}`);
-        console.log("response:", response.data);
-        if (!response.data.success) {
-          throw new Error('Failed to get Twilio credentials');
-        }
-        return response.data.integration; */
     const twilioConfig = {
       accountSid: process.env.TWILIO_ACCOUNT_SID,
       authToken: process.env.TWILIO_AUTH_TOKEN
