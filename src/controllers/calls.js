@@ -384,6 +384,7 @@ exports.handleVoice = async (req, res) => {
     res.type("text/xml");
     res.send(responseXml);
   } catch (error) {
+    // Test
     console.error("Error generating TwiML:", error);
     const twiml = new (require('twilio').twiml.VoiceResponse)();
     twiml.say("An application error occurred.");
