@@ -9,7 +9,6 @@
     "test": "jest"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.10.0",
     "@google-cloud/speech": "^7.0.0",
     "@google-cloud/vertexai": "^1.9.3",
     "bcryptjs": "^2.4.3",
@@ -22,7 +21,6 @@
     "node-fetch": "^2.7.0",
     "openai": "^4.87.3",
     "ovh": "^2.0.3",
-    "speaker": "^0.5.5",
     "telnyx": "^1.25.5",
     "twilio": "^5.8.0",
     "ws": "^8.18.1"
