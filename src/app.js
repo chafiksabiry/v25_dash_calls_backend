@@ -21,12 +21,6 @@ connectDB();
 
 const app = express();
 
-app.use(express.urlencoded({ extended: true }));
-
-// Body parser
-app.use(express.json());
-
-//app.use(cors());
 // Enable CORS with specific configuration
 app.use(cors({
   origin: ['http://localhost:5180', 'http://localhost:5183', 'https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai', 'https://v25.harx.ai', 'https://copilot.harx.ai', 'http://38.242.208.242:5186', 'http://localhost:5173', 'https://harx25pageslinks.netlify.app'],
@@ -34,6 +28,14 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
+
+// Enable pre-flight requests for all routes
+app.options('*', cors());
+
+app.use(express.urlencoded({ extended: true }));
+
+// Body parser
+app.use(express.json());
 
 // Mount routers
 app.use('/api/auth', auth);
