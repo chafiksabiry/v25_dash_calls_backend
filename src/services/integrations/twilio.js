@@ -6,7 +6,8 @@ const VoiceGrant = AccessToken.VoiceGrant;
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
-const Call = mongoose.model('Call')
+const mongoose = require('mongoose');
+// const Call = mongoose.model('Call') -- Moved inside functions
 const path = require("path");
 const fetch = require('node-fetch');
 
@@ -109,6 +110,7 @@ const getChildCalls = async (parentCallSid, userId) => {
 
 const saveCallToDB = async (callSid, agentId, leadId, call, cloudinaryrecord) => {
   try {
+    const Call = mongoose.model('Call');
     let existingCall = await Call.findOne({ sid: callSid });
 
     if (existingCall) {
