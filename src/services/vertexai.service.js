@@ -50,13 +50,11 @@ class VertexAIService {
   async createSpeechStream(config = {}) {
     console.log('🎤 [VertexAIService] RECEIVED CONFIG REQUEST:', JSON.stringify(config));
 
-    // Minimal baseline configuration
+    // Minimal baseline configuration for raw PCM at 16kHz
     const defaultConfig = {
       encoding: 'LINEAR16',
       sampleRateHertz: 16000,
       languageCode: 'en-US',
-      model: 'latest_long',
-      useEnhanced: true,
       enableAutomaticPunctuation: true
     };
 

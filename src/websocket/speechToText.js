@@ -12,6 +12,8 @@ function setupSpeechToTextWebSocket(server) {
     console.log('✅ Client connected to speech-to-text WebSocket');
     let recognizeStream = null;
     let isStreamActive = false;
+    let isInitializing = false;
+    let pendingChunks = [];
     let speechConfig = null;
     let fullTranscript = "";
 
@@ -53,32 +55,61 @@ function setupSpeechToTextWebSocket(server) {
           console.log('⚙️ [STT] Requested config:', JSON.stringify(speechConfig));
           cleanupStream();
 
+          if (isInitializing) {
+            console.log('⏳ [STT] Already initializing. Config will be used for the next stream.');
+            return;
+          }
+
+          isInitializing = true;
           try {
             recognizeStream = await vertexAIService.createSpeechStream(speechConfig);
             isStreamActive = true;
             setupStreamHandlers(recognizeStream, ws);
-            console.log('✅ [STT] Stream re-configured successfully');
+            console.log('✅ [STT] Stream configured successfully');
           } catch (sttError) {
-            console.error('❌ [STT] Failed to re-configure STT stream:', sttError.message);
+            console.error('❌ [STT] Failed to configure STT stream:', sttError.message);
+          } finally {
+            isInitializing = false;
           }
         } else if (!isConfigMessage) {
-          // Audio data - Write to stream if active
+          // Audio data
           if (!isStreamActive && !recognizeStream) {
-            console.log('🎤 [STT] Audio data received (size: ' + data.length + '). No stream active. Starting fallback...');
+            if (isInitializing) {
+              pendingChunks.push(data);
+              if (pendingChunks.length % 10 === 0) console.log('⏳ [STT] Buffering audio chunk while initializing... (count: ' + pendingChunks.length + ')');
+              return;
+            }
+
+            console.log('🎤 [STT] Audio data received (' + data.length + ' bytes). Starting fallback stream...');
+            isInitializing = true;
+            pendingChunks.push(data);
+
             try {
-              recognizeStream = await vertexAIService.createSpeechStream();
+              recognizeStream = await vertexAIService.createSpeechStream(speechConfig || {});
               isStreamActive = true;
               setupStreamHandlers(recognizeStream, ws);
-            } catch (err) {
-              console.error('❌ [STT] Failed to start fallback STT stream:', err);
-            }
-          }
 
-          if (isStreamActive && recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
+              const bufferedCount = pendingChunks.length;
+              if (bufferedCount > 0) {
+                console.log('📤 [STT] Writing ' + bufferedCount + ' buffered chunks to new stream');
+                for (const chunk of pendingChunks) {
+                  if (recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
+                    recognizeStream.write(chunk);
+                  }
+                }
+                pendingChunks = [];
+              }
+            } catch (err) {
+              console.error('❌ [STT] Failed to start STT stream:', err);
+              pendingChunks = [];
+            } finally {
+              isInitializing = false;
+            }
+          } else if (isStreamActive && recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
             try {
               recognizeStream.write(data);
             } catch (writeError) {
-              console.error('❌ Error writing to stream:', writeError);
+              console.error('❌ [STT] Error writing as stream was destroyed:', writeError.message);
               isStreamActive = false;
               cleanupStream();
             }
