@@ -16,6 +16,11 @@ const settings = require('./routes/settings');
 const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
 
+// Ensure models are registered
+require('./models/Call');
+require('./models/Agent');
+require('./models/Lead');
+
 // Connect to database
 connectDB();
 

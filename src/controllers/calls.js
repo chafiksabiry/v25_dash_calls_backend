@@ -512,10 +512,12 @@ exports.saveCallToDB = async (req, res) => {
     res.json(callDetails);
   } catch (error) {
     console.error('❌ Error in saveCallToDB controller:', error);
+    // Be more verbose in pre-production/development
     res.status(500).json({
       message: 'Failed to save call details',
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      stack: config.NODE_ENV !== 'production' ? error.stack : undefined,
+      type: error.name
     });
   }
 };

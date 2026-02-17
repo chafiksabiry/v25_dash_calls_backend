@@ -7,7 +7,7 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 
-// const Call = mongoose.model('Call') -- Moved inside functions
+const { Call } = require('../../models/Call');
 const path = require("path");
 const fetch = require('node-fetch');
 
@@ -60,19 +60,19 @@ const getCallDetails = async (callSid, userId) => {
 
     return {
       ParentCallSid: callSid,
-      ChildCallSid: callFils[0].sid,
+      ChildCallSid: callFils[0]?.sid || null,
       duration: callParent.duration,
-      from: callFils[0].from,
-      to: callFils[0].to,
-      status: callFils[0].status,
+      from: callFils[0]?.from || callParent.from,
+      to: callFils[0]?.to || callParent.to,
+      status: callFils[0]?.status || callParent.status,
       startTime: callParent.startTime,
       endTime: callParent.endTime,
-      direction: callFils[0].direction,
+      direction: callFils[0]?.direction || callParent.direction,
       recordingUrl: recordingUrl,
     };
   } catch (error) {
     console.error("❌ Error fetching call details:", error);
-    throw new Error("Error fetching call details");
+    throw new Error(`Error fetching call details: ${error.message}`);
   }
 };
 
@@ -98,13 +98,12 @@ const getChildCalls = async (parentCallSid, userId) => {
     }));
   } catch (error) {
     console.error("❌ Error getting child calls:", error);
-    throw new Error("Error getting child calls");
+    return []; // Return empty instead of throwing to be more resilient
   }
 };
 
 const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord) => {
   try {
-    const Call = mongoose.model('Call');
     // Normalize call data
     const call = callData || {};
 
@@ -113,7 +112,6 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     if (!finalCloudinaryUrl && call.recordingUrl && agentId) {
       console.log(`☁️ [TwilioService] No Cloudinary record provided, attempting auto-upload for SID: ${callSid}`);
       try {
-        // use agentId as userId for credentials
         finalCloudinaryUrl = await fetchTwilioRecording(call.recordingUrl, agentId);
         if (finalCloudinaryUrl) {
           console.log(`✅ [TwilioService] Auto-uploaded to Cloudinary: ${finalCloudinaryUrl}`);
