@@ -35,7 +35,7 @@ const callSchema = new mongoose.Schema({
   },
   direction: {
     type: String,
-    enum: ["inbound", "outbound", "Inbound", "Outbound"],
+    enum: ["inbound", "outbound", "outbound-dial", "outbound-api", "Inbound", "Outbound"],
     default: "outbound",
     required: true,
   },
