@@ -112,6 +112,7 @@ class VertexAIService {
       encoding: 'LINEAR16',
       sampleRateHertz: 16000,
       languageCode: 'en-US',
+      model: 'default',
       enableAutomaticPunctuation: true
     };
 
@@ -143,10 +144,8 @@ class VertexAIService {
     }
 
     const request = {
-      streamingConfig: {
-        config: cleanConfig,
-        interimResults: interimResults !== undefined ? interimResults : true
-      }
+      config: cleanConfig,
+      interimResults: interimResults !== undefined ? interimResults : true
     };
 
     try {
