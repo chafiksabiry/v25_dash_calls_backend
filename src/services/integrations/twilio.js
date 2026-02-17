@@ -121,58 +121,47 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       }
     }
 
-    let existingCall = await Call.findOne({ sid: callSid });
+    // Build update object
+    const update = {
+      status: call.status || 'completed',
+      duration: parseInt(call.duration) || 0,
+      recording_url: call.recordingUrl,
+      recording_url_cloudinary: finalCloudinaryUrl,
+      updatedAt: new Date()
+    };
 
-    if (existingCall) {
-      existingCall.status = call.status || existingCall.status;
-      existingCall.duration = parseInt(call.duration) || existingCall.duration || 0;
-      existingCall.recording_url = call.recordingUrl || existingCall.recording_url;
-      existingCall.recording_url_cloudinary = finalCloudinaryUrl || existingCall.recording_url_cloudinary;
-      if (call.ChildCallSid) {
-        existingCall.childCalls = [call.ChildCallSid];
-      }
-      existingCall.updatedAt = new Date();
-
-      await existingCall.save();
-      console.log(`✅ [TwilioService] Call ${callSid} updated.`);
-      return existingCall;
-    } else {
-      // For new calls, ensure required fields
-      const newCallData = {
-        agent: agentId,
-        lead: leadId || undefined, // Allow null/undefined
-        sid: callSid,
-        parentCallSid: call.ParentCallSid || callSid,
-        direction: call.direction || 'outbound',
-        status: call.status || 'completed',
-        duration: parseInt(call.duration) || 0,
-        recording_url: call.recordingUrl,
-        recording_url_cloudinary: finalCloudinaryUrl,
-        startTime: call.startTime || new Date(), // Critical required field
-        endTime: call.endTime || new Date(),
-        childCalls: call.ChildCallSid ? [call.ChildCallSid] : [],
-        provider: 'twilio',
-        createdAt: call.startTime || new Date(),
-        updatedAt: new Date(),
-      };
-
-      console.log('💾 [TwilioService] Attempting to save new call to DB:', JSON.stringify({
-        sid: newCallData.sid,
-        agent: newCallData.agent,
-        hasCloudinary: !!newCallData.recording_url_cloudinary
-      }));
-
-      const newCall = new Call(newCallData);
-      await newCall.save();
-      console.log(`✅ [TwilioService] Call ${callSid} saved successfully.`);
-      return newCall;
+    if (call.ChildCallSid) {
+      update.childCalls = [call.ChildCallSid];
     }
+
+    if (call.startTime) update.startTime = call.startTime;
+    if (call.endTime) update.endTime = call.endTime;
+
+    // Use findOneAndUpdate with upsert to avoid race conditions
+    const result = await Call.findOneAndUpdate(
+      { sid: callSid },
+      {
+        $set: update,
+        $setOnInsert: {
+          agent: agentId,
+          lead: leadId || undefined,
+          sid: callSid,
+          parentCallSid: call.ParentCallSid || callSid,
+          direction: call.direction || 'outbound',
+          provider: 'twilio',
+          createdAt: call.startTime || new Date(),
+          startTime: call.startTime || new Date()
+        }
+      },
+      { new: true, upsert: true, runValidators: true }
+    );
+
+    console.log(`✅ [TwilioService] Call ${callSid} processed (Upsert).`);
+    return result;
   } catch (error) {
     console.error("❌ [TwilioService] Error saving call to MongoDB:", error.message);
-    if (error.errors) {
-      Object.keys(error.errors).forEach(key => {
-        console.error(`   Validation Error [${key}]:`, error.errors[key].message);
-      });
+    if (error.code === 11000) {
+      console.error("   Duplicate Key Error: Call with this SID already exists.");
     }
     throw error;
   }
