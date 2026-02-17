@@ -134,8 +134,8 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       update.childCalls = [call.ChildCallSid];
     }
 
-    if (call.startTime) update.startTime = call.startTime;
-    if (call.endTime) update.endTime = call.endTime;
+    // startTime and endTime are handled in $setOnInsert to avoid ConflictingUpdateOperators errors
+    // during initial storage if they are also in $set.
 
     // Use findOneAndUpdate with upsert to avoid race conditions
     const result = await Call.findOneAndUpdate(

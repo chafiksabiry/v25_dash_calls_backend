@@ -129,11 +129,14 @@ function setupSpeechToTextWebSocket(server) {
           if (result && socket.readyState === WebSocket.OPEN) {
             const transcript = result.alternatives[0]?.transcript || '';
             const isFinal = result.isFinal || false;
+            const confidence = result.alternatives[0]?.confidence || 0;
+
+            console.log(`🎙️ [STT] Result received: "${transcript}" | isFinal: ${isFinal} | confidence: ${confidence}`);
 
             const message = {
               type: isFinal ? 'final' : 'interim',
               transcript: transcript,
-              confidence: result.alternatives[0]?.confidence || 0,
+              confidence: confidence,
               isFinal: isFinal,
               languageCode: speechConfig?.languageCode || 'en-US'
             };

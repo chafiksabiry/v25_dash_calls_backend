@@ -112,7 +112,8 @@ class VertexAIService {
       encoding: 'LINEAR16',
       sampleRateHertz: 16000,
       languageCode: 'en-US',
-      model: 'default',
+      model: 'latest_long',
+      useEnhanced: true,
       enableAutomaticPunctuation: true
     };
 
