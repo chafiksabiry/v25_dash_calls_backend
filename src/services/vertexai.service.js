@@ -112,6 +112,7 @@ class VertexAIService {
       encoding: 'LINEAR16',
       sampleRateHertz: 16000,
       languageCode: 'en-US',
+      alternativeLanguageCodes: ['fr-FR', 'ar-MA', 'ar-SA'],
       model: 'latest_long',
       useEnhanced: true,
       enableAutomaticPunctuation: true
@@ -126,7 +127,7 @@ class VertexAIService {
       'profanityFilter', 'speechContexts', 'enableWordTimeOffsets',
       'enableAutomaticPunctuation', 'diarizationConfig', 'metadata',
       'model', 'useEnhanced', 'enableWordConfidence', 'audioChannelCount',
-      'enableSpeakerDiarization'
+      'enableSpeakerDiarization', 'alternativeLanguageCodes', 'enableAutomaticLanguageIdentification'
     ];
 
     // Build the clean config
