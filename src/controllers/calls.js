@@ -491,18 +491,32 @@ exports.endCall = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, agentId, leadId, call, cloudinaryrecord, userId } = req.body;
+  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, userId } = req.body;
+  const actualCallSid = CallSid || callSid;
 
-  if (!CallSid || !userId) {
-    return res.status(400).json({ message: 'Call SID and User ID are required' });
+  console.log('📥 Received call storage request:', {
+    callSid: actualCallSid,
+    agentId,
+    leadId,
+    userId,
+    hasCall: !!call,
+    hasCloudinary: !!cloudinaryrecord
+  });
+
+  if (!actualCallSid) {
+    return res.status(400).json({ message: 'Call SID is required' });
   }
 
   try {
-    const callDetails = await twilioService.saveCallToDB(CallSid, agentId, leadId, call, cloudinaryrecord);
+    const callDetails = await twilioService.saveCallToDB(actualCallSid, agentId, leadId, call, cloudinaryrecord);
     res.json(callDetails);
   } catch (error) {
-    console.error('Error saving call:', error);
-    res.status(500).json({ message: 'Failed to save call details', error: error.message });
+    console.error('❌ Error in saveCallToDB controller:', error);
+    res.status(500).json({
+      message: 'Failed to save call details',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 };
 

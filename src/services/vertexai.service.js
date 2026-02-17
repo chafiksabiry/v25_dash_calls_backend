@@ -52,13 +52,19 @@ class VertexAIService {
       },
     };
 
+    // Clean up the config to avoid duplicate or misplaced fields
+    const { interimResults, ...restConfig } = config;
+    const finalSpeechConfig = { ...defaultConfig, ...restConfig };
+
     const request = {
-      config: { ...defaultConfig, ...config },
-      interimResults: true
+      streamingConfig: {
+        config: finalSpeechConfig,
+        interimResults: interimResults !== undefined ? interimResults : true
+      }
     };
 
     try {
-      console.log('🎤 CREATING SPEECH STREAM (Telephony Mode)');
+      console.log('🎤 CREATING SPEECH STREAM with request:', JSON.stringify(request, null, 2));
       const recognizeStream = speechClient.streamingRecognize(request)
         .on('error', error => {
           if (error.code === 11 && error.message.includes('Audio Timeout Error')) {
@@ -66,7 +72,12 @@ class VertexAIService {
             recognizeStream.destroy();
             return;
           }
-          console.error('Speech recognition error:', error);
+          console.error('❌ Speech recognition error:', {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            metadata: error.metadata
+          });
         });
 
       return recognizeStream;
