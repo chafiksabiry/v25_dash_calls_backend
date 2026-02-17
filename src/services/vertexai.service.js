@@ -7,78 +7,44 @@ const vertexAI = new VertexAI({
   location: process.env.GOOGLE_CLOUD_LOCATION,
 });
 
-const model = 'gemini-pro';
+const model = process.env.VERTEX_AI_MODEL || 'gemini-2.0-flash';
 
 class VertexAIService {
   async createSpeechStream(config = {}) {
-    // Configuration par défaut avec français forcé
+    // Configuration par défaut optimisée pour la téléphonie
     const defaultConfig = {
       encoding: 'LINEAR16',
-      sampleRateHertz: 48000,
-      languageCode: 'en-US', // Langue par défaut
-      model: 'default',
+      sampleRateHertz: 16000, // Souvent 8k ou 16k pour la téléphonie
+      languageCode: 'en-US',
+      model: 'telephony', // Changé en 'telephony' pour une meilleure précision
       useEnhanced: true,
       enableAutomaticPunctuation: true,
       audioChannelCount: 1,
       enableWordConfidence: true,
-      enableSpeakerDiarization: true,
-      enableAutomaticLanguageIdentification: false, // Désactiver la détection automatique
-      alternativeLanguageCodes: [] // Pas d'alternatives pour forcer le français
+      enableSpeakerDiarization: true, // Crucial pour distinguer Agent v Client
+      diarizationConfig: {
+        enableSpeakerDiarization: true,
+        minSpeakerCount: 2,
+        maxSpeakerCount: 2,
+      },
     };
 
-    // Fusionner avec la configuration fournie
     const request = {
       config: { ...defaultConfig, ...config },
       interimResults: true
     };
 
     try {
-      console.log('🎤 CREATING SPEECH STREAM:');
-      console.log('📥 Config received from frontend:', JSON.stringify(config, null, 2));
-      console.log('🔧 Default config:', JSON.stringify(defaultConfig, null, 2));
-      console.log('✅ Final merged config:', JSON.stringify(request.config, null, 2));
-      console.log('🌍 Final language code:', request.config.languageCode);
-      
+      console.log('🎤 CREATING SPEECH STREAM (Telephony Mode)');
       const recognizeStream = speechClient.streamingRecognize(request)
         .on('error', error => {
-          // Check if it's a timeout error
           if (error.code === 11 && error.message.includes('Audio Timeout Error')) {
             console.log('Audio stream timed out - this is normal when call ends');
             recognizeStream.destroy();
             return;
           }
           console.error('Speech recognition error:', error);
-        })
-        .on('data', (data) => {
-          console.log('Raw recognition data:', JSON.stringify(data, null, 2));
-          
-          if (data.results && data.results[0]) {
-            const result = {
-              transcript: data.results[0].alternatives[0]?.transcript || '',
-              confidence: data.results[0].alternatives[0]?.confidence || 0,
-              isFinal: data.results[0].isFinal,
-              stability: data.results[0].stability,
-              resultEndTime: data.results[0].resultEndTime,
-              languageCode: data.results[0].languageCode || request.config.languageCode
-            };
-            console.log('Processed transcript:', result);
-            return result;
-          } else {
-            console.log('No results in recognition data');
-          }
         });
-
-      recognizeStream.on('finish', () => {
-        console.log('Recognition stream finished normally');
-      });
-
-      recognizeStream.on('close', () => {
-        console.log('Recognition stream closed');
-      });
-
-      recognizeStream.on('end', () => {
-        console.log('Recognition stream ended');
-      });
 
       return recognizeStream;
     } catch (error) {
@@ -87,7 +53,112 @@ class VertexAIService {
     }
   }
 
+  async analyzeCallPhase(transcript) {
+    try {
+      const generativeModel = vertexAI.preview.getGenerativeModel({
+        model: model,
+        generation_config: {
+          max_output_tokens: 512,
+          temperature: 0.2, // Basse température pour la classification
+          response_mime_type: 'application/json',
+        },
+      });
+
+      const prompt = `You are an expert Sales Quality Assurance AI. Your task is to analyze a live call transcript between an agent and a customer.
+
+Goal: Identify which phase of the 'REPS Call Flow' the conversation is currently in.
+
+Phases to track:
+- SBAM & Opening: Greeting, smiling voice, and stating the purpose.
+- Legal & Compliance: Mentioning recording disclosures or privacy terms.
+- Need Discovery: Asking open-ended questions to find pain points.
+- Value Proposition: Explaining how the product solves the customer's specific needs.
+- Objection Handling: Addressing concerns about price, timing, or competitors.
+- Confirmation & Closing: Asking for the sale or scheduling the next step.
+
+Output Format: Return ONLY a JSON object:
+{"current_phase": "Phase Name", "confidence": 0-100, "next_step_suggestion": "Short tip for the agent"}
+
+Transcript:
+${transcript}`;
+
+      const result = await generativeModel.generateContent(prompt);
+      const response = result.response;
+      return JSON.parse(response.text());
+    } catch (error) {
+      console.error('Error in analyzeCallPhase:', error);
+      return { current_phase: "Unknown", confidence: 0, next_step_suggestion: "Keep the conversation going" };
+    }
+  }
+
+  async analyzeDiscovery(segment) {
+    try {
+      const generativeModel = vertexAI.preview.getGenerativeModel({
+        model: model,
+        generation_config: { temperature: 0.3 },
+      });
+
+      const prompt = `Analyze the following transcript segment. Has the agent identified at least three specific pain points?
+If yes, list them. If no, suggest two diagnostic questions the agent should ask right now to uncover the customer's true budget and timeline.
+
+Transcript:
+${segment}`;
+
+      const result = await generativeModel.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Error in analyzeDiscovery:', error);
+      return null;
+    }
+  }
+
+  async analyzeObjection(objection) {
+    try {
+      const generativeModel = vertexAI.preview.getGenerativeModel({
+        model: model,
+        generation_config: { temperature: 0.5 },
+      });
+
+      const prompt = `The customer just raised an objection regarding [Price/Complexity/Trust]. 
+Using the Feel-Felt-Found technique, provide a 2-sentence script the agent can use immediately to pivot back to the Value Proposition.
+
+Objection:
+${objection}`;
+
+      const result = await generativeModel.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Error in analyzeObjection:', error);
+      return null;
+    }
+  }
+
+  async generatePostCallSummary(fullTranscript) {
+    try {
+      const generativeModel = vertexAI.preview.getGenerativeModel({
+        model: model,
+        generation_config: { temperature: 0.2 },
+      });
+
+      const prompt = `Summarize this entire transcript into a CRM-ready format:
+- Customer Mood: (Positive/Neutral/Negative)
+- Key Requirements:
+- Agreed Next Steps:
+- Missing Compliance: (Did they miss the legal disclaimer? Yes/No)
+
+Transcript:
+${fullTranscript}`;
+
+      const result = await generativeModel.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Error in generatePostCallSummary:', error);
+      return "Summary unavailable.";
+    }
+  }
+
   async getAIAssistance(transcription, context = []) {
+    // Keep legacy support or internal use
     try {
       const generativeModel = vertexAI.preview.getGenerativeModel({
         model: model,
@@ -98,24 +169,10 @@ class VertexAIService {
       });
 
       const chat = generativeModel.startChat({
-        history: [
-          ...context.map(msg => ({
-            role: msg.role === 'assistant' ? 'model' : msg.role,
-            text: msg.content
-          })),
-          {
-            role: 'user',
-            text: `You are an AI assistant helping a call center agent during a live call. 
-            Your role is to:
-            1. Analyze customer sentiment and needs
-            2. Suggest appropriate responses
-            3. Provide relevant product/service information
-            4. Help maintain professional communication
-            Keep responses brief and actionable.
-            
-            Current conversation context: ${transcription}`
-          }
-        ],
+        history: context.map(msg => ({
+          role: msg.role === 'assistant' ? 'model' : msg.role,
+          parts: [{ text: msg.content }]
+        })),
       });
 
       const result = await chat.sendMessage(transcription);
