@@ -1,33 +1,48 @@
 const { SpeechClient } = require('@google-cloud/speech').v1p1beta1;
 const { VertexAI } = require('@google-cloud/vertexai');
 
-let speechClientConfig = {};
-try {
-  if (process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS) {
-    speechClientConfig.credentials = JSON.parse(process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS);
-    console.log('✅ [VertexAIService] Loaded Speech-to-Text credentials from env');
+let speechClient = null;
+let vertexAI = null;
+
+const getSpeechClient = () => {
+  if (speechClient) return speechClient;
+
+  let speechClientConfig = {};
+  try {
+    if (process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS) {
+      speechClientConfig.credentials = JSON.parse(process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS);
+      console.log('✅ [VertexAIService] Loaded Speech-to-Text credentials from env');
+    } else {
+      console.warn('⚠️ [VertexAIService] GCP_SPEECH_TO_TEXT_CREDENTIALS not found in env');
+    }
+  } catch (e) {
+    console.error('❌ [VertexAIService] Error parsing GCP_SPEECH_TO_TEXT_CREDENTIALS:', e);
   }
-} catch (e) {
-  console.error('❌ [VertexAIService] Error parsing GCP_SPEECH_TO_TEXT_CREDENTIALS:', e);
-}
 
-const speechClient = new SpeechClient(speechClientConfig);
-
-let vertexAIConfig = {
-  project: process.env.GOOGLE_CLOUD_PROJECT || 'harx-technologies-inc',
-  location: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+  speechClient = new SpeechClient(speechClientConfig);
+  return speechClient;
 };
 
-try {
-  if (process.env.VERTEX_AI_CREDENTIALS) {
-    vertexAIConfig.credentials = JSON.parse(process.env.VERTEX_AI_CREDENTIALS);
-    console.log('✅ [VertexAIService] Loaded VertexAI credentials from env');
-  }
-} catch (e) {
-  console.error('❌ [VertexAIService] Error parsing VERTEX_AI_CREDENTIALS:', e);
-}
+const getVertexAI = () => {
+  if (vertexAI) return vertexAI;
 
-const vertexAI = new VertexAI(vertexAIConfig);
+  let vertexAIConfig = {
+    project: process.env.GOOGLE_CLOUD_PROJECT || 'harx-technologies-inc',
+    location: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+  };
+
+  try {
+    if (process.env.VERTEX_AI_CREDENTIALS) {
+      vertexAIConfig.credentials = JSON.parse(process.env.VERTEX_AI_CREDENTIALS);
+      console.log('✅ [VertexAIService] Loaded VertexAI credentials from env');
+    }
+  } catch (e) {
+    console.error('❌ [VertexAIService] Error parsing VERTEX_AI_CREDENTIALS:', e);
+  }
+
+  vertexAI = new VertexAI(vertexAIConfig);
+  return vertexAI;
+};
 
 const model = process.env.VERTEX_AI_MODEL || 'gemini-2.0-flash';
 
@@ -65,19 +80,21 @@ class VertexAIService {
 
     try {
       console.log('🎤 CREATING SPEECH STREAM with request:', JSON.stringify(request, null, 2));
-      const recognizeStream = speechClient.streamingRecognize(request)
+      const client = getSpeechClient();
+      const recognizeStream = client.streamingRecognize(request)
         .on('error', error => {
           if (error.code === 11 && error.message.includes('Audio Timeout Error')) {
             console.log('Audio stream timed out - this is normal when call ends');
             recognizeStream.destroy();
             return;
           }
-          console.error('❌ Speech recognition error:', {
+          console.error('❌ Speech recognition stream error:', {
             code: error.code,
             message: error.message,
-            details: error.details,
-            metadata: error.metadata
+            details: error.details
           });
+          // Important: destroy the stream to avoid leaks and prevent crash
+          recognizeStream.destroy();
         });
 
       return recognizeStream;
@@ -89,7 +106,8 @@ class VertexAIService {
 
   async analyzeCallPhase(transcript) {
     try {
-      const generativeModel = vertexAI.preview.getGenerativeModel({
+      const vAI = getVertexAI();
+      const generativeModel = vAI.preview.getGenerativeModel({
         model: model,
         generation_config: {
           max_output_tokens: 512,
@@ -130,7 +148,8 @@ ${transcript}`;
 
   async analyzeDiscovery(segment) {
     try {
-      const generativeModel = vertexAI.preview.getGenerativeModel({
+      const vAI = getVertexAI();
+      const generativeModel = vAI.preview.getGenerativeModel({
         model: model,
         generation_config: { temperature: 0.3 },
       });
@@ -151,7 +170,8 @@ ${segment}`;
 
   async analyzeObjection(objection) {
     try {
-      const generativeModel = vertexAI.preview.getGenerativeModel({
+      const vAI = getVertexAI();
+      const generativeModel = vAI.preview.getGenerativeModel({
         model: model,
         generation_config: { temperature: 0.5 },
       });
@@ -172,7 +192,8 @@ ${objection}`;
 
   async generatePostCallSummary(fullTranscript) {
     try {
-      const generativeModel = vertexAI.preview.getGenerativeModel({
+      const vAI = getVertexAI();
+      const generativeModel = vAI.preview.getGenerativeModel({
         model: model,
         generation_config: { temperature: 0.2 },
       });
@@ -197,7 +218,8 @@ ${fullTranscript}`;
   async getAIAssistance(transcription, context = []) {
     // Keep legacy support or internal use
     try {
-      const generativeModel = vertexAI.preview.getGenerativeModel({
+      const vAI = getVertexAI();
+      const generativeModel = vAI.preview.getGenerativeModel({
         model: model,
         generation_config: {
           max_output_tokens: 256,

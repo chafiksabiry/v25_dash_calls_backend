@@ -3,11 +3,14 @@ const { config } = require('./env');
 
 const connectDB = async () => {
   try {
+    const maskedUri = config.MONGODB_URI.replace(/\/\/.*:.*@/, '//****:****@');
+    console.log(`🔌 Attempting to connect to MongoDB: ${maskedUri}`);
+
     const conn = await mongoose.connect(config.MONGODB_URI);
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {
-    console.error('Error connecting to MongoDB:', error);
-    // process.exit(1); // Do not exit process so api can return 500 error with CORS headers
+    console.error('❌ Error connecting to MongoDB:', error);
+    // process.exit(1); 
   }
 };
 
