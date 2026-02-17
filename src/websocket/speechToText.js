@@ -128,9 +128,23 @@ function setupSpeechToTextWebSocket(server) {
         try {
           const result = response.results[0];
           if (result && socket.readyState === WebSocket.OPEN) {
-            const transcript = result.alternatives[0]?.transcript || '';
+            let transcript = result.alternatives[0]?.transcript || '';
             const isFinal = result.isFinal || false;
             const confidence = result.alternatives[0]?.confidence || 0;
+            const words = result.alternatives[0]?.words || [];
+
+            // Add speaker identification if available in words array
+            if (words.length > 0) {
+              // Group words by speaker or format them
+              // Simple approach: Check the first word's speaker tag for the segment
+              // Or reconstruct the text with speaker changes
+              // For consistency, let's prefix the transcript segment if majority is one speaker
+              // Or just rely on the first speaker tag of the segment
+              const speakerTag = words[0].speakerTag;
+              if (speakerTag) {
+                transcript = `[Speaker ${speakerTag}]: ${transcript}`;
+              }
+            }
 
             console.log(`🎙️ [STT] Result received: "${transcript}" | isFinal: ${isFinal} | confidence: ${confidence}`);
 

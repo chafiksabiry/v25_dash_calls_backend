@@ -188,8 +188,9 @@ class VertexAIService {
 
       const prompt = `You are an expert multilingual Sales Quality Assurance AI. 
 The live call transcript provided below may be in English, French, Arabic (including Moroccan Darija), or a mix of these.
+The transcript differentiates speakers using labels like [Speaker 1] and [Speaker 2]. Usually, the Rep is the one initiating the call or asking questions.
 
-Goal: Identify which phase of the 'REPS Call Flow' the conversation is currently in, regardless of the language used.
+Goal: Identify which phase of the 'REPS Call Flow' the conversation is currently in, regardless of the language used. Use speaker turns to determine who is talking.
 
 Phases to track:
 - SBAM & Opening: Greeting (e.g., "Hello", "Bonjour", "Salam"), smiling voice, and purpose.
