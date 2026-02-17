@@ -16,6 +16,7 @@ function setupSpeechToTextWebSocket(server) {
     let pendingChunks = [];
     let speechConfig = null;
     let fullTranscript = "";
+    let isAnalyzingPhase = false;
 
     // Inform client that WebSocket is ready
     if (ws.readyState === WebSocket.OPEN) {
@@ -141,30 +142,42 @@ function setupSpeechToTextWebSocket(server) {
               languageCode: speechConfig?.languageCode || 'en-US'
             };
 
-            // Enregistrer la transcription finale pour l'analyse
+            // Send transcript to client immediately (don't wait for analysis)
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify(message));
+            }
+
+            // Trigger real-time analysis on final results
             if (isFinal && transcript.trim()) {
               fullTranscript += transcript + " ";
 
-              // Déclencher l'analyse en temps réel
-              try {
-                const analysisResult = await vertexAIService.analyzeCallPhase(fullTranscript);
-                console.log('📊 AI Analysis triggered for transcript. Result:', analysisResult.current_phase);
+              // Throttled non-blocking analysis
+              if (!isAnalyzingPhase) {
+                isAnalyzingPhase = true;
 
-                if (socket.readyState === WebSocket.OPEN) {
-                  socket.send(JSON.stringify({
-                    type: 'analysis',
-                    ...analysisResult,
-                    confidence: (analysisResult.confidence || 0) / 100,
-                    timestamp: Date.now()
-                  }));
-                }
-              } catch (analysisErr) {
-                console.error('Error during AI analysis:', analysisErr);
+                // Use a local copy to avoid closure issues if fullTranscript changes rapidly
+                const currentTranscript = fullTranscript;
+
+                vertexAIService.analyzeCallPhase(currentTranscript)
+                  .then(analysisResult => {
+                    console.log('📊 AI Analysis result:', analysisResult.current_phase);
+                    if (socket.readyState === WebSocket.OPEN) {
+                      socket.send(JSON.stringify({
+                        type: 'analysis',
+                        ...analysisResult,
+                        confidence: (analysisResult.confidence || 0) / 100,
+                        timestamp: Date.now()
+                      }));
+                    }
+                  })
+                  .catch(err => console.error('Error in real-time analysis:', err))
+                  .finally(() => {
+                    // Small delay before allowing next analysis to avoid spamming
+                    setTimeout(() => { isAnalyzingPhase = false; }, 2000);
+                  });
               }
             }
-
-            console.log('🎙️ Sending transcript result to client:', transcript.substring(0, 30) + '...');
-            socket.send(JSON.stringify(message));
+            return; // Already sent above
           }
         } catch (error) {
           console.error('Error processing recognition result:', error);

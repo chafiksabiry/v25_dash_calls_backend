@@ -113,9 +113,15 @@ class VertexAIService {
       sampleRateHertz: 16000,
       languageCode: 'en-US',
       alternativeLanguageCodes: ['fr-FR', 'ar-MA', 'ar-SA'],
+      enableAutomaticLanguageIdentification: true,
       model: 'latest_long',
       useEnhanced: true,
-      enableAutomaticPunctuation: true
+      enableAutomaticPunctuation: true,
+      metadata: {
+        interactionType: 'PHONE_CALL',
+        microphoneDistance: 'NEARFIELD',
+        recordingDeviceType: 'SMARTPHONE',
+      }
     };
 
     // Extract fields that belong to StreamingRecognitionConfig, not RecognitionConfig
