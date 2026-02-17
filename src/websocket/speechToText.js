@@ -22,27 +22,8 @@ function setupSpeechToTextWebSocket(server) {
 
     ws.on('message', async (data) => {
       try {
-        // Initial STT stream setup if not already active
-        if (!isStreamActive && !recognizeStream) {
-          try {
-            console.log('🎤 Starting initial speech recognition stream...');
-            recognizeStream = await vertexAIService.createSpeechStream();
-            if (recognizeStream) {
-              isStreamActive = true;
-              setupStreamHandlers(recognizeStream, ws);
-              console.log('✅ Initial speech stream started');
-            }
-          } catch (sttError) {
-            console.error('❌ Failed to start initial STT stream:', sttError.message);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: 'error',
-                errorType: 'STT_INITIALIZATION_ERROR',
-                message: 'Failed to start Speech-to-Text service. Check GCP credentials.'
-              }));
-            }
-          }
-        }
+        // Initial STT stream setup is now deferred until configuration is received
+        // or audio data starts flowing (as a fallback)
 
         // Check if it's a configuration message
         let isConfigMessage = false;
@@ -80,6 +61,17 @@ function setupSpeechToTextWebSocket(server) {
           }
         } else if (!isConfigMessage) {
           // Audio data - Write to stream if active
+          if (!isStreamActive && !recognizeStream) {
+            console.log('🎤 Audio data received before config. Starting default stream...');
+            try {
+              recognizeStream = await vertexAIService.createSpeechStream();
+              isStreamActive = true;
+              setupStreamHandlers(recognizeStream, ws);
+            } catch (err) {
+              console.error('❌ Failed to start fallback STT stream:', err);
+            }
+          }
+
           if (isStreamActive && recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
             try {
               recognizeStream.write(data);

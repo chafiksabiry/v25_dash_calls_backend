@@ -52,7 +52,7 @@ class VertexAIService {
     // Configuration par défaut optimisée pour la téléphonie
     const defaultConfig = {
       encoding: 'LINEAR16',
-      sampleRateHertz: 16000, // Souvent 8k ou 16k pour la téléphonie
+      sampleRateHertz: 16000,
       languageCode: 'en-US',
       model: 'telephony', // Changé en 'telephony' pour une meilleure précision
       useEnhanced: true,
