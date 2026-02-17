@@ -108,13 +108,28 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     // Normalize call data
     const call = callData || {};
 
+    // Auto-upload to Cloudinary if needed
+    let finalCloudinaryUrl = cloudinaryrecord;
+    if (!finalCloudinaryUrl && call.recordingUrl && agentId) {
+      console.log(`☁️ [TwilioService] No Cloudinary record provided, attempting auto-upload for SID: ${callSid}`);
+      try {
+        // use agentId as userId for credentials
+        finalCloudinaryUrl = await fetchTwilioRecording(call.recordingUrl, agentId);
+        if (finalCloudinaryUrl) {
+          console.log(`✅ [TwilioService] Auto-uploaded to Cloudinary: ${finalCloudinaryUrl}`);
+        }
+      } catch (uploadError) {
+        console.error('⚠️ [TwilioService] Auto-upload to Cloudinary failed:', uploadError.message);
+      }
+    }
+
     let existingCall = await Call.findOne({ sid: callSid });
 
     if (existingCall) {
       existingCall.status = call.status || existingCall.status;
       existingCall.duration = parseInt(call.duration) || existingCall.duration || 0;
       existingCall.recording_url = call.recordingUrl || existingCall.recording_url;
-      existingCall.recording_url_cloudinary = cloudinaryrecord || existingCall.recording_url_cloudinary;
+      existingCall.recording_url_cloudinary = finalCloudinaryUrl || existingCall.recording_url_cloudinary;
       if (call.ChildCallSid) {
         existingCall.childCalls = [call.ChildCallSid];
       }
@@ -134,7 +149,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
         status: call.status || 'completed',
         duration: parseInt(call.duration) || 0,
         recording_url: call.recordingUrl,
-        recording_url_cloudinary: cloudinaryrecord,
+        recording_url_cloudinary: finalCloudinaryUrl,
         startTime: call.startTime || new Date(), // Critical required field
         endTime: call.endTime || new Date(),
         childCalls: call.ChildCallSid ? [call.ChildCallSid] : [],
@@ -146,7 +161,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       console.log('💾 [TwilioService] Attempting to save new call to DB:', JSON.stringify({
         sid: newCallData.sid,
         agent: newCallData.agent,
-        startTime: newCallData.startTime
+        hasCloudinary: !!newCallData.recording_url_cloudinary
       }));
 
       const newCall = new Call(newCallData);
