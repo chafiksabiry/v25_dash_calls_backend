@@ -48,38 +48,54 @@ const model = process.env.VERTEX_AI_MODEL || 'gemini-2.0-flash';
 
 class VertexAIService {
   async createSpeechStream(config = {}) {
-    console.log('🎤 [VertexAIService] Initializing speech stream with config:', JSON.stringify(config));
-    // Configuration par défaut optimisée pour la téléphonie
+    console.log('🎤 [VertexAIService] RECEIVED CONFIG REQUEST:', JSON.stringify(config));
+
+    // Minimal baseline configuration
     const defaultConfig = {
       encoding: 'LINEAR16',
       sampleRateHertz: 16000,
       languageCode: 'en-US',
-      model: 'telephony', // Changé en 'telephony' pour une meilleure précision
+      model: 'latest_long',
       useEnhanced: true,
-      enableAutomaticPunctuation: true,
-      audioChannelCount: 1,
-      enableWordConfidence: true,
-      enableSpeakerDiarization: true, // Crucial pour distinguer Agent v Client
-      diarizationConfig: {
-        enableSpeakerDiarization: true,
-        minSpeakerCount: 2,
-        maxSpeakerCount: 2,
-      },
+      enableAutomaticPunctuation: true
     };
 
-    // Clean up the config to avoid duplicate or misplaced fields
-    const { interimResults, ...restConfig } = config;
-    const finalSpeechConfig = { ...defaultConfig, ...restConfig };
+    // Extract fields that belong to StreamingRecognitionConfig, not RecognitionConfig
+    const { interimResults, ...incomingConfig } = config;
+
+    // Allowed fields for RecognitionConfig (v1p1beta1)
+    const allowedFields = [
+      'encoding', 'sampleRateHertz', 'languageCode', 'maxAlternatives',
+      'profanityFilter', 'speechContexts', 'enableWordTimeOffsets',
+      'enableAutomaticPunctuation', 'diarizationConfig', 'metadata',
+      'model', 'useEnhanced', 'enableWordConfidence', 'audioChannelCount',
+      'enableSpeakerDiarization'
+    ];
+
+    // Build the clean config
+    const cleanConfig = {};
+    allowedFields.forEach(field => {
+      if (incomingConfig[field] !== undefined) {
+        cleanConfig[field] = incomingConfig[field];
+      } else if (defaultConfig[field] !== undefined) {
+        cleanConfig[field] = defaultConfig[field];
+      }
+    });
+
+    // Handle Diarization compatibility
+    if (cleanConfig.diarizationConfig && cleanConfig.enableSpeakerDiarization === undefined) {
+      cleanConfig.enableSpeakerDiarization = true;
+    }
 
     const request = {
       streamingConfig: {
-        config: finalSpeechConfig,
+        config: cleanConfig,
         interimResults: interimResults !== undefined ? interimResults : true
       }
     };
 
     try {
-      console.log('🎤 CREATING SPEECH STREAM with request:', JSON.stringify(request, null, 2));
+      console.log('🎤 [VertexAIService] GOOGLE_CLOUD_REQUEST:', JSON.stringify(request, null, 2));
       const client = getSpeechClient();
       const recognizeStream = client.streamingRecognize(request)
         .on('error', error => {

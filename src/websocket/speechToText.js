@@ -49,26 +49,28 @@ function setupSpeechToTextWebSocket(server) {
         if (isConfigMessage && configData && configData.config) {
           // Re-configure stream if requested
           speechConfig = configData.config;
-          console.log('⚙️ Re-configuring speech recognition stream');
+          console.log('⚙️ [STT] Received configuration message. Re-configuring stream...');
+          console.log('⚙️ [STT] Requested config:', JSON.stringify(speechConfig));
           cleanupStream();
 
           try {
             recognizeStream = await vertexAIService.createSpeechStream(speechConfig);
             isStreamActive = true;
             setupStreamHandlers(recognizeStream, ws);
+            console.log('✅ [STT] Stream re-configured successfully');
           } catch (sttError) {
-            console.error('❌ Failed to re-configure STT stream:', sttError.message);
+            console.error('❌ [STT] Failed to re-configure STT stream:', sttError.message);
           }
         } else if (!isConfigMessage) {
           // Audio data - Write to stream if active
           if (!isStreamActive && !recognizeStream) {
-            console.log('🎤 Audio data received before config. Starting default stream...');
+            console.log('🎤 [STT] Audio data received (size: ' + data.length + '). No stream active. Starting fallback...');
             try {
               recognizeStream = await vertexAIService.createSpeechStream();
               isStreamActive = true;
               setupStreamHandlers(recognizeStream, ws);
             } catch (err) {
-              console.error('❌ Failed to start fallback STT stream:', err);
+              console.error('❌ [STT] Failed to start fallback STT stream:', err);
             }
           }
 
