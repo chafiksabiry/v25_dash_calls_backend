@@ -1,11 +1,33 @@
 const { SpeechClient } = require('@google-cloud/speech').v1p1beta1;
 const { VertexAI } = require('@google-cloud/vertexai');
 
-const speechClient = new SpeechClient();
-const vertexAI = new VertexAI({
-  project: process.env.GOOGLE_CLOUD_PROJECT,
-  location: process.env.GOOGLE_CLOUD_LOCATION,
-});
+let speechClientConfig = {};
+try {
+  if (process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS) {
+    speechClientConfig.credentials = JSON.parse(process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS);
+    console.log('✅ [VertexAIService] Loaded Speech-to-Text credentials from env');
+  }
+} catch (e) {
+  console.error('❌ [VertexAIService] Error parsing GCP_SPEECH_TO_TEXT_CREDENTIALS:', e);
+}
+
+const speechClient = new SpeechClient(speechClientConfig);
+
+let vertexAIConfig = {
+  project: process.env.GOOGLE_CLOUD_PROJECT || 'harx-technologies-inc',
+  location: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+};
+
+try {
+  if (process.env.VERTEX_AI_CREDENTIALS) {
+    vertexAIConfig.credentials = JSON.parse(process.env.VERTEX_AI_CREDENTIALS);
+    console.log('✅ [VertexAIService] Loaded VertexAI credentials from env');
+  }
+} catch (e) {
+  console.error('❌ [VertexAIService] Error parsing VERTEX_AI_CREDENTIALS:', e);
+}
+
+const vertexAI = new VertexAI(vertexAIConfig);
 
 const model = process.env.VERTEX_AI_MODEL || 'gemini-2.0-flash';
 

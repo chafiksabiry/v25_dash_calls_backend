@@ -84,6 +84,7 @@ function setupSpeechToTextWebSocket(server) {
                       ws.send(JSON.stringify({
                         type: 'analysis',
                         ...analysisResult,
+                        confidence: (analysisResult.confidence || 0) / 100,
                         timestamp: Date.now()
                       }));
                     }
