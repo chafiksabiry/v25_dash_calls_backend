@@ -105,7 +105,7 @@ function setupSpeechToTextWebSocket(server) {
             }
           } else {
             // Audio data
-            if (isStreamActive && recognizeStream && recognizeStream.writable) {
+            if (isStreamActive && recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
               try {
                 // Log periodic audio reception (every 100 messages to avoid flooding)
                 if (!global.audioCounter) global.audioCounter = 0;
@@ -113,9 +113,9 @@ function setupSpeechToTextWebSocket(server) {
                 if (global.audioCounter % 100 === 0) {
                   console.log('🔊 Receiving audio data from client... (packet #' + global.audioCounter + ')');
                 }
-                await recognizeStream.write(data);
+                recognizeStream.write(data);
               } catch (writeError) {
-                console.error('Error writing to stream:', writeError);
+                console.error('❌ Error writing to stream:', writeError);
                 isStreamActive = false;
                 cleanupStream();
               }
@@ -129,13 +129,18 @@ function setupSpeechToTextWebSocket(server) {
       const cleanupStream = () => {
         if (recognizeStream) {
           try {
+            console.log('🧹 Cleaning up speech recognition stream');
             if (recognizeStream.writable) {
               recognizeStream.end();
             }
             recognizeStream.removeAllListeners();
+            // Explicitly destroy if it's still alive to be safe
+            if (typeof recognizeStream.destroy === 'function') {
+              recognizeStream.destroy();
+            }
             recognizeStream = null;
           } catch (error) {
-            console.error('Error cleaning up stream:', error);
+            console.error('❌ Error cleaning up stream:', error);
           }
         }
         isStreamActive = false;
