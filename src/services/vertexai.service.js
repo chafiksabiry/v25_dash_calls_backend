@@ -180,19 +180,20 @@ class VertexAIService {
     try {
       const gModel = await getGenerativeModel();
 
-      const prompt = `You are an expert Sales Quality Assurance AI. Your task is to analyze a live call transcript between an agent and a customer.
+      const prompt = `You are an expert multilingual Sales Quality Assurance AI. 
+The live call transcript provided below may be in English, French, Arabic (including Moroccan Darija), or a mix of these.
 
-Goal: Identify which phase of the 'REPS Call Flow' the conversation is currently in.
+Goal: Identify which phase of the 'REPS Call Flow' the conversation is currently in, regardless of the language used.
 
 Phases to track:
-- SBAM & Opening: Greeting, smiling voice, and stating the purpose.
+- SBAM & Opening: Greeting (e.g., "Hello", "Bonjour", "Salam"), smiling voice, and purpose.
 - Legal & Compliance: Mentioning recording disclosures or privacy terms.
-- Need Discovery: Asking open-ended questions to find pain points.
+- Need Discovery: Asking questions to uncover needs or pain points.
 - Value Proposition: Explaining how the product solves the customer's specific needs.
-- Objection Handling: Addressing concerns about price, timing, or competitors.
+- Objection Handling: Addressing concerns about price, timing, or trust.
 - Confirmation & Closing: Asking for the sale or scheduling the next step.
 
-Output Format: Return ONLY a JSON object:
+Output Format: Return ONLY a JSON object. The "next_step_suggestion" should be provided in the primary language used in the transcript.
 {
   "current_phase": "Phase Name", 
   "confidence": 0-100, 
