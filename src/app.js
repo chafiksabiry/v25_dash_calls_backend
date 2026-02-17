@@ -15,6 +15,7 @@ const calls = require('./routes/calls');
 const settings = require('./routes/settings');
 const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
+const vertex = require('./routes/vertex');
 
 // Ensure models are registered
 require('./models/Call');
@@ -76,6 +77,7 @@ app.use('/api/calls', calls);
 app.use('/api/settings', settings);
 app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
+app.use('/api/vertex', vertex);
 
 // Error handler
 //app.use(errorHandler);
