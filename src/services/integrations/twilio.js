@@ -35,7 +35,7 @@ const getTwilioCredentials = async (userId) => {
 // Initialize Twilio client with user credentials
 const getTwilioClient = async (userId) => {
   const credentials = await getTwilioCredentials(userId);
-  return credentials;
+  return twilio(credentials.accountSid, credentials.authToken);
 };
 
 const getCallDetails = async (callSid, userId) => {

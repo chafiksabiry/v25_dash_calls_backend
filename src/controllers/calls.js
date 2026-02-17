@@ -516,7 +516,7 @@ exports.saveCallToDB = async (req, res) => {
     res.status(500).json({
       message: 'Failed to save call details',
       error: error.message,
-      stack: config.NODE_ENV !== 'production' ? error.stack : undefined,
+      stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined,
       type: error.name
     });
   }

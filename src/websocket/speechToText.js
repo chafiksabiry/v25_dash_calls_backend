@@ -161,7 +161,7 @@ function setupSpeechToTextWebSocket(server) {
       if (recognizeStream) {
         try {
           console.log('🧹 Cleaning up speech recognition stream');
-          if (recognizeStream.writable) {
+          if (recognizeStream && recognizeStream.writable && !recognizeStream.destroyed) {
             recognizeStream.end();
           }
           recognizeStream.removeAllListeners();
