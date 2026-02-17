@@ -11,6 +11,7 @@ const model = process.env.VERTEX_AI_MODEL || 'gemini-2.0-flash';
 
 class VertexAIService {
   async createSpeechStream(config = {}) {
+    console.log('🎤 [VertexAIService] Initializing speech stream with config:', JSON.stringify(config));
     // Configuration par défaut optimisée pour la téléphonie
     const defaultConfig = {
       encoding: 'LINEAR16',
@@ -82,11 +83,14 @@ Output Format: Return ONLY a JSON object:
 Transcript:
 ${transcript}`;
 
+      console.log('🧠 Calling VertexAI for phase analysis... Prompt size:', prompt.length);
       const result = await generativeModel.generateContent(prompt);
       const response = result.response;
-      return JSON.parse(response.text());
+      const parsedResponse = JSON.parse(response.text());
+      console.log('✅ VertexAI Response:', JSON.stringify(parsedResponse));
+      return parsedResponse;
     } catch (error) {
-      console.error('Error in analyzeCallPhase:', error);
+      console.error('❌ Error in analyzeCallPhase:', error);
       return { current_phase: "Unknown", confidence: 0, next_step_suggestion: "Keep the conversation going" };
     }
   }

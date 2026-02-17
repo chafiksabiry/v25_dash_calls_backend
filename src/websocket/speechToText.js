@@ -80,6 +80,7 @@ function setupSpeechToTextWebSocket(server) {
                       const analysisResult = await vertexAIService.analyzeCallPhase(fullTranscript);
 
                       // Envoyer l'analyse au client
+                      console.log('📊 AI Analysis triggered for transcript. Result:', analysisResult.current_phase);
                       ws.send(JSON.stringify({
                         type: 'analysis',
                         ...analysisResult,
@@ -87,6 +88,7 @@ function setupSpeechToTextWebSocket(server) {
                       }));
                     }
 
+                    console.log('🎙️ Sending transcript result to client:', transcript.substring(0, 30) + '...');
                     ws.send(JSON.stringify(message));
                   }
                 } catch (error) {
@@ -104,6 +106,12 @@ function setupSpeechToTextWebSocket(server) {
             // Audio data
             if (isStreamActive && recognizeStream && recognizeStream.writable) {
               try {
+                // Log periodic audio reception (every 100 messages to avoid flooding)
+                if (!global.audioCounter) global.audioCounter = 0;
+                global.audioCounter++;
+                if (global.audioCounter % 100 === 0) {
+                  console.log('🔊 Receiving audio data from client... (packet #' + global.audioCounter + ')');
+                }
                 await recognizeStream.write(data);
               } catch (writeError) {
                 console.error('Error writing to stream:', writeError);

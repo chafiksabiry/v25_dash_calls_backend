@@ -132,17 +132,29 @@ const saveCallToDB = async (callSid, agentId, leadId, call, cloudinaryrecord) =>
         startTime: call.startTime,
         endTime: call.endTime,
         childCalls: call.ChildCallSid,
-        createdAt: call.startTime,
+        provider: 'twilio',
+        createdAt: call.startTime || new Date(),
         updatedAt: new Date(),
       });
+
+      console.log('💾 Attempting to save new call to DB:', JSON.stringify({
+        sid: newCall.sid,
+        agent: newCall.agent,
+        direction: newCall.direction
+      }));
 
       await newCall.save();
       console.log(`📞 Call ${callSid} saved successfully.`);
       return newCall;
     }
   } catch (error) {
-    console.error("❌ Error saving call:", error);
-    throw new Error("Error saving call");
+    console.error("❌ Error saving call to MongoDB:", error);
+    if (error.errors) {
+      Object.keys(error.errors).forEach(key => {
+        console.error(`  Validation Error [${key}]:`, error.errors[key].message);
+      });
+    }
+    throw error;
   }
 };
 

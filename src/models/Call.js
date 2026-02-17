@@ -9,7 +9,7 @@ const callSchema = new mongoose.Schema({
     sparse: true, // Permet d'avoir des documents sans ce champ tout en gardant l'index
     index: true, // Index pour des recherches efficaces
     description: "Identifiant unique de l'appel fourni par Qalqul",
-    required: function() {
+    required: function () {
       return this.provider === 'qalqul';
     }
   },
@@ -24,7 +24,7 @@ const callSchema = new mongoose.Schema({
   },
   sid: {
     type: String,
-    required: function() {
+    required: function () {
       return this.provider === 'twilio';
     },
     unique: true, // Identifiant Twilio de l'appel
@@ -35,7 +35,7 @@ const callSchema = new mongoose.Schema({
   },
   direction: {
     type: String,
-    enum: ["inbound", "outbound-dial"],
+    enum: ["inbound", "outbound-dial", "outbound-api", "outbound"],
     required: true,
   },
   provider: {
