@@ -5,6 +5,7 @@ const fsPromises = require('fs').promises;
 const path = require('path');
 const { generatePrompt } = require('../VertexPrompt/contactCenterAssessment');
 const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment');
+const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
 const { Storage } = require('@google-cloud/storage');
 
 let speechClient = null;
@@ -354,6 +355,71 @@ ${fullTranscript}`;
       console.error("❌ [VertexAIService] Error transcribing audio:", error.message);
       throw new Error("Short audio transcription failed");
     }
+  }
+
+  async transcribeAudioBuffer(audioBuffer) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = generateAudioTranscriptionPrompt();
+
+      // Convert raw PCM buffer to WAV format using helper (inline for now)
+      const wavBuffer = this.pcmToWav(audioBuffer);
+      const base64Audio = wavBuffer.toString('base64');
+
+      const request = {
+        contents: [{
+          role: 'user', parts: [
+            {
+              "inline_data": {
+                "mime_type": "audio/wav",
+                "data": base64Audio
+              }
+            },
+            { "text": prompt }
+          ]
+        }],
+      };
+
+      console.log(`🧠 [VertexAIService] Calling Gemini for transcription (chunk size: ${audioBuffer.length} bytes)`);
+      const result = await gModel.generateContent(request);
+      const responseText = result.response.text();
+
+      return this.parseJsonResponse(responseText);
+    } catch (error) {
+      console.error("❌ [VertexAIService] Error transcribing buffer with Gemini:", error);
+      // Return empty array on error to prevent crashing caller
+      return [];
+    }
+  }
+
+  // Helper to add WAV header to raw PCM
+  pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitDepth = 16) {
+    const header = Buffer.alloc(44);
+    const dataSize = pcmBuffer.length;
+    const fileSize = dataSize + 36;
+    const byteRate = sampleRate * numChannels * (bitDepth / 8);
+    const blockAlign = numChannels * (bitDepth / 8);
+
+    // RIFF chunk descriptor
+    header.write('RIFF', 0);
+    header.writeUInt32LE(fileSize, 4);
+    header.write('WAVE', 8);
+
+    // fmt sub-chunk
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+    header.writeUInt16LE(1, 20); // AudioFormat (1 for PCM)
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitDepth, 34);
+
+    // data sub-chunk
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+
+    return Buffer.concat([header, pcmBuffer]);
   }
 
   async transcribeLongAudio(languageCode, fileUri) {

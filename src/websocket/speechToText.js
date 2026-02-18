@@ -9,111 +9,134 @@ function setupSpeechToTextWebSocket(server) {
   // console.log("wss",wss);
 
   wss.on('connection', async (ws) => {
-    console.log('✅ Client connected to speech-to-text WebSocket');
-    let recognizeStream = null;
-    let isStreamActive = false;
-    let isInitializing = false;
-    let pendingChunks = [];
-    let speechConfig = null;
+    console.log('✅ Client connected to speech-to-text WebSocket (Gemini 1.5 Flash Mode)');
+
+    // Buffer for accumulating audio chunks
+    let audioBuffer = Buffer.alloc(0);
+    const BUFFER_LIMIT = 32000 * 5; // ~5 seconds of audio at 16kHz (32KB/s)
+    const FLUSH_INTERVAL = 3000; // 3 seconds
+    let flushTimer = null;
+    let isProcessing = false;
+
     let fullTranscript = "";
     let isAnalyzingPhase = false;
 
     // Inform client that WebSocket is ready
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'connected', message: 'WebSocket connection established' }));
+      ws.send(JSON.stringify({ type: 'connected', message: 'WebSocket connection established (Gemini)' }));
     }
+
+    const processBuffer = async () => {
+      if (audioBuffer.length === 0 || isProcessing) return;
+
+      isProcessing = true;
+      const bufferToProcess = audioBuffer;
+      audioBuffer = Buffer.alloc(0); // Clear buffer immediately
+
+      try {
+        console.log(`🧠 [STT] Processing buffered audio (${bufferToProcess.length} bytes) with Gemini...`);
+        const segments = await vertexAIService.transcribeAudioBuffer(bufferToProcess);
+
+        if (segments && segments.length > 0) {
+          console.log(`🎙️ [STT] Gemini returned ${segments.length} segments`);
+
+          // Send all segments to client
+          segments.forEach(segment => {
+            const transcriptText = segment.text;
+
+            // Format transcript with speaker label if present
+            let formattedTranscript = transcriptText;
+            if (segment.speaker) {
+              formattedTranscript = `[${segment.speaker}]: ${transcriptText}`;
+            }
+
+            console.log(`🎙️ [STT] Segment: "${formattedTranscript}"`);
+
+            const message = {
+              type: 'final', // Gemini results are always final in this batch mode
+              transcript: formattedTranscript,
+              confidence: 0.95, // Gemini doesn't always return confidence, assuming high for now
+              isFinal: true,
+              speaker: segment.speaker,
+              startTime: segment.start,
+              endTime: segment.end,
+              languageCode: 'en-US'
+            };
+
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify(message));
+            }
+
+            // Append to full transcript for context/analysis
+            fullTranscript += " " + formattedTranscript;
+          });
+
+          // Trigger Phase Analysis (throttled)
+          if (!isAnalyzingPhase && fullTranscript.length > 50) {
+            isAnalyzingPhase = true;
+            // Analyze the last portion of transcript or full context?
+            // Sending full transcript provides better context for phases
+            vertexAIService.analyzeCallPhase(fullTranscript)
+              .then(analysisResult => {
+                console.log('📊 AI Analysis result:', analysisResult.current_phase);
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'analysis',
+                    ...analysisResult,
+                    confidence: (analysisResult.confidence || 0) / 100,
+                    timestamp: Date.now()
+                  }));
+                }
+              })
+              .catch(err => console.error('Error in real-time analysis:', err))
+              .finally(() => {
+                setTimeout(() => { isAnalyzingPhase = false; }, 2000);
+              });
+          }
+        }
+      } catch (error) {
+        console.error('❌ [STT] Error processing audio buffer:', error);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Transcription error' }));
+        }
+      } finally {
+        isProcessing = false;
+      }
+    };
+
+    // Start periodic flush
+    flushTimer = setInterval(processBuffer, FLUSH_INTERVAL);
 
     ws.on('message', async (data) => {
       try {
-        // Initial STT stream setup is now deferred until configuration is received
-        // or audio data starts flowing (as a fallback)
-
-        // Check if it's a configuration message
-        let isConfigMessage = false;
-        let configData = null;
-
+        // Handle Configuration (Ignore for now, using hardcoded Gemini defaults)
         if (data instanceof Buffer) {
           try {
             const jsonString = data.toString('utf8');
             if (jsonString.trim().startsWith('{')) {
-              configData = JSON.parse(jsonString);
-              isConfigMessage = true;
+              const config = JSON.parse(jsonString);
+              console.log("⚙️ [STT] Received config (ignored in Gemini mode):", config.config?.languageCode);
+              return;
             }
-          } catch (parseError) {
-            // Probably audio data
-          }
+          } catch (e) { } // Not JSON, treat as audio
         } else {
+          // If string data, likely config
           try {
-            configData = JSON.parse(data);
-            isConfigMessage = true;
+            const config = JSON.parse(data);
+            console.log("⚙️ [STT] Received config JSON (ignored in Gemini mode)");
+            return;
           } catch (e) { }
         }
 
-        if (isConfigMessage && configData && configData.config) {
-          // Re-configure stream if requested
-          speechConfig = configData.config;
-          console.log('⚙️ [STT] Received configuration message. Re-configuring stream...');
-          console.log('⚙️ [STT] Requested config:', JSON.stringify(speechConfig));
-          cleanupStream();
+        // It's audio data
+        if (Buffer.isBuffer(data)) {
+          // Append to buffer
+          audioBuffer = Buffer.concat([audioBuffer, data]);
 
-          if (isInitializing) {
-            console.log('⏳ [STT] Already initializing. Config will be used for the next stream.');
-            return;
-          }
-
-          isInitializing = true;
-          try {
-            recognizeStream = await vertexAIService.createSpeechStream(speechConfig);
-            isStreamActive = true;
-            setupStreamHandlers(recognizeStream, ws);
-            console.log('✅ [STT] Stream configured successfully');
-          } catch (sttError) {
-            console.error('❌ [STT] Failed to configure STT stream:', sttError.message);
-          } finally {
-            isInitializing = false;
-          }
-        } else if (!isConfigMessage) {
-          // Audio data
-          if (!isStreamActive && !recognizeStream) {
-            if (isInitializing) {
-              pendingChunks.push(data);
-              if (pendingChunks.length % 10 === 0) console.log('⏳ [STT] Buffering audio chunk while initializing... (count: ' + pendingChunks.length + ')');
-              return;
-            }
-
-            console.log('🎤 [STT] Audio data received (' + data.length + ' bytes). Starting fallback stream...');
-            isInitializing = true;
-            pendingChunks.push(data);
-
-            try {
-              recognizeStream = await vertexAIService.createSpeechStream(speechConfig || {});
-              isStreamActive = true;
-              setupStreamHandlers(recognizeStream, ws);
-
-              const bufferedCount = pendingChunks.length;
-              if (bufferedCount > 0) {
-                console.log('📤 [STT] Writing ' + bufferedCount + ' buffered chunks to new stream');
-                for (const chunk of pendingChunks) {
-                  if (recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
-                    recognizeStream.write(chunk);
-                  }
-                }
-                pendingChunks = [];
-              }
-            } catch (err) {
-              console.error('❌ [STT] Failed to start STT stream:', err);
-              pendingChunks = [];
-            } finally {
-              isInitializing = false;
-            }
-          } else if (isStreamActive && recognizeStream && !recognizeStream.destroyed && recognizeStream.writable) {
-            try {
-              recognizeStream.write(data);
-            } catch (writeError) {
-              console.error('❌ [STT] Error writing as stream was destroyed:', writeError.message);
-              isStreamActive = false;
-              cleanupStream();
-            }
+          // If buffer gets too large, force flush
+          if (audioBuffer.length >= BUFFER_LIMIT) {
+            console.log("⚠️ [STT] Buffer limit reached, forcing flush");
+            processBuffer();
           }
         }
       } catch (error) {
@@ -121,125 +144,15 @@ function setupSpeechToTextWebSocket(server) {
       }
     });
 
-    const setupStreamHandlers = (stream, socket) => {
-      stream.on('data', async (response) => {
-        if (!isStreamActive) return;
-
-        try {
-          const result = response.results[0];
-          if (result && socket.readyState === WebSocket.OPEN) {
-            let transcript = result.alternatives[0]?.transcript || '';
-            const isFinal = result.isFinal || false;
-            const confidence = result.alternatives[0]?.confidence || 0;
-            const words = result.alternatives[0]?.words || [];
-
-            // Add speaker identification if available in words array
-            if (words.length > 0) {
-              // Group words by speaker or format them
-              // Simple approach: Check the first word's speaker tag for the segment
-              // Or reconstruct the text with speaker changes
-              // For consistency, let's prefix the transcript segment if majority is one speaker
-              // Or just rely on the first speaker tag of the segment
-              const speakerTag = words[0].speakerTag;
-              if (speakerTag) {
-                transcript = `[Speaker ${speakerTag}]: ${transcript}`;
-              }
-            }
-
-            console.log(`🎙️ [STT] Result received: "${transcript}" | isFinal: ${isFinal} | confidence: ${confidence}`);
-
-            const message = {
-              type: isFinal ? 'final' : 'interim',
-              transcript: transcript,
-              confidence: confidence,
-              isFinal: isFinal,
-              languageCode: speechConfig?.languageCode || 'en-US'
-            };
-
-            // Send transcript to client immediately (don't wait for analysis)
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(message));
-            }
-
-            // Trigger real-time analysis on final results
-            if (isFinal && transcript.trim()) {
-              fullTranscript += transcript + " ";
-
-              // Throttled non-blocking analysis
-              if (!isAnalyzingPhase) {
-                isAnalyzingPhase = true;
-
-                // Use a local copy to avoid closure issues if fullTranscript changes rapidly
-                const currentTranscript = fullTranscript;
-
-                vertexAIService.analyzeCallPhase(currentTranscript)
-                  .then(analysisResult => {
-                    console.log('📊 AI Analysis result:', analysisResult.current_phase);
-                    if (socket.readyState === WebSocket.OPEN) {
-                      socket.send(JSON.stringify({
-                        type: 'analysis',
-                        ...analysisResult,
-                        confidence: (analysisResult.confidence || 0) / 100,
-                        timestamp: Date.now()
-                      }));
-                    }
-                  })
-                  .catch(err => console.error('Error in real-time analysis:', err))
-                  .finally(() => {
-                    // Small delay before allowing next analysis to avoid spamming
-                    setTimeout(() => { isAnalyzingPhase = false; }, 2000);
-                  });
-              }
-            }
-            return; // Already sent above
-          }
-        } catch (error) {
-          console.error('Error processing recognition result:', error);
-        }
-      });
-
-      stream.on('error', (error) => {
-        console.error('Recognition stream error:', error);
-        isStreamActive = false;
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({
-            type: 'error',
-            errorType: 'STT_STREAM_ERROR',
-            message: 'Recognition stream error: ' + error.message
-          }));
-        }
-        cleanupStream();
-      });
-    };
-
-    const cleanupStream = () => {
-      if (recognizeStream) {
-        try {
-          console.log('🧹 Cleaning up speech recognition stream');
-          if (recognizeStream && recognizeStream.writable && !recognizeStream.destroyed) {
-            recognizeStream.end();
-          }
-          recognizeStream.removeAllListeners();
-          // Explicitly destroy if it's still alive to be safe
-          if (typeof recognizeStream.destroy === 'function') {
-            recognizeStream.destroy();
-          }
-          recognizeStream = null;
-        } catch (error) {
-          console.error('❌ Error cleaning up stream:', error);
-        }
-      }
-      isStreamActive = false;
-    };
-
     ws.on('close', () => {
       console.log('🔌 Client disconnected from speech-to-text WebSocket');
-      cleanupStream();
+      if (flushTimer) clearInterval(flushTimer);
+      // Process remaining buffer? Maybe not needed as call is over.
     });
 
     ws.on('error', (error) => {
       console.error('WebSocket error:', error);
-      cleanupStream();
+      if (flushTimer) clearInterval(flushTimer);
     });
   });
 }
