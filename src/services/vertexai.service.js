@@ -382,7 +382,28 @@ ${fullTranscript}`;
 
       console.log(`🧠 [VertexAIService] Calling Gemini for transcription (chunk size: ${audioBuffer.length} bytes)`);
       const result = await gModel.generateContent(request);
-      const responseText = result.response.text();
+
+      // DEBUG: Log the full structure to understand why .text() is missing
+      // console.log("🔍 [VertexAIService] Full Gemini Result:", JSON.stringify(result, null, 2));
+
+      let responseText = '';
+
+      // Check if standard helper exists
+      if (result.response && typeof result.response.text === 'function') {
+        responseText = result.response.text();
+      }
+      // Fallback: Access candidates directly (common in some SDK versions or raw responses)
+      else if (result.response && result.response.candidates && result.response.candidates.length > 0) {
+        console.warn("⚠️ [VertexAIService] .text() function missing, extracting manually from candidates");
+        const candidate = result.response.candidates[0];
+        if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+          responseText = candidate.content.parts[0].text;
+        }
+      }
+      else {
+        console.error("❌ [VertexAIService] Invalid or empty response from Gemini:", JSON.stringify(result, null, 2));
+        return [];
+      }
 
       return this.parseJsonResponse(responseText);
     } catch (error) {
