@@ -1,4 +1,5 @@
-const { SpeechClient } = require('@google-cloud/speech').v1p1beta1;
+const { SpeechClient } = require('@google-cloud/speech').v1;
+const { SpeechClient: SpeechClientV2 } = require('@google-cloud/speech').v2;
 const { VertexAI } = require('@google-cloud/vertexai');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
@@ -9,6 +10,7 @@ const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTrans
 const { Storage } = require('@google-cloud/storage');
 
 let speechClient = null;
+let speechClientV2 = null;
 let vertexAI = null;
 let generativeModel = null;
 let storage = null;
@@ -80,6 +82,7 @@ const initializeServices = async () => {
   });
 
   speechClient = new SpeechClient({ keyFilename: speechCredentialsPath });
+  speechClientV2 = new SpeechClientV2({ keyFilename: speechCredentialsPath });
 
   storage = new Storage({
     projectId: projectID,
@@ -92,6 +95,11 @@ const initializeServices = async () => {
 const getSpeechClient = async () => {
   await initializeServices();
   return speechClient;
+};
+
+const getSpeechClientV2 = async () => {
+  await initializeServices();
+  return speechClientV2;
 };
 
 const getVertexAI = async () => {

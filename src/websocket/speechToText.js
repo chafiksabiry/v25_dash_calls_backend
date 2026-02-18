@@ -6,154 +6,152 @@ function setupSpeechToTextWebSocket(server) {
     server,
     path: '/speech-to-text'
   });
-  // console.log("wss",wss);
 
   wss.on('connection', async (ws) => {
-    console.log('✅ Client connected to speech-to-text WebSocket (Gemini 1.5 Flash Mode)');
+    console.log('✅ [STT] Client connected to Streaming Speech-to-Text (Google Cloud)');
 
-    // Buffer for accumulating audio chunks
-    let audioBuffer = Buffer.alloc(0);
-    const BUFFER_LIMIT = 32000 * 5; // ~5 seconds of audio at 16kHz (32KB/s)
-    const FLUSH_INTERVAL = 3000; // 3 seconds
-    let flushTimer = null;
-    let isProcessing = false;
+    let recognizeStream = null;
+    let speechClient = null;
+    let isStreamOpen = false;
 
-    let fullTranscript = "";
-    let isAnalyzingPhase = false;
+    // Default Config (Updated on first message if config provided)
+    let requestConfig = {
+      encoding: 'LINEAR16',
+      sampleRateHertz: 16000,
+      languageCode: 'fr-FR', // Default per user request (Maroc)
+      enableAutomaticPunctuation: true,
+      model: 'telephony', // Optimized for phone calls (comparable to Chirp in V1)
+      useEnhanced: true,
+      diarizationConfig: {
+        enableSpeakerDiarization: true,
+        minSpeakerCount: 2,
+        maxSpeakerCount: 2,
+      },
+    };
 
-    // Inform client that WebSocket is ready
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'connected', message: 'WebSocket connection established (Gemini)' }));
+    try {
+      speechClient = await vertexAIService.getSpeechClient();
+    } catch (err) {
+      console.error("❌ [STT] Failed to get SpeechClient:", err);
+      ws.send(JSON.stringify({ type: 'error', message: 'Backend failed to initialize Speech Client' }));
+      return;
     }
 
-    const processBuffer = async () => {
-      if (audioBuffer.length === 0 || isProcessing) return;
+    const startStream = () => {
+      if (isStreamOpen) return;
 
-      isProcessing = true;
-      const bufferToProcess = audioBuffer;
-      audioBuffer = Buffer.alloc(0); // Clear buffer immediately
+      console.log(`🚀 [STT] Starting Google Cloud StreamingRecognize (${requestConfig.languageCode}, ${requestConfig.encoding})`);
 
-      try {
-        console.log(`🧠 [STT] Processing buffered audio (${bufferToProcess.length} bytes) with Gemini...`);
-        const segments = await vertexAIService.transcribeAudioBuffer(bufferToProcess);
+      recognizeStream = speechClient
+        .streamingRecognize({
+          config: requestConfig,
+          interimResults: true, // Crucial for real-time feedback
+        })
+        .on('error', (error) => {
+          console.error('❌ [STT] Google API Error:', error);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'error', message: error.message }));
+          }
+          isStreamOpen = false;
+        })
+        .on('data', (data) => {
+          // Process STT Result
+          if (data.results[0] && data.results[0].alternatives[0]) {
+            const result = data.results[0];
+            const alternative = result.alternatives[0];
+            const transcript = alternative.transcript;
 
-        if (segments && segments.length > 0) {
-          console.log(`🎙️ [STT] Gemini returned ${segments.length} segments`);
-
-          // Send all segments to client
-          segments.forEach(segment => {
-            const transcriptText = segment.text;
-
-            // Format transcript with speaker label if present
-            let formattedTranscript = transcriptText;
-            if (segment.speaker) {
-              formattedTranscript = `[${segment.speaker}]: ${transcriptText}`;
-            }
-
-            console.log(`🎙️ [STT] Segment: "${formattedTranscript}"`);
+            // Console log for debug
+            // console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}]: ${transcript}`);
 
             const message = {
-              type: 'final', // Gemini results are always final in this batch mode
-              transcript: formattedTranscript,
-              confidence: 0.95, // Gemini doesn't always return confidence, assuming high for now
-              isFinal: true,
-              speaker: segment.speaker,
-              startTime: segment.start,
-              endTime: segment.end,
-              languageCode: 'en-US'
+              type: result.isFinal ? 'final' : 'interim',
+              transcript: transcript,
+              confidence: alternative.confidence || 0.9,
+              isFinal: result.isFinal,
+              timestamp: Date.now(),
+              speaker: result.alternatives[0].words && result.alternatives[0].words.length > 0
+                ? result.alternatives[0].words[0].speakerTag
+                : undefined
             };
 
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify(message));
             }
-
-            // Append to full transcript for context/analysis
-            fullTranscript += " " + formattedTranscript;
-          });
-
-          // Trigger Phase Analysis (throttled)
-          if (!isAnalyzingPhase && fullTranscript.length > 50) {
-            isAnalyzingPhase = true;
-            // Analyze the last portion of transcript or full context?
-            // Sending full transcript provides better context for phases
-            vertexAIService.analyzeCallPhase(fullTranscript)
-              .then(analysisResult => {
-                console.log('📊 AI Analysis result:', analysisResult.current_phase);
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({
-                    type: 'analysis',
-                    ...analysisResult,
-                    confidence: (analysisResult.confidence || 0) / 100,
-                    timestamp: Date.now()
-                  }));
-                }
-              })
-              .catch(err => console.error('Error in real-time analysis:', err))
-              .finally(() => {
-                setTimeout(() => { isAnalyzingPhase = false; }, 2000);
-              });
           }
-        }
-      } catch (error) {
-        console.error('❌ [STT] Error processing audio buffer:', error);
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Transcription error' }));
-        }
-      } finally {
-        isProcessing = false;
-      }
+        });
+
+      isStreamOpen = true;
     };
 
-    // Start periodic flush
-    flushTimer = setInterval(processBuffer, FLUSH_INTERVAL);
-
-    ws.on('message', async (data) => {
+    ws.on('message', (data) => {
       try {
-        // Handle Configuration (Ignore for now, using hardcoded Gemini defaults)
-        if (data instanceof Buffer) {
-          try {
-            const jsonString = data.toString('utf8');
-            if (jsonString.trim().startsWith('{')) {
-              const config = JSON.parse(jsonString);
-              console.log("⚙️ [STT] Received config (ignored in Gemini mode):", config.config?.languageCode);
-              return;
-            }
-          } catch (e) { } // Not JSON, treat as audio
-        } else {
-          // If string data, likely config
-          try {
-            const config = JSON.parse(data);
-            console.log("⚙️ [STT] Received config JSON (ignored in Gemini mode)");
-            return;
-          } catch (e) { }
-        }
-
-        // It's audio data
         if (Buffer.isBuffer(data)) {
-          // Append to buffer
-          audioBuffer = Buffer.concat([audioBuffer, data]);
+          // 🎤 Raw Audio (Simulation) - usually LINEAR16 PCM
+          if (!isStreamOpen) startStream();
+          if (recognizeStream && isStreamOpen) {
+            recognizeStream.write(data);
+          }
+        }
+        else {
+          // 📄 JSON Message (Config or Twilio Media)
+          const message = JSON.parse(data.toString());
 
-          // If buffer gets too large, force flush
-          if (audioBuffer.length >= BUFFER_LIMIT) {
-            console.log("⚠️ [STT] Buffer limit reached, forcing flush");
-            processBuffer();
+          if (message.type === 'config') {
+            console.log("⚙️ [STT] Received Config:", message.config);
+            // Merge config
+            if (message.config) {
+              requestConfig = { ...requestConfig, ...message.config };
+              // Ensure model is robust if not specified
+              if (!requestConfig.model) requestConfig.model = 'telephony';
+            }
+          }
+          else if (message.event === 'media' && message.media && message.media.payload) {
+            // 📞 Twilio Media Stream (Base64 MULAW usually)
+            // Twilio sends mulaw 8000Hz. Ensure config matches or we assume default if not set.
+            // If this is the start, we might need to update config to MULAW/8000
+            if (!isStreamOpen) {
+              // Auto-detect Twilio defaults if not explicitly configured
+              if (requestConfig.sampleRateHertz === 16000) {
+                console.log("⚠️ [STT] Auto-switching to Twilio defaults (MULAW / 8000Hz)");
+                requestConfig.encoding = 'MULAW';
+                requestConfig.sampleRateHertz = 8000;
+              }
+              startStream();
+            }
+
+            if (recognizeStream && isStreamOpen) {
+              // Google STT expects Buffer for audio content
+              recognizeStream.write(Buffer.from(message.media.payload, 'base64'));
+            }
+          }
+          else if (message.event === 'start') {
+            console.log("📞 [STT] Twilio Stream Started:", message.start);
+            // Could reset stream ID etc.
+          }
+          else if (message.event === 'stop') {
+            console.log("🛑 [STT] Twilio Stream Stopped");
+            if (recognizeStream) {
+              recognizeStream.end();
+              isStreamOpen = false;
+            }
           }
         }
       } catch (error) {
-        console.error('❌ Error processing WebSocket message:', error);
+        console.error('❌ [STT] Error processing message:', error);
       }
     });
 
     ws.on('close', () => {
-      console.log('🔌 Client disconnected from speech-to-text WebSocket');
-      if (flushTimer) clearInterval(flushTimer);
-      // Process remaining buffer? Maybe not needed as call is over.
+      console.log('🔌 [STT] Client disconnected');
+      if (recognizeStream) {
+        recognizeStream.end();
+        isStreamOpen = false;
+      }
     });
 
-    ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
-      if (flushTimer) clearInterval(flushTimer);
-    });
+    // Send initial connection success
+    ws.send(JSON.stringify({ type: 'connected', message: 'Ready for streaming' }));
   });
 }
 
