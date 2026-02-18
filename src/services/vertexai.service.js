@@ -216,7 +216,7 @@ ${transcript}`;
       const result = await gModel.generateContent(prompt);
       const response = result.response;
 
-      const parsedResponse = this.parseJsonResponse(response.text());
+      const parsedResponse = this.parseJsonResponse(response.candidates[0].content.parts[0].text);
       console.log('✅ [VertexAIService] AI Analysis Result:', JSON.stringify(parsedResponse));
       return parsedResponse;
     } catch (error) {
