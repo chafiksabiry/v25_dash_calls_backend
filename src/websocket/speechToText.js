@@ -11,7 +11,6 @@ function setupSpeechToTextWebSocket(server) {
     console.log('✅ [STT] Client connected to Streaming Speech-to-Text (Google Cloud)');
 
     let recognizeStream = null;
-    let speechClient = null;
     let isStreamOpen = false;
 
     // Default Config (Updated on first message if config provided)
@@ -37,51 +36,59 @@ function setupSpeechToTextWebSocket(server) {
       return;
     }
 
-    const startStream = () => {
+    const startStream = async () => {
       if (isStreamOpen) return;
 
       console.log(`🚀 [STT] Starting Google Cloud StreamingRecognize (${requestConfig.languageCode}, ${requestConfig.encoding})`);
 
-      recognizeStream = speechClient
-        .streamingRecognize({
-          config: requestConfig,
-          interimResults: true, // Crucial for real-time feedback
-        })
-        .on('error', (error) => {
-          console.error('❌ [STT] Google API Error:', error);
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'error', message: error.message }));
-          }
-          isStreamOpen = false;
-        })
-        .on('data', (data) => {
-          // Process STT Result
-          if (data.results[0] && data.results[0].alternatives[0]) {
-            const result = data.results[0];
-            const alternative = result.alternatives[0];
-            const transcript = alternative.transcript;
-
-            // Console log for debug
-            // console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}]: ${transcript}`);
-
-            const message = {
-              type: result.isFinal ? 'final' : 'interim',
-              transcript: transcript,
-              confidence: alternative.confidence || 0.9,
-              isFinal: result.isFinal,
-              timestamp: Date.now(),
-              speaker: result.alternatives[0].words && result.alternatives[0].words.length > 0
-                ? result.alternatives[0].words[0].speakerTag
-                : undefined
-            };
-
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify(message));
-            }
-          }
+      try {
+        recognizeStream = await vertexAIService.createSpeechStream({
+          ...requestConfig,
+          interimResults: true
         });
 
-      isStreamOpen = true;
+        recognizeStream
+          .on('error', (error) => {
+            console.error('❌ [STT] Google API Error:', error);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'error', message: error.message }));
+            }
+            isStreamOpen = false;
+          })
+          .on('data', (data) => {
+            // Process STT Result
+            if (data.results[0] && data.results[0].alternatives[0]) {
+              const result = data.results[0];
+              const alternative = result.alternatives[0];
+              const transcript = alternative.transcript;
+
+              // Console log for debug
+              // console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}]: ${transcript}`);
+
+              const message = {
+                type: result.isFinal ? 'final' : 'interim',
+                transcript: transcript,
+                confidence: alternative.confidence || 0.9,
+                isFinal: result.isFinal,
+                timestamp: Date.now(),
+                speaker: result.alternatives[0].words && result.alternatives[0].words.length > 0
+                  ? result.alternatives[0].words[0].speakerTag
+                  : undefined
+              };
+
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+              }
+            }
+          });
+
+        isStreamOpen = true;
+      } catch (err) {
+        console.error("❌ [STT] Error starting recognize stream:", err);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Failed to start speech stream' }));
+        }
+      }
     };
 
     ws.on('message', (data) => {

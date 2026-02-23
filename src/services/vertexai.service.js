@@ -113,6 +113,22 @@ const getGenerativeModel = async () => {
 };
 
 class VertexAIService {
+  async getSpeechClient() {
+    return await getSpeechClient();
+  }
+
+  async getSpeechClientV2() {
+    return await getSpeechClientV2();
+  }
+
+  async getVertexAI() {
+    return await getVertexAI();
+  }
+
+  async getGenerativeModel() {
+    return await getGenerativeModel();
+  }
+
   async createSpeechStream(config = {}) {
     console.log('🎤 [VertexAIService] RECEIVED CONFIG REQUEST:', JSON.stringify(config));
 
