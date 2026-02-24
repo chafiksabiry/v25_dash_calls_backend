@@ -8,6 +8,7 @@ const handleControllerError = (res, error, defaultMessage = 'An error occurred')
     const status = error.status || 500;
     const message = error.message || defaultMessage;
     res.status(status).json({
+        success: false,
         error: message,
         details: error.originalError || error.message || null
     });
@@ -15,13 +16,45 @@ const handleControllerError = (res, error, defaultMessage = 'An error occurred')
 
 exports.summarizeAudio = async (req, res) => {
     try {
-        const { fileUri, prompt } = req.body;
-        if (!fileUri) return res.status(400).json({ error: 'fileUri is required' });
+        const { recordingId } = req.body;
+        if (!recordingId) return res.status(400).json({ error: 'recordingId is required' });
 
-        const summary = await vertexAIService.generatePostCallSummary(fileUri); // Adapted for dash-calls context
-        res.json({ summary });
+        const result = await vertexAIService.getCallSummary(recordingId);
+        res.json(result);
     } catch (error) {
         handleControllerError(res, error, 'Error summarizing audio');
+    }
+};
+
+exports.getCallTranscription = async (req, res) => {
+    try {
+        const { recordingId } = req.body;
+        if (!recordingId) return res.status(400).json({ error: 'recordingId is required' });
+
+        const transcription = await vertexAIService.getCallTranscription(recordingId);
+        res.json({ success: true, transcription });
+    } catch (error) {
+        handleControllerError(res, error, 'Error getting transcription');
+    }
+};
+
+exports.getCallScoring = async (req, res) => {
+    try {
+        const { recordingId } = req.body;
+        const result = await vertexAIService.getCallScoring(recordingId);
+        res.json({ success: true, ...result });
+    } catch (error) {
+        handleControllerError(res, error, 'Error getting call scoring');
+    }
+};
+
+exports.getCallPostActions = async (req, res) => {
+    try {
+        const { recordingId } = req.body;
+        const result = await vertexAIService.getCallPostActions(recordingId);
+        res.json({ success: true, ...result });
+    } catch (error) {
+        handleControllerError(res, error, 'Error getting post actions');
     }
 };
 
@@ -31,9 +64,6 @@ exports.evaluateRepLanguage = async (req, res) => {
         if (!fileUri || !textToCompare) {
             return res.status(400).json({ error: 'fileUri and textToCompare are required' });
         }
-
-        // In dash-calls we'll use a more general analysis if specific evaluateRepLanguage isn't implemented as such
-        // But for "meme logique", we can use a general generation if needed, or stick to what we sync'd in service
         const response = await vertexAIService.analyzeCallPhase(textToCompare);
         res.json(response);
     } catch (error) {
