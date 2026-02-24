@@ -14,6 +14,7 @@ let speechClient = null;
 let speechClientV2 = null;
 let vertexAI = null;
 let generativeModel = null;
+let jsonGenerativeModel = null;
 let storage = null;
 
 const projectID = (process.env.GOOGLE_CLOUD_PROJECT || process.env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
@@ -73,10 +74,21 @@ const initializeServices = async () => {
   };
 
   vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
+
+  // Standard Model for Text/Chat
   generativeModel = vertexAI.getGenerativeModel({
     model: modelName,
     generation_config: {
       max_output_tokens: 512,
+      temperature: 0.7,
+    }
+  });
+
+  // Specialized Model for JSON output tasks
+  jsonGenerativeModel = vertexAI.getGenerativeModel({
+    model: modelName,
+    generation_config: {
+      max_output_tokens: 1024,
       temperature: 0.2,
       response_mime_type: 'application/json',
     }
@@ -132,6 +144,27 @@ class VertexAIService {
 
   async createSpeechStream(config = {}) {
     console.log('🎤 [VertexAIService] RECEIVED CONFIG REQUEST:', JSON.stringify(config));
+
+    const allowedFields = [
+      'encoding',
+      'sampleRateHertz',
+      'languageCode',
+      'alternativeLanguageCodes',
+      'maxAlternatives',
+      'profanityFilter',
+      'speechContexts',
+      'enableWordTimeOffsets',
+      'enableWordConfidence',
+      'enableAutomaticPunctuation',
+      'enableSpokenPunctuation',
+      'enableSpokenEmojis',
+      'diarizationConfig',
+      'metadata',
+      'model',
+      'useEnhanced',
+      'audioChannelCount',
+      'enableAutomaticLanguageIdentification'
+    ];
 
     // Minimal baseline configuration for raw PCM at 16kHz
     const defaultConfig = {
@@ -377,10 +410,10 @@ ${fullTranscript}`;
 
   async transcribeAudioBuffer(audioBuffer) {
     try {
-      const gModel = await getGenerativeModel();
+      await initializeServices();
       const prompt = generateAudioTranscriptionPrompt();
 
-      // Convert raw PCM buffer to WAV format using helper (inline for now)
+      // Convert raw PCM buffer to WAV format using helper
       const wavBuffer = this.pcmToWav(audioBuffer);
       const base64Audio = wavBuffer.toString('base64');
 
@@ -399,26 +432,17 @@ ${fullTranscript}`;
       };
 
       console.log(`🧠 [VertexAIService] Calling Gemini for transcription (chunk size: ${audioBuffer.length} bytes)`);
-      const result = await gModel.generateContent(request);
-
-      // DEBUG: Log the full structure to understand why .text() is missing
-      // console.log("🔍 [VertexAIService] Full Gemini Result:", JSON.stringify(result, null, 2));
+      const result = await jsonGenerativeModel.generateContent(request);
 
       let responseText = '';
-
-      // Check if standard helper exists
       if (result.response && typeof result.response.text === 'function') {
         responseText = result.response.text();
-      }
-      // Fallback: Access candidates directly (common in some SDK versions or raw responses)
-      else if (result.response && result.response.candidates && result.response.candidates.length > 0) {
-        console.warn("⚠️ [VertexAIService] .text() function missing, extracting manually from candidates");
+      } else if (result.response && result.response.candidates && result.response.candidates.length > 0) {
         const candidate = result.response.candidates[0];
         if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
           responseText = candidate.content.parts[0].text;
         }
-      }
-      else {
+      } else {
         console.error("❌ [VertexAIService] Invalid or empty response from Gemini:", JSON.stringify(result, null, 2));
         return [];
       }
@@ -426,7 +450,6 @@ ${fullTranscript}`;
       return this.parseJsonResponse(responseText);
     } catch (error) {
       console.error("❌ [VertexAIService] Error transcribing buffer with Gemini:", error);
-      // Return empty array on error to prevent crashing caller
       return [];
     }
   }
@@ -547,11 +570,10 @@ ${fullTranscript}`;
     try {
       await initializeServices();
 
+      const sanitizedHistory = this.sanitizeHistory(context);
+
       const chat = generativeModel.startChat({
-        history: context && Array.isArray(context) ? context.map(msg => ({
-          role: msg.role === 'assistant' ? 'model' : msg.role,
-          parts: [{ text: msg.content }]
-        })) : [],
+        history: sanitizedHistory,
       });
 
       const result = await chat.sendMessage(transcription);
@@ -566,12 +588,7 @@ ${fullTranscript}`;
     try {
       await initializeServices();
 
-      const isEarlyAnalysis = transcription.length < 100;
-      const prompt = `You are an expert DISC personality analyst helping sales agents during phone calls.
-
-      ${isEarlyAnalysis ? 'IMPORTANT: This is an early analysis with limited text. Focus on immediate personality indicators and provide a preliminary assessment.' : ''}
-
-      Analyze the customer's communication patterns and provide DISC personality insights.
+      const prompt = `Analyze the customer's communication patterns and provide DISC personality insights.
       
       Transcript: ${transcription}
       Duration: ${callDuration}
@@ -586,7 +603,7 @@ ${fullTranscript}`;
         "communicationStyle": "string"
       }`;
 
-      const result = await generativeModel.generateContent(prompt);
+      const result = await jsonGenerativeModel.generateContent(prompt);
       const responseText = result.response.candidates[0].content.parts[0].text;
 
       return this.parseJsonResponse(responseText);
@@ -594,6 +611,32 @@ ${fullTranscript}`;
       console.error('❌ [VertexAIService] Error in getPersonalityAnalysis:', error);
       throw error;
     }
+  }
+
+  /**
+   * Gemini expects a strictly alternating pattern of 'user' and 'model' roles.
+   * This helper merges adjacent messages with the same role and filters out invalid ones.
+   */
+  sanitizeHistory(context) {
+    if (!context || !Array.isArray(context) || context.length === 0) return [];
+
+    const history = [];
+    context.forEach(msg => {
+      const role = msg.role === 'assistant' ? 'model' : 'user';
+      const text = msg.content || '';
+
+      if (history.length > 0 && history[history.length - 1].role === role) {
+        // Merge with previous part
+        history[history.length - 1].parts[0].text += '\n' + text;
+      } else {
+        history.push({
+          role: role,
+          parts: [{ text: text }]
+        });
+      }
+    });
+
+    return history;
   }
 
   // Alias for Gemini-based transcription (Knowledge Base logic)

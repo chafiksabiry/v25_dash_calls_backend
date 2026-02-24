@@ -28,6 +28,7 @@ function setupSpeechToTextWebSocket(server) {
       },
     };
 
+    let speechClient = null;
     try {
       speechClient = await vertexAIService.getSpeechClient();
     } catch (err) {
@@ -63,7 +64,7 @@ function setupSpeechToTextWebSocket(server) {
               const transcript = alternative.transcript;
 
               // Console log for debug
-              // console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}]: ${transcript}`);
+              console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}]: ${transcript}`);
 
               const message = {
                 type: result.isFinal ? 'final' : 'interim',
@@ -71,9 +72,7 @@ function setupSpeechToTextWebSocket(server) {
                 confidence: alternative.confidence || 0.9,
                 isFinal: result.isFinal,
                 timestamp: Date.now(),
-                speaker: result.alternatives[0].words && result.alternatives[0].words.length > 0
-                  ? result.alternatives[0].words[0].speakerTag
-                  : undefined
+                speaker: result.channelTag === 1 ? 'agent' : (result.channelTag === 2 ? 'customer' : undefined)
               };
 
               if (ws.readyState === WebSocket.OPEN) {
