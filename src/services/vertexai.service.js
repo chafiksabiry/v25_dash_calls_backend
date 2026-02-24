@@ -19,7 +19,7 @@ let storage = null;
 
 const projectID = (process.env.GOOGLE_CLOUD_PROJECT || process.env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
 const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
-const modelName = process.env.VERTEX_AI_MODEL || 'gemini-2.0-flash';
+const modelName = process.env.VERTEX_AI_MODEL || 'gemini-1.5-flash';
 const bucketName = process.env.GOOGLE_CLOUD_STORAGE_BUCKET || 'harx-audios-test';
 
 let vertexCredentialsPath = null;
@@ -163,7 +163,8 @@ class VertexAIService {
       'model',
       'useEnhanced',
       'audioChannelCount',
-      'enableAutomaticLanguageIdentification'
+      'enableAutomaticLanguageIdentification',
+      'enableSeparateRecognitionPerChannel'
     ];
 
     // Minimal baseline configuration for raw PCM at 16kHz
@@ -176,6 +177,7 @@ class VertexAIService {
       model: 'latest_long',
       useEnhanced: true,
       enableAutomaticPunctuation: true,
+      enableSeparateRecognitionPerChannel: true, // Required for channelTag
       metadata: {
         interactionType: 'PHONE_CALL',
         microphoneDistance: 'NEARFIELD',
@@ -568,18 +570,24 @@ ${fullTranscript}`;
 
   async getAIAssistance(transcription, context = []) {
     try {
+      console.log('🧠 [VertexAIService] getAIAssistance - Transcription:', transcription);
       await initializeServices();
 
       const sanitizedHistory = this.sanitizeHistory(context);
+      console.log('🧠 [VertexAIService] getAIAssistance - History length:', sanitizedHistory.length);
 
       const chat = generativeModel.startChat({
         history: sanitizedHistory,
       });
 
       const result = await chat.sendMessage(transcription);
-      return result.response.text();
+      const responseText = result.response.text();
+      console.log('✅ [VertexAIService] AI Assistance Response:', responseText.substring(0, 50) + '...');
+      return responseText;
     } catch (error) {
       console.error('❌ [VertexAIService] Error getting AI assistance:', error);
+      // Detailed error for debugging
+      if (error.response) console.error('Full Error Response:', JSON.stringify(error.response, null, 2));
       throw error;
     }
   }

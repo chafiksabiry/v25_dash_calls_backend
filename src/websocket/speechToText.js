@@ -50,6 +50,11 @@ function setupSpeechToTextWebSocket(server) {
 
         recognizeStream
           .on('error', (error) => {
+            if (error.message && error.message.includes('Audio Timeout Error')) {
+              console.log('ℹ️ [STT] Audio stream timed out (normal)');
+              isStreamOpen = false;
+              return;
+            }
             console.error('❌ [STT] Google API Error:', error);
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'error', message: error.message }));
