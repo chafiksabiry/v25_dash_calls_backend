@@ -625,26 +625,48 @@ ${fullTranscript}`;
    * Gemini expects a strictly alternating pattern of 'user' and 'model' roles.
    * This helper merges adjacent messages with the same role and filters out invalid ones.
    */
-  sanitizeHistory(context) {
-    if (!context || !Array.isArray(context) || context.length === 0) return [];
+  sanitizeHistory(history) {
+    if (!history || history.length === 0) return [];
 
-    const history = [];
-    context.forEach(msg => {
-      const role = msg.role === 'assistant' ? 'model' : 'user';
-      const text = msg.content || '';
+    // Convert AgentContext/TranscriptEntry format to Gemini format if needed
+    const geminiHistory = history.map(msg => {
+      // Handle different input formats (raw strings, objects with role/parts, or TranscriptEntry)
+      if (typeof msg === 'string') return { role: 'user', parts: [{ text: msg }] };
 
-      if (history.length > 0 && history[history.length - 1].role === role) {
-        // Merge with previous part
-        history[history.length - 1].parts[0].text += '\n' + text;
+      // Handle both 'role' property and 'participantId' (from AgentContext)
+      // Standardize roles: agent-1 -> model, customer-1 -> user
+      const speakerId = (msg.participantId || msg.role || '').toLowerCase();
+      const role = (speakerId.includes('assistant') || speakerId.includes('model') || speakerId.includes('agent'))
+        ? 'model'
+        : 'user';
+
+      const text = msg.content || msg.text || '';
+      return { role, parts: [{ text }] };
+    }).filter(msg => msg.parts && msg.parts[0] && msg.parts[0].text.trim() !== '');
+
+    if (geminiHistory.length === 0) return [];
+
+    // Combine consecutive messages from the same role (Gemini requirement)
+    const sanitized = [];
+    geminiHistory.forEach(msg => {
+      if (sanitized.length === 0) {
+        sanitized.push(msg);
       } else {
-        history.push({
-          role: role,
-          parts: [{ text: text }]
-        });
+        const last = sanitized[sanitized.length - 1];
+        if (last.role === msg.role) {
+          last.parts[0].text += " " + msg.parts[0].text;
+        } else {
+          sanitized.push(msg);
+        }
       }
     });
 
-    return history;
+    // Ensure first message is 'user' if it's 'model' (Gemini requirement for some models)
+    if (sanitized.length > 0 && sanitized[0].role === 'model') {
+      sanitized.unshift({ role: 'user', parts: [{ text: "Hello, I am ready to assist." }] });
+    }
+
+    return sanitized;
   }
 
   // Alias for Gemini-based transcription (Knowledge Base logic)
