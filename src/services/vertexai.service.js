@@ -32,77 +32,102 @@ const setupGCPCredentials = async () => {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
+  const prepareCredentials = async (creds, fileName, defaultPath) => {
+    let sanitizedCreds = (creds || '').trim();
+
+    // Remove surrounding quotes if present (common in some env setups)
+    if (sanitizedCreds.startsWith('"') && sanitizedCreds.endsWith('"')) {
+      sanitizedCreds = sanitizedCreds.slice(1, -1).trim();
+    }
+
+    if (sanitizedCreds && sanitizedCreds.startsWith('{')) {
+      try {
+        // Parse and re-stringify to ensure valid JSON and handle escaped characters
+        const credsObj = JSON.parse(sanitizedCreds);
+
+        // Fix private_key newlines (very common issue with env vars)
+        if (credsObj.private_key && typeof credsObj.private_key === 'string') {
+          credsObj.private_key = credsObj.private_key.replace(/\\n/g, '\n');
+        }
+
+        const finalCreds = JSON.stringify(credsObj);
+        const credsPath = path.join(tempDir, fileName);
+        await fsPromises.writeFile(credsPath, finalCreds);
+        console.log(`✅ [VertexAIService] Using ${fileName} from JSON env var (fixed newlines)`);
+        return credsPath;
+      } catch (e) {
+        console.error(`❌ [VertexAIService] Error parsing ${fileName} JSON:`, e.message);
+        return sanitizedCreds; // Fallback to raw string (might be a path or broken JSON)
+      }
+    }
+
+    return sanitizedCreds || path.join(__dirname, defaultPath);
+  };
+
   // Vertex AI Credentials
-  const vertexCreds = (process.env.VERTEX_AI_CREDENTIALS || process.env.GCP_VERTEX_AI_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
-  if (vertexCreds && vertexCreds.startsWith('{')) {
-    vertexCredentialsPath = path.join(tempDir, 'vertex-credentials.json');
-    await fsPromises.writeFile(vertexCredentialsPath, vertexCreds);
-    console.log('✅ [VertexAIService] Using Vertex AI credentials from JSON env var');
-  } else {
-    vertexCredentialsPath = vertexCreds || path.join(__dirname, "../../config/vertex-service-account.json");
-  }
+  const vCreds = process.env.VERTEX_AI_CREDENTIALS || process.env.GCP_VERTEX_AI_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+  vertexCredentialsPath = await prepareCredentials(vCreds, 'vertex-credentials.json', "../../config/vertex-service-account.json");
 
   // Speech-to-Text Credentials
-  const speechCreds = (process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
-  if (speechCreds && speechCreds.startsWith('{')) {
-    speechCredentialsPath = path.join(tempDir, 'speech-credentials.json');
-    await fsPromises.writeFile(speechCredentialsPath, speechCreds);
-    console.log('✅ [VertexAIService] Using Speech-to-Text credentials from JSON env var');
-  } else {
-    speechCredentialsPath = speechCreds || path.join(__dirname, "../../config/speech-to-text-service-account.json");
-  }
+  const sCreds = process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+  speechCredentialsPath = await prepareCredentials(sCreds, 'speech-credentials.json', "../../config/speech-to-text-service-account.json");
 
   // Storage Credentials
-  const storageCreds = (process.env.CLOUD_STORAGE_CREDENTIALS || process.env.GCP_STORAGE_CREDENTIALS || process.env.GCP_CLOUD_STORAGE_CREDENTIALS || vertexCreds).trim();
-  if (storageCreds && storageCreds.startsWith('{')) {
-    storageCredentialsPath = path.join(tempDir, 'storage-credentials.json');
-    await fsPromises.writeFile(storageCredentialsPath, storageCreds);
-    console.log('✅ [VertexAIService] Using Storage credentials from JSON env var');
-  } else {
-    storageCredentialsPath = storageCreds || path.join(__dirname, "../../config/cloud-storage-service-account.json");
-  }
+  const stCreds = process.env.CLOUD_STORAGE_CREDENTIALS || process.env.GCP_STORAGE_CREDENTIALS || process.env.GCP_CLOUD_STORAGE_CREDENTIALS || vCreds;
+  storageCredentialsPath = await prepareCredentials(stCreds, 'storage-credentials.json', "../../config/cloud-storage-service-account.json");
+
+  console.log('📂 [VertexAIService] Credentials paths resolved.');
 };
 
 const initializeServices = async () => {
   if (vertexAI && speechClient) return;
 
-  await setupGCPCredentials();
+  try {
+    await setupGCPCredentials();
 
-  const vertexAuthOptions = {
-    keyFilename: vertexCredentialsPath,
-    scopes: ['https://www.googleapis.com/auth/cloud-platform']
-  };
+    const vertexAuthOptions = {
+      keyFilename: vertexCredentialsPath,
+      scopes: ['https://www.googleapis.com/auth/cloud-platform']
+    };
 
-  vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
+    console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${location}`);
+    vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
 
-  // Standard Model for Text/Chat
-  generativeModel = vertexAI.getGenerativeModel({
-    model: modelName,
-    generation_config: {
-      max_output_tokens: 512,
-      temperature: 0.7,
-    }
-  });
+    // Standard Model for Text/Chat
+    generativeModel = vertexAI.getGenerativeModel({
+      model: modelName,
+      generation_config: {
+        max_output_tokens: 512,
+        temperature: 0.7,
+      }
+    });
 
-  // Specialized Model for JSON output tasks
-  jsonGenerativeModel = vertexAI.getGenerativeModel({
-    model: modelName,
-    generation_config: {
-      max_output_tokens: 1024,
-      temperature: 0.2,
-      response_mime_type: 'application/json',
-    }
-  });
+    // Specialized Model for JSON output tasks
+    jsonGenerativeModel = vertexAI.getGenerativeModel({
+      model: modelName,
+      generation_config: {
+        max_output_tokens: 1024,
+        temperature: 0.2,
+        response_mime_type: 'application/json',
+      }
+    });
 
-  speechClient = new SpeechClient({ keyFilename: speechCredentialsPath });
-  speechClientV2 = new SpeechClientV2({ keyFilename: speechCredentialsPath });
+    speechClient = new SpeechClient({ keyFilename: speechCredentialsPath });
+    speechClientV2 = new SpeechClientV2({ keyFilename: speechCredentialsPath });
 
-  storage = new Storage({
-    projectId: projectID,
-    keyFilename: storageCredentialsPath
-  });
+    storage = new Storage({
+      projectId: projectID,
+      keyFilename: storageCredentialsPath
+    });
 
-  console.log(`✅ [VertexAIService] Services initialized (Model: ${modelName}, Project: ${projectID})`);
+    console.log(`✅ [VertexAIService] Services initialized (Model: ${modelName}, Project: ${projectID})`);
+  } catch (error) {
+    console.error('❌ [VertexAIService] Initialization failed:', error);
+    // Reset to allow retry
+    vertexAI = null;
+    speechClient = null;
+    throw error;
+  }
 };
 
 const getSpeechClient = async () => {
