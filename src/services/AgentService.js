@@ -6,11 +6,15 @@ class AgentService {
   }
 
   async getAllAgents() {
-    return this.repository.findAll({}, 'user');
+    return this.repository.findAll({});
   }
 
   async getAgentById(id) {
-    return this.repository.findById(id, 'user');
+    return this.repository.findById(id);
+  }
+
+  async getAgentByUserId(userId) {
+    return this.repository.findByUserId(userId);
   }
 
   async createAgent(userId, data) {

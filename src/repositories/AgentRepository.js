@@ -7,7 +7,11 @@ class AgentRepository extends BaseRepository {
   }
 
   async findAvailable() {
-    return this.model.find({ status: 'active' }).populate('user', 'name email');
+    return this.model.find({ status: 'active' }).populate('userId', 'name email');
+  }
+
+  async findByUserId(userId, populate) {
+    return this.model.findOne({ userId }).populate(populate || []);
   }
 
   async updateAvailability(id, availability) {
