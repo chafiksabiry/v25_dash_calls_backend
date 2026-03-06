@@ -39,40 +39,49 @@ const getTwilioClient = async (userId) => {
 };
 
 const getCallDetails = async (callSid, userId) => {
-  try {
-    const credentials = await getTwilioCredentials(userId);
-    console.log("credentials:", credentials);
-    const client = twilio(credentials.accountSid, credentials.authToken);
-    const callParent = await client.calls(callSid).fetch();
-    console.log("Call parent Details:", callParent);
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 2000; // 2 seconds
 
-    const callFils = await getChildCalls(callSid, userId);
-    console.log("call Fils details", callFils);
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const credentials = await getTwilioCredentials(userId);
+      const client = twilio(credentials.accountSid, credentials.authToken);
+      const callParent = await client.calls(callSid).fetch();
 
-    const recordings = await client.recordings.list({ callSid: callSid, limit: 1 });
+      const callFils = await getChildCalls(callSid, userId);
+      const recordings = await client.recordings.list({ callSid: callSid, limit: 1 });
 
-    let recordingUrl = null;
-    if (recordings.length > 0) {
-      const recordingSid = recordings[0].sid;
-      const format = "mp3";
-      recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/Recordings/${recordingSid}.${format}`;
+      let recordingUrl = null;
+      if (recordings.length > 0) {
+        const recordingSid = recordings[0].sid;
+        const format = "mp3";
+        recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/Recordings/${recordingSid}.${format}`;
+      } else if (attempt < MAX_RETRIES) {
+        console.log(`⏳ [TwilioService] No recording found for SID: ${callSid}. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        continue;
+      }
+
+      return {
+        ParentCallSid: callSid,
+        ChildCallSid: callFils[0]?.sid || null,
+        duration: callParent.duration,
+        from: callFils[0]?.from || callParent.from,
+        to: callFils[0]?.to || callParent.to,
+        status: callFils[0]?.status || callParent.status,
+        startTime: callParent.startTime,
+        endTime: callParent.endTime,
+        direction: callFils[0]?.direction || callParent.direction,
+        recordingUrl: recordingUrl,
+      };
+    } catch (error) {
+      if (attempt === MAX_RETRIES) {
+        console.error("❌ Error fetching call details after multiple attempts:", error);
+        throw new Error(`Error fetching call details: ${error.message}`);
+      }
+      console.warn(`⚠️ [TwilioService] Error on attempt ${attempt}/${MAX_RETRIES}: ${error.message}. Retrying...`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
     }
-
-    return {
-      ParentCallSid: callSid,
-      ChildCallSid: callFils[0]?.sid || null,
-      duration: callParent.duration,
-      from: callFils[0]?.from || callParent.from,
-      to: callFils[0]?.to || callParent.to,
-      status: callFils[0]?.status || callParent.status,
-      startTime: callParent.startTime,
-      endTime: callParent.endTime,
-      direction: callFils[0]?.direction || callParent.direction,
-      recordingUrl: recordingUrl,
-    };
-  } catch (error) {
-    console.error("❌ Error fetching call details:", error);
-    throw new Error(`Error fetching call details: ${error.message}`);
   }
 };
 
