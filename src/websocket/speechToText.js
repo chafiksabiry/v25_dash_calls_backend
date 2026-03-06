@@ -19,12 +19,12 @@ function setupSpeechToTextWebSocket(server) {
       sampleRateHertz: 16000,
       languageCode: 'fr-FR', // Default per user request (Maroc)
       enableAutomaticPunctuation: true,
-      model: 'latest_long', // Optimized for long-form speech and phone calls
+      model: 'latest_long',
       useEnhanced: true,
+      audioChannelCount: 2,
+      enableSeparateRecognitionPerChannel: true,
       diarizationConfig: {
         enableSpeakerDiarization: false,
-        // minSpeakerCount: 2,
-        // maxSpeakerCount: 2,
       },
     };
 
@@ -62,28 +62,39 @@ function setupSpeechToTextWebSocket(server) {
             isStreamOpen = false;
           })
           .on('data', (data) => {
-            // Process STT Result
-            if (data.results[0] && data.results[0].alternatives[0]) {
-              const result = data.results[0];
-              const alternative = result.alternatives[0];
-              const transcript = alternative.transcript;
+            // Google can return multiple results in one message when using multichannel
+            data.results.forEach((result) => {
+              if (result.alternatives[0]) {
+                const alternative = result.alternatives[0];
+                const transcript = alternative.transcript;
+                const channelTag = result.channelTag || result.channel_tag;
 
-              // Console log for debug
-              console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}]: ${transcript}`);
+                // Only log and send non-empty transcripts (unless it's a final of a previously non-empty one)
+                if (transcript.trim() === '') {
+                  // If we get an empty final, it might mean the end of a segment
+                  if (result.isFinal) {
+                    console.log(`🗣️ [FINAL] (Channel ${channelTag}): <Empty/Silence>`);
+                  }
+                  return;
+                }
 
-              const message = {
-                type: result.isFinal ? 'final' : 'interim',
-                transcript: transcript,
-                confidence: alternative.confidence || 0.9,
-                isFinal: result.isFinal,
-                timestamp: Date.now(),
-                speaker: result.channelTag === 1 ? 'agent' : (result.channelTag === 2 ? 'customer' : undefined)
-              };
+                console.log(`🗣️ [${result.isFinal ? 'FINAL' : 'INTERIM'}] (Channel ${channelTag}): ${transcript}`);
 
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(message));
+                const message = {
+                  type: result.isFinal ? 'final' : 'interim',
+                  transcript: transcript,
+                  confidence: alternative.confidence || 0.9,
+                  isFinal: result.isFinal,
+                  timestamp: Date.now(),
+                  speaker: channelTag === 1 ? 'agent' : (channelTag === 2 ? 'customer' : undefined),
+                  channelTag: channelTag
+                };
+
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify(message));
+                }
               }
-            }
+            });
           });
 
         isStreamOpen = true;

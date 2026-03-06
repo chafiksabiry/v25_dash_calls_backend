@@ -203,6 +203,7 @@ class VertexAIService {
       useEnhanced: true,
       enableAutomaticPunctuation: true,
       enableSeparateRecognitionPerChannel: true, // Required for channelTag
+      audioChannelCount: 2,
       metadata: {
         interactionType: 'PHONE_CALL',
         microphoneDistance: 'NEARFIELD',
