@@ -22,9 +22,9 @@ function setupSpeechToTextWebSocket(server) {
       model: 'latest_long', // Optimized for long-form speech and phone calls
       useEnhanced: true,
       diarizationConfig: {
-        enableSpeakerDiarization: true,
-        minSpeakerCount: 2,
-        maxSpeakerCount: 2,
+        enableSpeakerDiarization: false,
+        // minSpeakerCount: 2,
+        // maxSpeakerCount: 2,
       },
     };
 
