@@ -189,7 +189,7 @@ const makeCall = async (to, userId) => {
       url: `${process.env.BASE_URL}/api/calls/twilio-voice`,
       to: to,
       from: credentials.phoneNumber,
-      record: true
+      record: false
     });
 
     console.log(`Call initiated with SID: ${call.sid}`);
@@ -214,7 +214,7 @@ const generateTwimlResponse = async (to) => {
 
   if (to) {
     // Validating 'to' format could be done here as well
-    const dial = twiml.dial({ callerId: callerId, record: 'record-from-answer' });
+    const dial = twiml.dial({ callerId: callerId });
     dial.number(to);
   } else {
     twiml.say("Invalid number");
@@ -350,19 +350,28 @@ const startRecording = async (callSid, userId) => {
 const stopRecording = async (callSid, userId) => {
   try {
     const client = await getTwilioClient(userId);
-    const recordings = await client.calls(callSid).recordings.list({ status: 'in-progress' });
+    // List all recordings for this call (any status)
+    const recordings = await client.calls(callSid).recordings.list();
 
     if (recordings.length === 0) {
-      console.log(`⚠️ No in-progress recording found for call ${callSid}`);
-      return null;
+      console.log(`⚠️ No recordings found to discard for call ${callSid}`);
+      return { discarded: false, count: 0 };
     }
 
-    const stopResults = await Promise.all(recordings.map(rec =>
-      client.calls(callSid).recordings(rec.sid).update({ status: 'stopped' })
-    ));
+    console.log(`🗑️ Attempting to delete ${recordings.length} recordings for call ${callSid}`);
 
-    console.log(`✅ Stopped ${stopResults.length} recordings for call ${callSid}`);
-    return stopResults;
+    const stopResults = await Promise.all(recordings.map(async (rec) => {
+      try {
+        await client.recordings(rec.sid).remove();
+        console.log(`✅ DISCARDED recording ${rec.sid}`);
+        return true;
+      } catch (err) {
+        console.error(`❌ Failed to discard recording ${rec.sid}:`, err.message);
+        return false;
+      }
+    }));
+
+    return { discarded: true, count: stopResults.filter(r => r).length };
   } catch (error) {
     console.error(`❌ Error stopping recording for ${callSid}:`, error.message);
     throw error;
