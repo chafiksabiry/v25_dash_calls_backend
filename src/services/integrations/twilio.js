@@ -335,6 +335,40 @@ const fetchTwilioRecording = async (recordingUrl, userId) => {
   }
 };
 
+const startRecording = async (callSid, userId) => {
+  try {
+    const client = await getTwilioClient(userId);
+    const recording = await client.calls(callSid).recordings.create();
+    console.log(`✅ Recording started for call ${callSid}: ${recording.sid}`);
+    return recording;
+  } catch (error) {
+    console.error(`❌ Error starting recording for ${callSid}:`, error.message);
+    throw error;
+  }
+};
+
+const stopRecording = async (callSid, userId) => {
+  try {
+    const client = await getTwilioClient(userId);
+    const recordings = await client.calls(callSid).recordings.list({ status: 'in-progress' });
+
+    if (recordings.length === 0) {
+      console.log(`⚠️ No in-progress recording found for call ${callSid}`);
+      return null;
+    }
+
+    const stopResults = await Promise.all(recordings.map(rec =>
+      client.calls(callSid).recordings(rec.sid).update({ status: 'stopped' })
+    ));
+
+    console.log(`✅ Stopped ${stopResults.length} recordings for call ${callSid}`);
+    return stopResults;
+  } catch (error) {
+    console.error(`❌ Error stopping recording for ${callSid}:`, error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   makeCall,
   trackCallStatus,
@@ -343,7 +377,9 @@ module.exports = {
   generateTwimlResponse,
   getCallDetails,
   saveCallToDB,
-  fetchTwilioRecording
+  fetchTwilioRecording,
+  startRecording,
+  stopRecording
 };
 
 

@@ -451,6 +451,36 @@ exports.getPersonalityAnalysis = async (req, res) => {
   }
 };
 
+exports.startRecording = async (req, res) => {
+  const { callSid, userId } = req.body;
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
+  }
+
+  try {
+    const recording = await twilioService.startRecording(callSid, userId);
+    res.status(200).json({ success: true, recording });
+  } catch (err) {
+    console.error('Error starting recording:', err);
+    res.status(500).json({ success: false, message: 'Failed to start recording', error: err.message });
+  }
+};
+
+exports.stopRecording = async (req, res) => {
+  const { callSid, userId } = req.body;
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
+  }
+
+  try {
+    const results = await twilioService.stopRecording(callSid, userId);
+    res.status(200).json({ success: true, results });
+  } catch (err) {
+    console.error('Error stopping recording:', err);
+    res.status(500).json({ success: false, message: 'Failed to stop recording', error: err.message });
+  }
+};
+
 exports.getLoginToken = async (req, res) => {
   try {
     const token = await telnyxService.generateLoginToken();

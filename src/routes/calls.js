@@ -84,6 +84,8 @@ router.post('/hangup/:callSid', callController.hangUpCall);
 router.post('/end', callController.endCall);
 router.post('/fetch-recording', callController.fetchRecording);
 router.post('/call-details', callController.getCallDetails);
+router.post('/recording/start', callController.startRecording);
+router.post('/recording/stop', callController.stopRecording);
 
 //@qalqul logic
 
