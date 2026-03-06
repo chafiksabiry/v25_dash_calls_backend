@@ -102,6 +102,10 @@ function setupSpeechToTextWebSocket(server) {
           if (!isStreamOpen) await startStream();
           if (recognizeStream && isStreamOpen) {
             const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+            // Log periodically to confirm data flow
+            if (Math.random() < 0.01) {
+              console.log(`🎤 [STT] Streaming binary audio: ${buffer.length} bytes`);
+            }
             recognizeStream.write(buffer);
           }
         }
