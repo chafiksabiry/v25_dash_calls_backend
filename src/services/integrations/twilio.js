@@ -49,15 +49,23 @@ const getCallDetails = async (callSid, userId) => {
       const callParent = await client.calls(callSid).fetch();
 
       const callFils = await getChildCalls(callSid, userId);
-      const recordings = await client.recordings.list({ callSid: callSid, limit: 1 });
+
+      // Try to find recordings on Parent SID first, then on Child SID if not found
+      let recordings = await client.recordings.list({ callSid: callSid, limit: 1 });
+
+      if (recordings.length === 0 && callFils.length > 0) {
+        console.log(`🔍 Checking for recordings on child SID: ${callFils[0].sid}`);
+        recordings = await client.recordings.list({ callSid: callFils[0].sid, limit: 1 });
+      }
 
       let recordingUrl = null;
       if (recordings.length > 0) {
         const recordingSid = recordings[0].sid;
         const format = "mp3";
         recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/Recordings/${recordingSid}.${format}`;
+        console.log(`✅ Found recording URL: ${recordingUrl}`);
       } else if (attempt < MAX_RETRIES) {
-        console.log(`⏳ [TwilioService] No recording found for SID: ${callSid}. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
+        console.log(`⏳ [TwilioService] No recording found for SID: ${callSid} or its children. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
         continue;
       }
