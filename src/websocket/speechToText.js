@@ -97,11 +97,12 @@ function setupSpeechToTextWebSocket(server) {
 
     ws.on('message', (data) => {
       try {
-        if (Buffer.isBuffer(data)) {
-          // 🎤 Raw Audio (Simulation) - usually LINEAR16 PCM
-          if (!isStreamOpen) startStream();
+        if (Buffer.isBuffer(data) || data instanceof Uint8Array || data instanceof ArrayBuffer) {
+          // 🎤 Raw Audio (Simulation or Live Worklet) - usually LINEAR16 PCM
+          if (!isStreamOpen) await startStream();
           if (recognizeStream && isStreamOpen) {
-            recognizeStream.write(data);
+            const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+            recognizeStream.write(buffer);
           }
         }
         else {
