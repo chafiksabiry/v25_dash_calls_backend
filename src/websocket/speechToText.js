@@ -95,7 +95,7 @@ function setupSpeechToTextWebSocket(server) {
       }
     };
 
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
       try {
         if (Buffer.isBuffer(data) || data instanceof Uint8Array || data instanceof ArrayBuffer) {
           // 🎤 Raw Audio (Simulation or Live Worklet) - usually LINEAR16 PCM
@@ -129,7 +129,7 @@ function setupSpeechToTextWebSocket(server) {
                 requestConfig.encoding = 'MULAW';
                 requestConfig.sampleRateHertz = 8000;
               }
-              startStream();
+              await startStream();
             }
 
             if (recognizeStream && isStreamOpen) {
