@@ -197,7 +197,7 @@ const makeCall = async (to, userId) => {
       url: `${process.env.BASE_URL}/api/calls/twilio-voice`,
       to: to,
       from: credentials.phoneNumber,
-      record: false
+      record: true
     });
 
     console.log(`Call initiated with SID: ${call.sid}`);
@@ -222,7 +222,7 @@ const generateTwimlResponse = async (to) => {
 
   if (to) {
     // Validating 'to' format could be done here as well
-    const dial = twiml.dial({ callerId: callerId });
+    const dial = twiml.dial({ callerId: callerId, record: 'record-from-answer' });
     dial.number(to);
   } else {
     twiml.say("Invalid number");
