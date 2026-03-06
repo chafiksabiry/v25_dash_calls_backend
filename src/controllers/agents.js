@@ -185,7 +185,12 @@ exports.getAgent = async (req, res) => {
 
   try {
     // 1. Try finding by Agent Profile _id
-    let agent = await agentService.getAgentById(id);
+    let agent = null;
+    try {
+      agent = await agentService.getAgentById(id);
+    } catch (e) {
+      console.log(`[AgentController] ID ${id} is not a valid Profile _id format, will try as User ID.`);
+    }
 
     if (agent) {
       console.log(`[AgentController] Found agent by Profile _id: ${agent._id}`);

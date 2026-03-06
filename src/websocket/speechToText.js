@@ -19,7 +19,7 @@ function setupSpeechToTextWebSocket(server) {
       sampleRateHertz: 16000,
       languageCode: 'fr-FR', // Default per user request (Maroc)
       enableAutomaticPunctuation: true,
-      model: 'telephony', // Optimized for phone calls (comparable to Chirp in V1)
+      model: 'latest_long', // Optimized for long-form speech and phone calls
       useEnhanced: true,
       diarizationConfig: {
         enableSpeakerDiarization: true,
