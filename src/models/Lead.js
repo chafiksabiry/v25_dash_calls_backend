@@ -38,6 +38,10 @@ const leadSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Agent'
   },
+  gigId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Gig'
+  },
   lastContact: Date,
   nextAction: {
     type: String,
@@ -60,7 +64,7 @@ const leadSchema = new mongoose.Schema({
   }
 });
 
-leadSchema.pre('save', function(next) {
+leadSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });
