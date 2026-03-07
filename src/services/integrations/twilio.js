@@ -208,9 +208,9 @@ const makeCall = async (to, userId) => {
   }
 };
 
-const generateTwimlResponse = async (to) => {
+const generateTwimlResponse = async (to, callerIdOverride) => {
   const twiml = new twilio.twiml.VoiceResponse();
-  const callerId = process.env.TWILIO_PHONE_NUMBER;
+  const callerId = callerIdOverride || process.env.TWILIO_PHONE_NUMBER;
 
   console.log("Generating TwiML for:", to, "CallerID:", callerId);
 

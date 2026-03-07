@@ -269,11 +269,49 @@ exports.launchOutboundCall = async (req, res) => {
 
 // Handle Twilio Voice
 exports.handleVoice = async (req, res) => {
-  const { To } = req.body;
-  console.log("To", To);
+  const { To, LeadId } = req.body;
+  const mongoose = require('mongoose');
+
+  console.log("📞 [TwilioVoice] Handling call - To:", To, "LeadId:", LeadId);
+
+  let callerId = null;
+
+  if (LeadId && mongoose.Types.ObjectId.isValid(LeadId)) {
+    try {
+      // 1. Trouver le lead pour obtenir le gigId
+      const lead = await mongoose.connection.db.collection('leads').findOne({
+        _id: new mongoose.Types.ObjectId(LeadId)
+      });
+
+      if (lead && lead.gigId) {
+        console.log(`🔍 Found lead for gigId: ${lead.gigId}`);
+
+        // 2. Trouver le numéro de téléphone associé à ce gigId
+        // Note: gigId peut être stocké comme String ou ObjectId selon l'origine
+        const phoneNumberDoc = await mongoose.connection.db.collection('phonenumbers').findOne({
+          $or: [
+            { gigId: lead.gigId },
+            { gigId: lead.gigId.toString() }
+          ],
+          status: 'active'
+        });
+
+        if (phoneNumberDoc) {
+          callerId = phoneNumberDoc.phoneNumber;
+          console.log(`🚀 Using dynamic CallerID from Gig: ${callerId}`);
+        } else {
+          console.warn(`⚠️ No active phone number found for gigId: ${lead.gigId}`);
+        }
+      } else {
+        console.warn(`⚠️ No lead or gigId found for LeadId: ${LeadId}`);
+      }
+    } catch (err) {
+      console.error("❌ Error resolving gig phone number:", err);
+    }
+  }
 
   try {
-    const responseXml = await twilioService.generateTwimlResponse(To);
+    const responseXml = await twilioService.generateTwimlResponse(To, callerId);
     res.type("text/xml");
     res.send(responseXml);
   } catch (error) {
