@@ -39,6 +39,14 @@ const callSchema = new mongoose.Schema({
     default: "outbound",
     required: true,
   },
+  from: {
+    type: String,
+    default: null,
+  },
+  to: {
+    type: String,
+    default: null,
+  },
   provider: {
     type: String,
     enum: ["twilio", "qalqul"],

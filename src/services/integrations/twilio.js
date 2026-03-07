@@ -144,6 +144,8 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       duration: parseInt(call.duration) || 0,
       recording_url: call.recordingUrl,
       recording_url_cloudinary: finalCloudinaryUrl,
+      from: call.from,
+      to: call.to,
       updatedAt: new Date()
     };
 
