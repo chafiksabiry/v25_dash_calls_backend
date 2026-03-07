@@ -12,6 +12,7 @@ const integrations = require('./routes/integrations');
 const leads = require('./routes/leads');
 const agents = require('./routes/agents');
 const calls = require('./routes/calls');
+const gigs = require('./routes/gigs');
 const settings = require('./routes/settings');
 const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
@@ -21,6 +22,7 @@ const vertex = require('./routes/vertex');
 require('./models/Call');
 require('./models/Agent');
 require('./models/Lead');
+require('./models/Gig');
 
 // Connect to database
 connectDB();
@@ -74,6 +76,7 @@ app.use('/api/integrations', integrations);
 app.use('/api/leads', leads);
 app.use('/api/agents', agents);
 app.use('/api/calls', calls);
+app.use('/api/gigs', gigs);
 app.use('/api/settings', settings);
 app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
