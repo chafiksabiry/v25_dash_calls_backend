@@ -47,21 +47,29 @@ const allowedOrigins = [
   'https://copilot.harx.ai',
   'http://38.242.208.242:5186',
   'http://localhost:5173',
-  'https://harx25pageslinks.netlify.app'
+  'https://harx25pageslinks.netlify.app',
+  'https://harxv25dashboardfrontend.netlify.app',
+  'https://harxv25comporchestratorfront.netlify.app'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl requests)
+    // allow requests with no origin
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
+    
+    const isAllowed = allowedOrigins.indexOf(origin) !== -1 || 
+                     origin.endsWith('.harx.ai') || 
+                     origin.endsWith('.netlify.app');
+                     
+    if (!isAllowed) {
+      console.log('CORS blocked origin:', origin);
       const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
       return callback(new Error(msg), false);
     }
     return callback(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-agent-id', 'x-channel', 'Accept', 'Origin', 'X-Requested-With'],
   credentials: true
 }));
 
