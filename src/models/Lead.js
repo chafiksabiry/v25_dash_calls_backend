@@ -1,23 +1,18 @@
 const mongoose = require('mongoose');
 
 const leadSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: [true, 'Please add a name']
-  },
-  company: {
-    type: String,
-    required: [true, 'Please add a company name']
-  },
-  email: {
-    type: String,
-    required: [true, 'Please add an email'],
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please add a valid email']
-  },
-  phone: {
-    type: String,
-    required: [true, 'Please add a phone number']
-  },
+  name: String,
+  company: String,
+  email: String,
+  phone: String,
+  
+  // Zoho fields used in dashboard backend
+  First_Name: String,
+  Last_Name: String,
+  Email_1: String,
+  Phone: String,
+  Deal_Name: String,
+  
   status: {
     type: String,
     enum: ['new', 'contacted', 'qualified', 'proposal', 'won', 'lost'],
