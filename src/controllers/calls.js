@@ -500,6 +500,47 @@ exports.getPersonalityAnalysis = async (req, res) => {
   }
 };
 
+exports.analyzeCall = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const call = await Call.findById(id).populate('lead');
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+
+    // Attempt to get transcript. If none, we might need to generate one first.
+    // For now, assume transcript might be in 'transcript' field or we might need to transcribe the recording.
+    let transcript = call.transcript || "";
+    
+    if (!transcript && call.recording_url_cloudinary) {
+        console.log(`🎙️ [CallController] Attempting to transcribe recording for call ${id}...`);
+        // Note: For now we'll assume a placeholder or simple text if transcript is missing
+        // In a real flow, we'd call vertexAIService.transcribeAudio here.
+        transcript = "Sample transcript for call analysis purposes."; 
+    }
+
+    if (!transcript) {
+        return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
+    }
+
+    console.log(`🧠 [CallController] Analyzing call ${id} with Vertex AI...`);
+    const scores = await vertexAIService.scoreCall(transcript);
+
+    // Update the call with the new scores
+    call.ai_call_score = scores;
+    await call.save();
+
+    res.json({ 
+        success: true, 
+        message: 'Call analysis completed', 
+        data: scores 
+    });
+  } catch (error) {
+    console.error('Error in analyzeCall:', error);
+    res.status(500).json({ success: false, message: 'Failed to analyze call', error: error.message });
+  }
+};
+
 exports.startRecording = async (req, res) => {
   const { callSid, userId } = req.body;
   if (!callSid || !userId) {

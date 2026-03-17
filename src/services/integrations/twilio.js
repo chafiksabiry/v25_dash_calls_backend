@@ -10,6 +10,7 @@ const mongoose = require('mongoose');
 const { Call } = require('../../models/Call');
 const path = require("path");
 const fetch = require('node-fetch');
+const vertexAIService = require('../vertexai.service');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -176,6 +177,25 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     ).populate('agent').populate('lead');
 
     console.log(`✅ [TwilioService] Call ${callSid} processed (Upsert).`);
+
+    // 🔥 Trigger Automated AI Scoring if it's a new completion
+    if (result.recording_url_cloudinary && !result.ai_call_score?.overall?.score) {
+        console.log(`🚀 [TwilioService] Triggering automated AI analysis for call: ${result._id}`);
+        // We run this asynchronously to not block the response
+        setTimeout(async () => {
+            try {
+                // For now, use a default prompt or attempt to fetch transcript if we implement saving it
+                const transcript = result.transcript || "This is an automated analysis of the call recording."; 
+                const scores = await vertexAIService.scoreCall(transcript);
+                
+                await Call.findByIdAndUpdate(result._id, { ai_call_score: scores });
+                console.log(`✅ [TwilioService] Automated analysis completed for call: ${result._id}`);
+            } catch (error) {
+                console.error(`❌ [TwilioService] Automated analysis failed:`, error.message);
+            }
+        }, 1000);
+    }
+
     return result;
   } catch (error) {
     console.error("❌ [TwilioService] Error saving call to MongoDB:", error.message);

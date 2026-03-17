@@ -305,6 +305,48 @@ ${transcript}`;
     }
   }
 
+  async scoreCall(transcript) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = `You are an expert Sales Quality Assurance Auditor.
+Analyze the following call transcript and provide a detailed scoring and feedback based on the performance.
+The transcript may be in English, French, or Moroccan Arabic (Darija).
+
+Evaluation Criteria:
+1. Agent fluency: Vocabulary, clarity, confidence, and language mastery.
+2. Sentiment analysis: Tone of the conversation, customer satisfaction, and empathy shown.
+3. Fraud detection: Any suspicious behavior, disclosure violations, or unethical suggestions.
+4. Overall: A holistic score representing the call effectiveness.
+
+Respond ONLY in JSON format following this exact structure:
+{
+  "Agent fluency": { "score": 0-100, "feedback": "string" },
+  "Sentiment analysis": { "score": 0-100, "feedback": "string" },
+  "Fraud detection": { "score": 0-100, "feedback": "string" },
+  "overall": { "score": 0-100, "feedback": "string" }
+}
+
+Transcript:
+${transcript}`;
+
+      console.log('🧠 [VertexAIService] Sending transcript to Vertex AI for full scoring...');
+      const result = await gModel.generateContent(prompt);
+      const responseText = result.response.candidates[0].content.parts[0].text;
+      const scores = this.parseJsonResponse(responseText);
+      
+      console.log('✅ [VertexAIService] Generated scores:', JSON.stringify(scores));
+      return scores;
+    } catch (error) {
+      console.error('❌ [VertexAIService] Error in scoreCall:', error);
+      return {
+        "Agent fluency": { score: 0, feedback: "Analysis failed" },
+        "Sentiment analysis": { score: 0, feedback: "Analysis failed" },
+        "Fraud detection": { score: 0, feedback: "Analysis failed" },
+        "overall": { score: 0, feedback: "Analysis failed" }
+      };
+    }
+  }
+
   async analyzeDiscovery(segment) {
     try {
       const gModel = await getGenerativeModel();
