@@ -315,15 +315,27 @@ The transcript may be in English, French, or Moroccan Arabic (Darija).
 Evaluation Criteria:
 1. Agent fluency: Vocabulary, clarity, confidence, and language mastery.
 2. Sentiment analysis: Tone of the conversation, customer satisfaction, and empathy shown.
-3. Fraud detection: Any suspicious behavior, disclosure violations, or unethical suggestions.
-4. Overall: A holistic score representing the call effectiveness.
+3. Fraud detection: Any suspicious behavior, disclosure violations, unethical suggestions, or signs of deception.
+4. overall: A holistic score representing the call effectiveness and conversion potential.
 
 Respond ONLY in JSON format following this exact structure:
 {
-  "Agent fluency": { "score": 0-100, "feedback": "string" },
-  "Sentiment analysis": { "score": 0-100, "feedback": "string" },
-  "Fraud detection": { "score": 0-100, "feedback": "string" },
-  "overall": { "score": 0-100, "feedback": "string" }
+  "Agent fluency": { 
+    "score": 0-100, 
+    "feedback": "Detailed explanation of the fluency, mentioning specific strengths and weaknesses in their chosen languages." 
+  },
+  "Sentiment analysis": { 
+    "score": 0-100, 
+    "feedback": "Detailed tone analysis. How did the customer feel? How well did the agent empathize?" 
+  },
+  "Fraud detection": { 
+    "score": 0-100, 
+    "feedback": "Detailed report on any red flags or confirmation of compliance." 
+  },
+  "overall": { 
+    "score": 0-100, 
+    "feedback": "Summary of total performance and one key actionable improvement for the agent." 
+  }
 }
 
 Transcript:
