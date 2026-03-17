@@ -9,6 +9,8 @@ const { generatePrompt } = require('../VertexPrompt/contactCenterAssessment');
 const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment');
 const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
 const { Storage } = require('@google-cloud/storage');
+const axios = require('axios'); // Preferring axios if available or node-fetch
+const fetch = require('node-fetch');
 
 let speechClient = null;
 let speechClientV2 = null;
@@ -508,9 +510,15 @@ ${fullTranscript}`;
       await initializeServices();
       const prompt = generateAudioTranscriptionPrompt();
 
-      // Convert raw PCM buffer to WAV format using helper
-      const wavBuffer = this.pcmToWav(audioBuffer);
-      const base64Audio = wavBuffer.toString('base64');
+      // Convert raw PCM buffer to WAV format using helper if it's not already
+      // Checking if it has RIFF header
+      let finalBuffer = audioBuffer;
+      if (audioBuffer.slice(0, 4).toString() !== 'RIFF') {
+        console.log('📦 [VertexAIService] Buffer is not WAV, adding header...');
+        finalBuffer = this.pcmToWav(audioBuffer);
+      }
+      
+      const base64Audio = finalBuffer.toString('base64');
 
       const request = {
         contents: [{
@@ -521,12 +529,12 @@ ${fullTranscript}`;
                 "data": base64Audio
               }
             },
-            { "text": prompt }
+            { "text": `${prompt}\nIMPORTANT: Identify the speakers as "Agent" (the one initiating or representing the company) and "Customer" (the lead being called). Return ONLY the JSON array.` }
           ]
         }],
       };
 
-      console.log(`🧠 [VertexAIService] Calling Gemini for transcription (chunk size: ${audioBuffer.length} bytes)`);
+      console.log(`🧠 [VertexAIService] Calling Gemini for transcription (chunk size: ${finalBuffer.length} bytes)`);
       const result = await jsonGenerativeModel.generateContent(request);
 
       let responseText = '';
@@ -545,6 +553,22 @@ ${fullTranscript}`;
       return this.parseJsonResponse(responseText);
     } catch (error) {
       console.error("❌ [VertexAIService] Error transcribing buffer with Gemini:", error);
+      return [];
+    }
+  }
+
+  async transcribeAudioFromUrl(audioUrl) {
+    try {
+      console.log(`🎙️ [VertexAIService] Fetching audio for transcription from: ${audioUrl}`);
+      const response = await fetch(audioUrl);
+      if (!response.ok) throw new Error(`Failed to fetch audio: ${response.statusText}`);
+      
+      const audioBuffer = await response.buffer();
+      console.log(`✅ [VertexAIService] Audio fetched (${audioBuffer.length} bytes). Starting transcription...`);
+      
+      return await this.transcribeAudioBuffer(audioBuffer);
+    } catch (error) {
+      console.error('❌ [VertexAIService] Error in transcribeAudioFromUrl:', error);
       return [];
     }
   }

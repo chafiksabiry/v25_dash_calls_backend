@@ -511,16 +511,25 @@ exports.analyzeCall = async (req, res) => {
     // Attempt to get transcript.
     let transcriptData = call.transcript || [];
     
-    // Fallback/Placeholder if no transcript exists
+    // Real Audio Transcription if no transcript exists and recording is available
     if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && call.recording_url_cloudinary) {
-        console.log(`🎙️ [CallController] Using placeholder transcript for call ${id}...`);
-        transcriptData = [
-          { speaker: "Agent", text: "Hello, this is HARX support. How can I help you today?" },
-          { speaker: "Customer", text: "Hi, I'm calling about my recent service." },
-          { speaker: "Agent", text: "I can definitely help with that. Can you tell me what happened?" },
-          { speaker: "Customer", text: "The technician never showed up for my appointment." },
-          { speaker: "Agent", text: "I apologize for the inconvenience. Let me look into that for you right away." }
-        ];
+        console.log(`🎙️ [CallController] Attempting real audio transcription for call ${id}...`);
+        try {
+          const realTranscript = await vertexAIService.transcribeAudioFromUrl(call.recording_url_cloudinary);
+          if (realTranscript && realTranscript.length > 0) {
+            transcriptData = realTranscript;
+            console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
+          } else {
+            console.warn(`⚠️ [CallController] Transcription returned empty for call ${id}.`);
+          }
+        } catch (transcriptionError) {
+          console.error(`❌ [CallController] Transcription failed:`, transcriptionError);
+        }
+    }
+
+    // Fallback if transcription failed or no recording
+    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && !call.recording_url_cloudinary) {
+       return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
     // Convert string transcript to array if it was stored as legacy string
