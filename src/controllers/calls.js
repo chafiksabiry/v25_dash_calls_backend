@@ -96,7 +96,12 @@ exports.getCall = async (req, res) => {
 // @access  Private
 exports.createCall = async (req, res) => {
   try {
-    const call = await Call.create(req.body);
+    let call = await Call.create(req.body);
+    
+    // Populate after create to get full context
+    if (call) {
+      call = await Call.findById(call._id).populate('agent').populate('lead');
+    }
 
     res.status(201).json({
       success: true,
@@ -115,16 +120,13 @@ exports.createCall = async (req, res) => {
 // @access  Private
 exports.updateCall = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(req.params.id, req.body, {
+    let call = await Call.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true
     });
 
-    if (!call) {
-      return res.status(404).json({
-        success: false,
-        error: 'Call not found'
-      });
+    if (call) {
+      call = await Call.findById(call._id).populate('agent').populate('lead');
     }
 
     res.status(200).json({
@@ -144,7 +146,7 @@ exports.updateCall = async (req, res) => {
 // @access  Private
 exports.endCall = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(
+    let call = await Call.findByIdAndUpdate(
       req.params.id,
       {
         status: 'completed',
@@ -160,6 +162,9 @@ exports.endCall = async (req, res) => {
         error: 'Call not found'
       });
     }
+
+    // Populate lead data
+    call = await Call.findById(call._id).populate('agent').populate('lead');
 
     res.status(200).json({
       success: true,
@@ -178,7 +183,7 @@ exports.endCall = async (req, res) => {
 // @access  Private
 exports.addNote = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(
+    let call = await Call.findByIdAndUpdate(
       req.params.id,
       { notes: req.body.note },
       { new: true }
@@ -190,6 +195,9 @@ exports.addNote = async (req, res) => {
         error: 'Call not found'
       });
     }
+
+    // Populate lead data
+    call = await Call.findById(call._id).populate('agent').populate('lead');
 
     res.status(200).json({
       success: true,
@@ -208,7 +216,7 @@ exports.addNote = async (req, res) => {
 // @access  Private
 exports.updateQualityScore = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(
+    let call = await Call.findByIdAndUpdate(
       req.params.id,
       { quality_score: req.body.score },
       { new: true }
@@ -220,6 +228,9 @@ exports.updateQualityScore = async (req, res) => {
         error: 'Call not found'
       });
     }
+
+    // Populate lead data
+    call = await Call.findById(call._id).populate('agent').populate('lead');
 
     res.status(200).json({
       success: true,

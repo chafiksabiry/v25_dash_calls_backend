@@ -173,7 +173,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
         }
       },
       { new: true, upsert: true, runValidators: true }
-    );
+    ).populate('agent').populate('lead');
 
     console.log(`✅ [TwilioService] Call ${callSid} processed (Upsert).`);
     return result;
