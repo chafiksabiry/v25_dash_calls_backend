@@ -308,53 +308,66 @@ ${transcript}`;
   async scoreCall(transcript) {
     try {
       const gModel = await getGenerativeModel();
-      const prompt = `You are an expert Sales Quality Assurance Auditor.
-Analyze the following call transcript and provide a detailed scoring and feedback based on the performance.
-The transcript may be in English, French, or Moroccan Arabic (Darija).
+      const prompt = `You are an elite Sales Quality Assurance Auditor with years of experience in high-ticket closing and customer relationship management.
+Analyze the provided call transcript and deliver a surgical evaluation of the agent's performance.
 
-Evaluation Criteria:
-1. Agent fluency: Vocabulary, clarity, confidence, and language mastery.
-2. Sentiment analysis: Tone of the conversation, customer satisfaction, and empathy shown.
-3. Fraud detection: Any suspicious behavior, disclosure violations, unethical suggestions, or signs of deception.
-4. overall: A holistic score representing the call effectiveness and conversion potential.
+The transcript features:
+- [Agent]: The sales representative.
+- [Customer]: The prospective lead.
+The language may be a mix of English, French, and Moroccan Darija.
 
-Respond ONLY in JSON format following this exact structure:
+Evaluation Rubric:
+
+1. Agent Fluency (0-100):
+   - 90-100: Exceptional. Perfect command of languages, no 'uhms' or 'ahms', highly confident, speaks with authority.
+   - 70-89: Good. Fluent with minor hesitations, clear message, professional tone.
+   - 40-69: Average. Noticeable language gaps, lack of confidence, or slow response times.
+   - 0-39: Poor. Difficulty communicating ideas, frequent misunderstandings, or unprofessional language.
+
+2. Sentiment Analysis (0-100):
+   - 90-100: Mastery of emotional intelligence. Transformed a skeptic into a fan. Perfect empathy.
+   - 70-89: Positive interaction. Built rapport and maintained a friendly, professional atmosphere.
+   - 40-69: Neutral or slightly tense. Functional but lacked 'human touch' or missed emotional cues.
+   - 0-39: Negative. Customer felt unheard, frustrated, or the agent was overly aggressive/dismissive.
+
+3. Fraud & Compliance (0-100):
+   - 100: Perfect compliance. No red flags.
+   - 50-99: Minor technical omissions (e.g., forgot recording disclosure if mandatory) but ethically sound.
+   - 0-49: CRITICAL ALERTS. Suspicious promises, unethical pressure, or potential deceptive practices.
+
+4. Overall Impact (0-100):
+   - A weighted score reflecting the probability of a successful outcome and overall brand representation.
+
+Output Requirements:
+- Feedback MUST include specific evidence from the transcript (e.g., "The agent handled the price objection well by saying...")
+- For the Overall feedback, include one 'Golden Tip' for immediate improvement.
+- Return ONLY a valid JSON object.
+
+JSON Structure:
 {
-  "Agent fluency": { 
-    "score": 0-100, 
-    "feedback": "Detailed explanation of the fluency, mentioning specific strengths and weaknesses in their chosen languages." 
-  },
-  "Sentiment analysis": { 
-    "score": 0-100, 
-    "feedback": "Detailed tone analysis. How did the customer feel? How well did the agent empathize?" 
-  },
-  "Fraud detection": { 
-    "score": 0-100, 
-    "feedback": "Detailed report on any red flags or confirmation of compliance." 
-  },
-  "overall": { 
-    "score": 0-100, 
-    "feedback": "Summary of total performance and one key actionable improvement for the agent." 
-  }
+  "Agent fluency": { "score": number, "feedback": "string" },
+  "Sentiment analysis": { "score": number, "feedback": "string" },
+  "Fraud detection": { "score": number, "feedback": "string" },
+  "overall": { "score": number, "feedback": "string" }
 }
 
 Transcript:
 ${transcript}`;
 
-      console.log('🧠 [VertexAIService] Sending transcript to Vertex AI for full scoring...');
+      console.log('🧠 [VertexAIService] Sending transcript for surgical scoring...');
       const result = await gModel.generateContent(prompt);
       const responseText = result.response.candidates[0].content.parts[0].text;
       const scores = this.parseJsonResponse(responseText);
       
-      console.log('✅ [VertexAIService] Generated scores:', JSON.stringify(scores));
+      console.log('✅ [VertexAIService] Precision scores generated.');
       return scores;
     } catch (error) {
-      console.error('❌ [VertexAIService] Error in scoreCall:', error);
+      console.error('❌ [VertexAIService] Error in surgical scoreCall:', error);
       return {
-        "Agent fluency": { score: 0, feedback: "Analysis failed" },
-        "Sentiment analysis": { score: 0, feedback: "Analysis failed" },
-        "Fraud detection": { score: 0, feedback: "Analysis failed" },
-        "overall": { score: 0, feedback: "Analysis failed" }
+        "Agent fluency": { score: 0, feedback: "Precision analysis failed" },
+        "Sentiment analysis": { score: 0, feedback: "Precision analysis failed" },
+        "Fraud detection": { score: 0, feedback: "Precision analysis failed" },
+        "overall": { score: 0, feedback: "Precision analysis failed" }
       };
     }
   }

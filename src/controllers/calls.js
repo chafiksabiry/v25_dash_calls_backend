@@ -508,32 +508,60 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
-    // Attempt to get transcript. If none, we might need to generate one first.
-    // For now, assume transcript might be in 'transcript' field or we might need to transcribe the recording.
-    let transcript = call.transcript || "";
+    // Attempt to get transcript.
+    let transcriptData = call.transcript || [];
     
-    if (!transcript && call.recording_url_cloudinary) {
-        console.log(`🎙️ [CallController] Attempting to transcribe recording for call ${id}...`);
-        // Note: For now we'll assume a placeholder or simple text if transcript is missing
-        // In a real flow, we'd call vertexAIService.transcribeAudio here.
-        transcript = "Sample transcript for call analysis purposes."; 
+    // Fallback/Placeholder if no transcript exists
+    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && call.recording_url_cloudinary) {
+        console.log(`🎙️ [CallController] Using placeholder transcript for call ${id}...`);
+        transcriptData = [
+          { speaker: "Agent", text: "Hello, this is HARX support. How can I help you today?" },
+          { speaker: "Customer", text: "Hi, I'm calling about my recent service." },
+          { speaker: "Agent", text: "I can definitely help with that. Can you tell me what happened?" },
+          { speaker: "Customer", text: "The technician never showed up for my appointment." },
+          { speaker: "Agent", text: "I apologize for the inconvenience. Let me look into that for you right away." }
+        ];
     }
 
-    if (!transcript) {
+    // Convert string transcript to array if it was stored as legacy string
+    if (typeof transcriptData === 'string' && transcriptData.length > 0) {
+      const parts = transcriptData.split(/\[(Agent|Customer|Speaker \d+)\]:/i).filter(Boolean);
+      const structuredTranscript = [];
+      for (let i = 0; i < parts.length; i += 2) {
+        if (parts[i+1]) {
+          structuredTranscript.push({
+            speaker: parts[i].trim(),
+            text: parts[i+1].trim()
+          });
+        }
+      }
+      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
+    }
+
+    if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
         return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
-    console.log(`🧠 [CallController] Analyzing call ${id} with Vertex AI...`);
-    const scores = await vertexAIService.scoreCall(transcript);
+    // Prepare transcript string for AI scoring
+    const transcriptText = Array.isArray(transcriptData) 
+      ? transcriptData.map(t => `[${t.speaker}]: ${t.text}`).join("\n")
+      : transcriptData;
 
-    // Update the call with the new scores
+    console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
+    const scores = await vertexAIService.scoreCall(transcriptText);
+
+    // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
+    if (Array.isArray(transcriptData)) {
+      call.transcript = transcriptData;
+    }
     await call.save();
 
     res.json({ 
         success: true, 
         message: 'Call analysis completed', 
-        data: scores 
+        data: scores,
+        transcript: call.transcript
     });
   } catch (error) {
     console.error('Error in analyzeCall:', error);

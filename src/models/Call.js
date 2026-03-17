@@ -94,6 +94,11 @@ const callSchema = new mongoose.Schema({
       feedback: { type: String }
     }
   },
+  transcript: [{
+    speaker: String,
+    text: String,
+    timestamp: String
+  }],
   childCalls: [String], // Liste des appels enfants (SID)
   createdAt: {
     type: Date,
