@@ -510,12 +510,25 @@ ${fullTranscript}`;
       await initializeServices();
       const prompt = generateAudioTranscriptionPrompt();
 
-      // Convert raw PCM buffer to WAV format using helper if it's not already
-      // Checking if it has RIFF header
+      // Detect format
+      let mimeType = "audio/wav";
       let finalBuffer = audioBuffer;
-      if (audioBuffer.slice(0, 4).toString() !== 'RIFF') {
-        console.log('📦 [VertexAIService] Buffer is not WAV, adding header...');
-        finalBuffer = this.pcmToWav(audioBuffer);
+      const header = audioBuffer.slice(0, 4);
+      const isWav = header.toString() === 'RIFF';
+      const isMp3 = header.toString().startsWith('ID3') || (audioBuffer[0] === 0xFF && (audioBuffer[1] & 0xE0) === 0xE0);
+
+      if (isWav) {
+        mimeType = "audio/wav";
+        console.log('📦 [VertexAIService] Detected WAV format');
+      } else if (isMp3) {
+        mimeType = "audio/mpeg";
+        console.log('📦 [VertexAIService] Detected MP3 format');
+      } else {
+        // If not WAV or MP3, it might be raw PCM if it's a small chunk, but for full files from URL, 
+        // it's likely a compressed format. We'll try WAV if it's raw, but most Cloudinary files are MP3.
+        console.log('📦 [VertexAIService] Unknown format, attempting auto-detection via mime-type');
+        // Defaulting to mpeg as it's common for our recordings if no RIFF header
+        mimeType = "audio/mpeg"; 
       }
       
       const base64Audio = finalBuffer.toString('base64');
@@ -525,7 +538,7 @@ ${fullTranscript}`;
           role: 'user', parts: [
             {
               "inline_data": {
-                "mime_type": "audio/wav",
+                "mime_type": mimeType,
                 "data": base64Audio
               }
             },

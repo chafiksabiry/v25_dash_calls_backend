@@ -14,7 +14,13 @@ exports.getCalls = async (req, res) => {
   try {
     const calls = await Call.find()
       .populate('agent')
-      .populate('lead');
+      .populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      });
 
     res.status(200).json({
       success: true,
@@ -45,7 +51,13 @@ exports.getCallsByAgent = async (req, res) => {
 
     const calls = await Call.find({ agent: agentId })
       .populate('agent')
-      .populate('lead')
+      .populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      })
       .sort({ createdAt: -1 });
 
     res.status(200).json({
@@ -70,7 +82,13 @@ exports.getCall = async (req, res) => {
   try {
     const call = await Call.findById(req.params.id)
       .populate('agent')
-      .populate('lead');
+      .populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      });
 
     if (!call) {
       return res.status(404).json({
@@ -395,7 +413,7 @@ exports.getTwilioToken = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord } = req.body;
+  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript } = req.body;
   const actualCallSid = CallSid || callSid;
 
   if (!actualCallSid) {
@@ -403,7 +421,7 @@ exports.saveCallToDB = async (req, res) => {
   }
 
   try {
-    const callDetails = await twilioService.saveCallToDB(actualCallSid, agentId, leadId, call, cloudinaryrecord);
+    const callDetails = await twilioService.saveCallToDB(actualCallSid, agentId, leadId, call, cloudinaryrecord, transcript);
     res.json(callDetails);
   } catch (error) {
     console.error('Error in saveCallToDB controller:', error);

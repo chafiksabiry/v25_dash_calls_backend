@@ -120,7 +120,7 @@ const getChildCalls = async (parentCallSid, userId) => {
   }
 };
 
-const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord) => {
+const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript) => {
   try {
     // Normalize call data
     const call = callData || {};
@@ -147,6 +147,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       recording_url_cloudinary: finalCloudinaryUrl,
       from: call.from,
       to: call.to,
+      transcript: transcript || [], // Save the real-time transcript if provided
       updatedAt: new Date()
     };
 
@@ -178,7 +179,8 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     console.log(`✅ [TwilioService] Call ${callSid} processed (Upsert).`);
 
-    // 🔥 Trigger Automated AI Scoring if it's a new completion
+    // 🔥 Automated AI Scoring disabled as per user request (Manual analysis only)
+    /*
     if (result.recording_url_cloudinary && !result.ai_call_score?.overall?.score) {
         console.log(`🚀 [TwilioService] Triggering automated AI analysis for call: ${result._id}`);
         // We run this asynchronously to not block the response
@@ -195,6 +197,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
             }
         }, 1000);
     }
+    */
 
     return result;
   } catch (error) {
