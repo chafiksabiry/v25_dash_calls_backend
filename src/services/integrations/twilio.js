@@ -40,8 +40,10 @@ const getTwilioClient = async (userId) => {
 };
 
 const getCallDetails = async (callSid, userId) => {
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 5; // Increased from 3 to 5 to wait longer for Twilio processing
   const RETRY_DELAY = 2000; // 2 seconds
+
+  console.log(`🔍 [TwilioService] Fetching details for SID: ${callSid} (User: ${userId})`);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -55,7 +57,7 @@ const getCallDetails = async (callSid, userId) => {
       let recordings = await client.recordings.list({ callSid: callSid, limit: 1 });
 
       if (recordings.length === 0 && callFils.length > 0) {
-        console.log(`🔍 Checking for recordings on child SID: ${callFils[0].sid}`);
+        console.log(`🔍 [TwilioService] Checking for recordings on child SID: ${callFils[0].sid}`);
         recordings = await client.recordings.list({ callSid: callFils[0].sid, limit: 1 });
       }
 
@@ -64,11 +66,15 @@ const getCallDetails = async (callSid, userId) => {
         const recordingSid = recordings[0].sid;
         const format = "mp3";
         recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/Recordings/${recordingSid}.${format}`;
-        console.log(`✅ Found recording URL: ${recordingUrl}`);
+        console.log(`✅ [TwilioService] Found recording URL on attempt ${attempt}: ${recordingUrl}`);
       } else if (attempt < MAX_RETRIES) {
-        console.log(`⏳ [TwilioService] No recording found for SID: ${callSid} or its children. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
+        console.log(`⏳ [TwilioService] No recording found for SID: ${callSid}. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
         continue;
+      }
+
+      if (!recordingUrl) {
+        console.warn(`⚠️ [TwilioService] No recording found after ${MAX_RETRIES} attempts for SID: ${callSid}`);
       }
 
       return {
@@ -85,7 +91,7 @@ const getCallDetails = async (callSid, userId) => {
       };
     } catch (error) {
       if (attempt === MAX_RETRIES) {
-        console.error("❌ Error fetching call details after multiple attempts:", error);
+        console.error("❌ [TwilioService] Error fetching call details after multiple attempts:", error);
         throw new Error(`Error fetching call details: ${error.message}`);
       }
       console.warn(`⚠️ [TwilioService] Error on attempt ${attempt}/${MAX_RETRIES}: ${error.message}. Retrying...`);
