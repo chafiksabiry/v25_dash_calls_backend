@@ -1,4 +1,22 @@
-exports.generateCallScoringPrompt = () => {
+exports.generateCallScoringPrompt = (gigScript = "") => {
+    let scriptInstructions = "";
+    let scriptJsonStructure = "";
+
+    if (gigScript && gigScript.trim() !== "") {
+        scriptInstructions = `
+- **Script adherence**: Evaluate how well the agent adhered to the provided call script or key talking points. Did they cover the main objectives?
+  - **Provided Script:**
+    """
+    ${gigScript}
+    """
+`;
+        scriptJsonStructure = `
+  "Script adherence": {
+    "score": <score>,
+    "feedback": "<feedback>"
+  },`;
+    }
+
     return `
     You are an AI expert in analyzing customer service outbound calls. Your task is to assess the given audio call based on multiple criteria and provide a structured JSON report.
 
@@ -12,7 +30,7 @@ exports.generateCallScoringPrompt = () => {
 - **Agent fluency**: Evaluate the clarity, pronunciation, and pace of the agent's speech **only if the agent is speaking live**.
 - **Sentiment analysis**: Analyze the customer's emotional state throughout the call. **If no customer response is detected, return "Not Applicable".**
 - **Fraud detection or unusual behavior**: Identify any anomalies in the agent's speech (e.g., robotic responses, scripted tone, misleading information, excessive silence).  
-  - **If the recording is a voicemail or pre-recorded message, state this explicitly** and adjust the fraud score accordingly.
+  - **If the recording is a voicemail or pre-recorded message, state this explicitly** and adjust the fraud score accordingly.${scriptInstructions}
 
 ### **Response format (strict JSON output required):**
 Return the response **only as a valid JSON object**, following this structure:
@@ -28,7 +46,7 @@ Return the response **only as a valid JSON object**, following this structure:
   "Fraud detection": {
     "score": <score>,
     "feedback": "<feedback>"
-  },
+  },${scriptJsonStructure}
   "overall": {
     "score": <score>,
     "feedback": "<feedback>"

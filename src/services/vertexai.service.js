@@ -822,12 +822,25 @@ ${fullTranscript}`;
   async getCallScoring(targetUri) {
     try {
       let transcript = [];
+      let gigScript = "";
+      
+      const Call = require('../models/Call').Call;
+      require('../models/Gig'); // Ensure Gig model is loaded for populate
+      
+      let callDoc = null;
       if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        callDoc = await Call.findOne({ 
+           $or: [ { recording_url_cloudinary: targetUri }, { recording_url: targetUri } ] 
+        }).populate({ path: 'lead', populate: { path: 'gigId', model: 'Gig' } });
+        
         transcript = await this.transcribeAudioFromUrl(targetUri);
       } else {
-        const call = require('../models/Call').Call;
-        const callDoc = await call.findById(targetUri);
+        callDoc = await Call.findById(targetUri).populate({ path: 'lead', populate: { path: 'gigId', model: 'Gig' } });
         if (callDoc) transcript = callDoc.transcript || [];
+      }
+      
+      if (callDoc && callDoc.lead && callDoc.lead.gigId) {
+         gigScript = callDoc.lead.gigId.script || callDoc.lead.gigId.description || "";
       }
       
       const transcriptText = Array.isArray(transcript) ? transcript.map(t => `[${t.speaker}]: ${t.text}`).join("\n") : transcript;
@@ -836,10 +849,11 @@ ${fullTranscript}`;
           "Agent fluency": { score: 0, feedback: "No transcript." },
           "Sentiment analysis": { score: 0, feedback: "No transcript." },
           "Fraud detection": { score: 0, feedback: "No transcript." },
+          "Script adherence": { score: 0, feedback: "No transcript." },
           "overall": { score: 0, feedback: "No transcript." }
         };
       }
-      return await this.scoreCall(transcriptText);
+      return await this.scoreCall(transcriptText, gigScript);
     } catch (error) {
       console.error('Error in getCallScoring:', error);
       throw error;
