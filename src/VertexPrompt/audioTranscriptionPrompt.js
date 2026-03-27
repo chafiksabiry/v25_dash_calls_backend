@@ -2,8 +2,8 @@ function generateAudioTranscriptionPrompt() {
     return `You are given an audio file from a real-time call. Your task is to transcribe it into a structured JSON format with accurate timestamps. Follow these exact rules:
 
 1. Each speech segment must:
-  - Be precise.
-  - Include start and end timestamps in the exact format mm:ss.SSS relative to the audio chunk.
+  - Be 1–5 seconds long (never more than 6 seconds).
+  - Include start and end timestamps in the exact format mm:ss.SSS.
   - Represent only one continuous piece of speech from a speaker.
   - Start when the speaker begins talking, end when they stop.
   

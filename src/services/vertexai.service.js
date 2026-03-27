@@ -8,6 +8,8 @@ const path = require('path');
 const { generatePrompt } = require('../VertexPrompt/contactCenterAssessment');
 const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment');
 const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
+const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt');
+const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
 const { Storage } = require('@google-cloud/storage');
 const axios = require('axios'); // Preferring axios if available or node-fetch
 const fetch = require('node-fetch');
@@ -310,53 +312,10 @@ ${transcript}`;
   async scoreCall(transcript) {
     try {
       const gModel = await getGenerativeModel();
-      const prompt = `You are an elite Sales Quality Assurance Auditor with years of experience in high-ticket closing and customer relationship management.
-Analyze the provided call transcript and deliver a surgical evaluation of the agent's performance.
+      const promptText = generateCallScoringPrompt();
+      const prompt = `${promptText}\n\nTranscript:\n${transcript}`;
 
-The transcript features:
-- [Agent]: The sales representative.
-- [Customer]: The prospective lead.
-The language may be a mix of English, French, and Moroccan Darija.
-
-Evaluation Rubric:
-
-1. Agent Fluency (0-100):
-   - 90-100: Exceptional. Perfect command of languages, no 'uhms' or 'ahms', highly confident, speaks with authority.
-   - 70-89: Good. Fluent with minor hesitations, clear message, professional tone.
-   - 40-69: Average. Noticeable language gaps, lack of confidence, or slow response times.
-   - 0-39: Poor. Difficulty communicating ideas, frequent misunderstandings, or unprofessional language.
-
-2. Sentiment Analysis (0-100):
-   - 90-100: Mastery of emotional intelligence. Transformed a skeptic into a fan. Perfect empathy.
-   - 70-89: Positive interaction. Built rapport and maintained a friendly, professional atmosphere.
-   - 40-69: Neutral or slightly tense. Functional but lacked 'human touch' or missed emotional cues.
-   - 0-39: Negative. Customer felt unheard, frustrated, or the agent was overly aggressive/dismissive.
-
-3. Fraud & Compliance (0-100):
-   - 100: Perfect compliance. No red flags.
-   - 50-99: Minor technical omissions (e.g., forgot recording disclosure if mandatory) but ethically sound.
-   - 0-49: CRITICAL ALERTS. Suspicious promises, unethical pressure, or potential deceptive practices.
-
-4. Overall Impact (0-100):
-   - A weighted score reflecting the probability of a successful outcome and overall brand representation.
-
-Output Requirements:
-- Feedback MUST include specific evidence from the transcript (e.g., "The agent handled the price objection well by saying...")
-- For the Overall feedback, include one 'Golden Tip' for immediate improvement.
-- Return ONLY a valid JSON object.
-
-JSON Structure:
-{
-  "Agent fluency": { "score": number, "feedback": "string" },
-  "Sentiment analysis": { "score": number, "feedback": "string" },
-  "Fraud detection": { "score": number, "feedback": "string" },
-  "overall": { "score": number, "feedback": "string" }
-}
-
-Transcript:
-${transcript}`;
-
-      console.log('🧠 [VertexAIService] Sending transcript for surgical scoring...');
+      console.log('🧠 [VertexAIService] Sending transcript for surgical scoring using Knowledge Base standardized prompt...');
       const result = await gModel.generateContent(prompt);
       const responseText = result.response.candidates[0].content.parts[0].text;
       const scores = this.parseJsonResponse(responseText);
