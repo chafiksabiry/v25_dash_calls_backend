@@ -763,18 +763,24 @@ ${fullTranscript}`;
     return await this.transcribeAudioBuffer(audioBuffer);
   }
 
-  async getCallTranscription(callId) {
+  async getCallTranscription(targetUri) {
     try {
-      const call = await Call.findById(callId);
-      if (!call) throw new Error('Call not found');
+      if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        return await this.transcribeAudioFromUrl(targetUri);
+      }
+      const call = require('../models/Call').Call;
+      const callDoc = await call.findById(targetUri);
+      if (!callDoc) throw new Error('Call not found');
 
-      // logic to get transcription (simulation or Gemini)
-      // If we already have one stored or a recording URL
-      if (call.recording_url) {
-        // Here we could download and transcribe, but for now let's use the stored one or a placeholder logic
-        // For "KB logic", we'd use transcribeAudioBuffer with the audio data
-        // For simplicity, let's return stored transcript if any, or generate a dummy one
-        return call.transcript || [];
+      if (callDoc.recording_url || callDoc.recording_url_cloudinary) {
+        if (callDoc.transcript && callDoc.transcript.length > 0) {
+           return callDoc.transcript;
+        }
+        const urlToTranscribe = callDoc.recording_url_cloudinary || callDoc.recording_url;
+        const transcript = await this.transcribeAudioFromUrl(urlToTranscribe);
+        callDoc.transcript = transcript;
+        await callDoc.save();
+        return transcript;
       }
       return [];
     } catch (error) {
@@ -783,34 +789,69 @@ ${fullTranscript}`;
     }
   }
 
-  async getCallSummary(callId) {
+  async getCallSummary(targetUri) {
     try {
-      const call = await Call.findById(callId);
-      if (!call) throw new Error('Call not found');
-      // Similar to summary logic already present
-      return { summary: call.summary || 'No summary available.' };
+      let transcript = [];
+      if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        transcript = await this.transcribeAudioFromUrl(targetUri);
+      } else {
+        const call = require('../models/Call').Call;
+        const callDoc = await call.findById(targetUri);
+        if (callDoc) transcript = callDoc.transcript || [];
+      }
+      
+      const transcriptText = Array.isArray(transcript) ? transcript.map(t => `[${t.speaker}]: ${t.text}`).join("\n") : transcript;
+      if (!transcriptText || transcriptText.trim() === '') {
+         return { "key-ideas": [ { "No meaningful content": "No transcription available." } ] };
+      }
+      
+      const gModel = await getGenerativeModel();
+      const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
+      const promptText = generateAudioSummaryPrompt();
+      const prompt = `${promptText}\n\nTranscript:\n${transcriptText}`;
+      
+      const result = await gModel.generateContent(prompt);
+      const responseText = result.response.candidates[0].content.parts[0].text;
+      return this.parseJsonResponse(responseText);
     } catch (error) {
       console.error('Error in getCallSummary:', error);
-      throw error;
+      return { "key-ideas": [ { "Error": "Failed to generate summary." } ] };
     }
   }
 
-  async getCallScoring(callId) {
+  async getCallScoring(targetUri) {
     try {
-      return {
-        score: 85,
-        breakdown: { clarity: 90, empathy: 80, assertiveness: 85 }
-      };
+      let transcript = [];
+      if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        transcript = await this.transcribeAudioFromUrl(targetUri);
+      } else {
+        const call = require('../models/Call').Call;
+        const callDoc = await call.findById(targetUri);
+        if (callDoc) transcript = callDoc.transcript || [];
+      }
+      
+      const transcriptText = Array.isArray(transcript) ? transcript.map(t => `[${t.speaker}]: ${t.text}`).join("\n") : transcript;
+      if (!transcriptText || transcriptText.trim() === '') {
+         return {
+          "Agent fluency": { score: 0, feedback: "No transcript." },
+          "Sentiment analysis": { score: 0, feedback: "No transcript." },
+          "Fraud detection": { score: 0, feedback: "No transcript." },
+          "overall": { score: 0, feedback: "No transcript." }
+        };
+      }
+      return await this.scoreCall(transcriptText);
     } catch (error) {
+      console.error('Error in getCallScoring:', error);
       throw error;
     }
   }
 
-  async getCallPostActions(callId) {
+  async getCallPostActions(targetUri) {
     return {
-      actions: [
-        { task: 'Follow up email', priority: 'high' },
-        { task: 'Update CRM', priority: 'medium' }
+      plan_actions: [
+        "Review key objections highlighted in the call summary",
+        "Send follow up email with requested information",
+        "Schedule next touchpoint in CRM"
       ]
     };
   }

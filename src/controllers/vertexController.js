@@ -16,10 +16,11 @@ const handleControllerError = (res, error, defaultMessage = 'An error occurred')
 
 exports.summarizeAudio = async (req, res) => {
     try {
-        const { recordingId } = req.body;
-        if (!recordingId) return res.status(400).json({ error: 'recordingId is required' });
+        const { recordingId, file_uri } = req.body;
+        const targetId = recordingId || file_uri;
+        if (!targetId) return res.status(400).json({ error: 'recordingId or file_uri is required' });
 
-        const result = await vertexAIService.getCallSummary(recordingId);
+        const result = await vertexAIService.getCallSummary(targetId);
         res.json(result);
     } catch (error) {
         handleControllerError(res, error, 'Error summarizing audio');
@@ -28,10 +29,11 @@ exports.summarizeAudio = async (req, res) => {
 
 exports.getCallTranscription = async (req, res) => {
     try {
-        const { recordingId } = req.body;
-        if (!recordingId) return res.status(400).json({ error: 'recordingId is required' });
+        const { recordingId, file_uri } = req.body;
+        const targetId = recordingId || file_uri;
+        if (!targetId) return res.status(400).json({ error: 'recordingId or file_uri is required' });
 
-        const transcription = await vertexAIService.getCallTranscription(recordingId);
+        const transcription = await vertexAIService.getCallTranscription(targetId);
         res.json({ success: true, transcription });
     } catch (error) {
         handleControllerError(res, error, 'Error getting transcription');
@@ -40,8 +42,9 @@ exports.getCallTranscription = async (req, res) => {
 
 exports.getCallScoring = async (req, res) => {
     try {
-        const { recordingId } = req.body;
-        const result = await vertexAIService.getCallScoring(recordingId);
+        const { recordingId, file_uri } = req.body;
+        const targetId = recordingId || file_uri;
+        const result = await vertexAIService.getCallScoring(targetId);
         res.json({ success: true, ...result });
     } catch (error) {
         handleControllerError(res, error, 'Error getting call scoring');
@@ -50,8 +53,9 @@ exports.getCallScoring = async (req, res) => {
 
 exports.getCallPostActions = async (req, res) => {
     try {
-        const { recordingId } = req.body;
-        const result = await vertexAIService.getCallPostActions(recordingId);
+        const { recordingId, file_uri } = req.body;
+        const targetId = recordingId || file_uri;
+        const result = await vertexAIService.getCallPostActions(targetId);
         res.json({ success: true, ...result });
     } catch (error) {
         handleControllerError(res, error, 'Error getting post actions');
