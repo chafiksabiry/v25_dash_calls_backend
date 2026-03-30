@@ -11,7 +11,6 @@ const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTrans
 const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt');
 const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
 const { Storage } = require('@google-cloud/storage');
-const cloudinary = require('cloudinary').v2;
 const axios = require('axios'); // Preferring axios if available or node-fetch
 const fetch = require('node-fetch');
 
@@ -125,14 +124,7 @@ const initializeServices = async () => {
       keyFilename: storageCredentialsPath
     });
 
-    // Initialize Cloudinary
-    cloudinary.config({
-      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-      api_key: process.env.CLOUDINARY_API_KEY,
-      api_secret: process.env.CLOUDINARY_API_SECRET
-    });
-
-    console.log(`✅ [VertexAIService] Cloudinary initialized.`);
+    console.log(`✅ [VertexAIService] GCS initialized.`);
 
     console.log(`✅ [VertexAIService] Services initialized (Model: ${modelName}, Project: ${projectID})`);
   } catch (error) {
@@ -620,21 +612,18 @@ ${fullTranscript}`;
   async audioUpload(filePath, destinationName) {
     try {
       await initializeServices();
-      
-      console.log(`📤 [VertexAIService] Uploading file to Cloudinary: ${filePath}`);
-      const result = await cloudinary.uploader.upload(filePath, {
-        resource_type: 'video', // Cloudinary treats audio as 'video'
-        public_id: destinationName.replace(/\.[^/.]+$/, ""), // remove extension for public_id
-        folder: 'V25_VertexAI_Media'
-      });
+      const options = { destination: destinationName };
+
+      await storage.bucket(bucketName).upload(filePath, options);
+      console.log(`✅ [VertexAIService] ${filePath} uploaded to ${bucketName} as ${destinationName}`);
 
       return {
-        message: `${filePath} successfully uploaded to Cloudinary`,
-        url: result.secure_url,
-        fileUri: result.secure_url, // For compatibility
+        message: `${filePath} successfully uploaded to ${bucketName} as ${destinationName}`,
+        bucketName,
+        fileUri: `gs://${bucketName}/${destinationName}`,
       };
     } catch (error) {
-      console.error(`❌ [VertexAIService] Cloudinary upload failed:`, error);
+      console.error(`❌ [VertexAIService] Storage upload failed:`, error);
       throw error;
     }
   }
@@ -642,29 +631,27 @@ ${fullTranscript}`;
   async audioUploadBuffer(fileBuffer, destinationName) {
     try {
       await initializeServices();
-      
-      return new Promise((resolve, reject) => {
-        const uploadStream = cloudinary.uploader.upload_stream(
-          { 
-            resource_type: 'video', 
-            public_id: destinationName.replace(/\.[^/.]+$/, ""),
-            folder: 'V25_VertexAI_Media' 
-          },
-          (error, result) => {
-            if (error) {
-              console.error('❌ [VertexAIService] Cloudinary stream upload failed:', error);
-              return reject(error);
-            }
-            console.log('✅ [VertexAIService] Buffer uploaded to Cloudinary:', result.secure_url);
-            resolve({
-              message: `${destinationName} successfully uploaded to Cloudinary`,
-              url: result.secure_url,
-              fileUri: result.secure_url,
-            });
-          }
-        );
+      const bucket = storage.bucket(bucketName);
+      const file = bucket.file(destinationName);
 
-        uploadStream.end(fileBuffer);
+      const stream = file.createWriteStream({ resumable: false });
+
+      return new Promise((resolve, reject) => {
+        stream.on('error', (error) => {
+          console.error(`❌ [VertexAIService] Stream error during upload:`, error);
+          reject(error);
+        });
+
+        stream.on('finish', () => {
+          console.log(`✅ [VertexAIService] ${destinationName} uploaded to ${bucketName}`);
+          resolve({
+            message: `${destinationName} successfully uploaded to ${bucketName}`,
+            bucketName,
+            fileUri: `gs://${bucketName}/${destinationName}`,
+          });
+        });
+
+        stream.end(fileBuffer);
       });
     } catch (error) {
       console.error(`❌ [VertexAIService] audioUploadBuffer failed:`, error);
