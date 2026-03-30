@@ -24,7 +24,7 @@ let storage = null;
 const projectID = (process.env.GOOGLE_CLOUD_PROJECT || process.env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
 const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
 const modelName = process.env.VERTEX_AI_MODEL || 'gemini-1.5-flash';
-const bucketName = process.env.GOOGLE_CLOUD_STORAGE_BUCKET || 'harx-audios-test';
+const bucketName = 'harx-audios-test';
 
 let vertexCredentialsPath = null;
 let speechCredentialsPath = null;
