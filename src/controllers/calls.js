@@ -2,10 +2,115 @@ const { Call } = require('../models/Call');
 const { CallService } = require('../services/CallService');
 const ovhService = require('../services/integrations/ovh');
 const twilioService = require('../services/integrations/twilio');
+const twilio = require('twilio');
+const fetch = require('node-fetch');
+const mongoose = require('mongoose');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
 const vertexAIService = require('../services/vertexai.service');
+
+const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
+const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseHHMMToMinutes(raw) {
+  const m = String(raw || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
+}
+
+function isReservationForToday(rawDate, now) {
+  const v = String(rawDate || '').trim();
+  if (!v) return false;
+  if (ISO_DATE_RE.test(v)) {
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return v === `${yyyy}-${mm}-${dd}`;
+  }
+  const todayName = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+  return v.toLowerCase() === todayName;
+}
+
+async function validateCopilotCallEligibility({ agentId, gigId }) {
+  if (!agentId) return { ok: false, reason: 'Missing agentId' };
+  if (!gigId) return { ok: false, reason: 'Lead is not linked to a gig' };
+
+  // 1) Enrollment in gig
+  try {
+    const enrolledRes = await fetch(
+      `${MATCHING_API_URL}/gig-agents/agents/${encodeURIComponent(agentId)}/gigs?status=enrolled`
+    );
+    if (!enrolledRes.ok) {
+      return { ok: false, reason: `Enrollment check failed (${enrolledRes.status})` };
+    }
+    const enrolledData = await enrolledRes.json();
+    const gigs = Array.isArray(enrolledData?.gigs) ? enrolledData.gigs : [];
+    const isEnrolled = gigs.some((row) => {
+      const id = row?.gig?._id || row?.gig?.$oid || row?.gigId || '';
+      return String(id) === String(gigId);
+    });
+    if (!isEnrolled) {
+      return { ok: false, reason: 'Rep is not enrolled in this gig' };
+    }
+  } catch (error) {
+    return { ok: false, reason: `Enrollment check error: ${error.message}` };
+  }
+
+  // 2) Trainings completion for this gig
+  try {
+    const trainingRes = await fetch(
+      `${TRAINING_API_URL}/training_journeys/rep/${encodeURIComponent(agentId)}/slide-progress-summary?gigId=${encodeURIComponent(gigId)}`
+    );
+    if (!trainingRes.ok) {
+      return { ok: false, reason: `Training check failed (${trainingRes.status})` };
+    }
+    const summary = await trainingRes.json();
+    const trainingCount = Number(summary?.trainingCount || 0);
+    const overallPercent = Number(summary?.overallPercent || 0);
+    const trainingComplete = trainingCount === 0 ? true : overallPercent >= 100;
+    if (!trainingComplete) {
+      return { ok: false, reason: 'Rep must complete all gig trainings before calling' };
+    }
+  } catch (error) {
+    return { ok: false, reason: `Training check error: ${error.message}` };
+  }
+
+  // 3) Active reservation window now
+  try {
+    const resvRes = await fetch(
+      `${MATCHING_API_URL}/slots/reservations?repId=${encodeURIComponent(agentId)}&gigId=${encodeURIComponent(gigId)}`
+    );
+    if (!resvRes.ok) {
+      return { ok: false, reason: `Reservation check failed (${resvRes.status})` };
+    }
+    const rows = await resvRes.json();
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const hasActiveWindow = (Array.isArray(rows) ? rows : []).some((r) => {
+      if (String(r?.status || '').toLowerCase() !== 'reserved') return false;
+      const d = r?.reservationDate || r?.date;
+      if (!isReservationForToday(d, now)) return false;
+      const start = parseHHMMToMinutes(r?.startTime);
+      const end = parseHHMMToMinutes(r?.endTime);
+      if (start == null || end == null || end <= start) return false;
+      return nowMinutes >= start && nowMinutes < end;
+    });
+    if (!hasActiveWindow) {
+      return { ok: false, reason: 'No active reserved slot for this gig at current time' };
+    }
+  } catch (error) {
+    return { ok: false, reason: `Reservation check error: ${error.message}` };
+  }
+
+  return { ok: true };
+}
 
 // @desc    Get all calls
 // @route   GET /api/calls
@@ -298,12 +403,12 @@ exports.launchOutboundCall = async (req, res) => {
 
 // Handle Twilio Voice
 exports.handleVoice = async (req, res) => {
-  const { To, LeadId } = req.body;
-  const mongoose = require('mongoose');
+  const { To, LeadId, AgentId } = req.body;
 
-  console.log("📞 [TwilioVoice] Handling call - To:", To, "LeadId:", LeadId);
+  console.log("📞 [TwilioVoice] Handling call - To:", To, "LeadId:", LeadId, "AgentId:", AgentId);
 
   let callerId = null;
+  let leadGigId = null;
 
   if (LeadId && mongoose.Types.ObjectId.isValid(LeadId)) {
     try {
@@ -313,6 +418,7 @@ exports.handleVoice = async (req, res) => {
       });
 
       if (lead && lead.gigId) {
+        leadGigId = String(lead.gigId);
         console.log(`🔍 Found lead for gigId: ${lead.gigId}`);
 
         // 2. Trouver le numéro de téléphone associé à ce gigId
@@ -337,6 +443,27 @@ exports.handleVoice = async (req, res) => {
     } catch (err) {
       console.error("❌ Error resolving gig phone number:", err);
     }
+  }
+
+  const eligibility = await validateCopilotCallEligibility({
+    agentId: String(AgentId || '').trim(),
+    gigId: leadGigId
+  });
+  if (!eligibility.ok) {
+    console.warn('[TwilioVoice] Call blocked by backend eligibility guard:', {
+      leadId: LeadId,
+      agentId: AgentId,
+      gigId: leadGigId,
+      reason: eligibility.reason
+    });
+    const blockedTwiml = new twilio.twiml.VoiceResponse();
+    blockedTwiml.say(
+      { voice: 'alice' },
+      'Call blocked. You must be enrolled, complete gig trainings, and call only during an active reserved slot.'
+    );
+    blockedTwiml.hangup();
+    res.type("text/xml");
+    return res.status(200).send(blockedTwiml.toString());
   }
 
   try {
