@@ -65,6 +65,16 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
 
   // 2) Trainings completion for this gig
   try {
+    const gigTrainingsRes = await fetch(
+      `${TRAINING_API_URL}/training_journeys/gig/${encodeURIComponent(gigId)}`
+    );
+    const gigTrainingsPayload = gigTrainingsRes.ok ? await gigTrainingsRes.json() : null;
+    const gigTrainings = Array.isArray(gigTrainingsPayload?.data)
+      ? gigTrainingsPayload.data
+      : Array.isArray(gigTrainingsPayload)
+        ? gigTrainingsPayload
+        : [];
+
     const trainingRes = await fetch(
       `${TRAINING_API_URL}/training_journeys/rep/${encodeURIComponent(agentId)}/slide-progress-summary?gigId=${encodeURIComponent(gigId)}`
     );
@@ -74,7 +84,8 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
     const summary = await trainingRes.json();
     const trainingCount = Number(summary?.trainingCount || 0);
     const overallPercent = Number(summary?.overallPercent || 0);
-    const trainingComplete = trainingCount === 0 ? true : overallPercent >= 100;
+    const trainingComplete =
+      gigTrainings.length > 0 ? overallPercent >= 100 : (trainingCount === 0 ? true : overallPercent >= 100);
     if (!trainingComplete) {
       return { ok: false, reason: 'Rep must complete all gig trainings before calling' };
     }
