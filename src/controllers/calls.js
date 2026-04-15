@@ -81,7 +81,10 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
     if (!trainingRes.ok) {
       return { ok: false, reason: `Training check failed (${trainingRes.status})` };
     }
-    const summary = await trainingRes.json();
+    const summaryResponse = await trainingRes.json();
+    const summary = summaryResponse?.data && typeof summaryResponse.data === 'object'
+      ? summaryResponse.data
+      : summaryResponse;
     const trainingCount = Number(summary?.trainingCount || 0);
     const overallPercent = Number(summary?.overallPercent || 0);
     const trainingComplete =
