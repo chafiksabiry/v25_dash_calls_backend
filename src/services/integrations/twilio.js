@@ -126,17 +126,17 @@ const getChildCalls = async (parentCallSid, userId) => {
   }
 };
 
-const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript) => {
+const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript, gigId, companyId, userId) => {
   try {
     // Normalize call data
     const call = callData || {};
 
     // Auto-upload to Cloudinary if needed
     let finalCloudinaryUrl = cloudinaryrecord;
-    if (!finalCloudinaryUrl && call.recordingUrl && agentId) {
+    if (!finalCloudinaryUrl && call.recordingUrl && (agentId || userId)) {
       console.log(`☁️ [TwilioService] No Cloudinary record provided, attempting auto-upload for SID: ${callSid}`);
       try {
-        finalCloudinaryUrl = await fetchTwilioRecording(call.recordingUrl, agentId);
+        finalCloudinaryUrl = await fetchTwilioRecording(call.recordingUrl, agentId || userId);
         if (finalCloudinaryUrl) {
           console.log(`✅ [TwilioService] Auto-uploaded to Cloudinary: ${finalCloudinaryUrl}`);
         }
@@ -170,8 +170,11 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       {
         $set: update,
         $setOnInsert: {
-          agent: agentId,
+          agent: agentId || undefined,
           lead: leadId || undefined,
+          gigId: gigId || undefined,
+          companyId: companyId || undefined,
+          userId: userId || undefined,
           sid: callSid,
           parentCallSid: call.ParentCallSid || callSid,
           direction: call.direction || 'outbound',

@@ -554,7 +554,7 @@ exports.getTwilioToken = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript } = req.body;
+  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId } = req.body;
   const actualCallSid = CallSid || callSid;
 
   if (!actualCallSid) {
@@ -562,7 +562,17 @@ exports.saveCallToDB = async (req, res) => {
   }
 
   try {
-    const callDetails = await twilioService.saveCallToDB(actualCallSid, agentId, leadId, call, cloudinaryrecord, transcript);
+    const callDetails = await twilioService.saveCallToDB(
+      actualCallSid, 
+      agentId, 
+      leadId, 
+      call, 
+      cloudinaryrecord, 
+      transcript,
+      gigId,
+      companyId,
+      userId
+    );
     res.json(callDetails);
   } catch (error) {
     console.error('Error in saveCallToDB controller:', error);
