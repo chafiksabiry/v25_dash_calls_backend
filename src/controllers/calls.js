@@ -131,15 +131,55 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
 // @access  Private
 exports.getCalls = async (req, res) => {
   try {
-    const calls = await Call.find()
-      .populate('agent')
-      .populate({
+    const { 
+      userId, 
+      agentId, 
+      leadId, 
+      gigId, 
+      companyId, 
+      startDate, 
+      endDate,
+      populate 
+    } = req.query;
+
+    let query = {};
+
+    // Basic filters
+    if (userId) query.userId = userId;
+    if (agentId) query.agent = agentId;
+    if (leadId) query.lead = leadId;
+    if (gigId) query.gigId = gigId;
+    if (companyId) query.companyId = companyId;
+
+    // Date range filter
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    let mongoQuery = Call.find(query);
+
+    // Dynamic population
+    if (populate === 'lead') {
+      mongoQuery = mongoQuery.populate({
         path: 'lead',
         populate: {
           path: 'gigId',
           model: 'Gig'
         }
       });
+    } else {
+      mongoQuery = mongoQuery.populate('agent').populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      });
+    }
+
+    const calls = await mongoQuery.sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
@@ -147,6 +187,7 @@ exports.getCalls = async (req, res) => {
       data: calls
     });
   } catch (err) {
+    console.error('Error in getCalls:', err);
     res.status(400).json({
       success: false,
       error: err.message
