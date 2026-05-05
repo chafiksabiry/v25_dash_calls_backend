@@ -111,6 +111,10 @@ const callSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
   },
+  transactionOccurred: {
+    type: Boolean,
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,

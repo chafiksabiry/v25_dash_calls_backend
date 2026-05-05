@@ -595,7 +595,7 @@ exports.getTwilioToken = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId } = req.body;
+  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred } = req.body;
   const actualCallSid = CallSid || callSid;
 
   if (!actualCallSid) {
@@ -612,7 +612,8 @@ exports.saveCallToDB = async (req, res) => {
       transcript,
       gigId,
       companyId,
-      userId
+      userId,
+      transactionOccurred
     );
     res.json(callDetails);
   } catch (error) {

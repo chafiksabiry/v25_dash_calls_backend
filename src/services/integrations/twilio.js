@@ -126,7 +126,7 @@ const getChildCalls = async (parentCallSid, userId) => {
   }
 };
 
-const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript, gigId, companyId, userId) => {
+const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred) => {
   try {
     // Normalize call data
     const call = callData || {};
@@ -156,6 +156,10 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       transcript: transcript || [], // Save the real-time transcript if provided
       updatedAt: new Date()
     };
+
+    if (transactionOccurred !== undefined && transactionOccurred !== null) {
+      update.transactionOccurred = transactionOccurred;
+    }
 
     if (call.ChildCallSid) {
       update.childCalls = [call.ChildCallSid];
