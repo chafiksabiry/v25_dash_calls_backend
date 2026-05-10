@@ -33,7 +33,9 @@ function isReservationForToday(rawDate, now) {
     const yyyy = now.getFullYear();
     const mm = String(now.getMonth() + 1).padStart(2, '0');
     const dd = String(now.getDate()).padStart(2, '0');
-    return v === `${yyyy}-${mm}-${dd}`;
+    const localIso = `${yyyy}-${mm}-${dd}`;
+    const todayIso = now.toISOString().slice(0, 10);
+    return v === localIso || v === todayIso;
   }
   const todayName = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
   return v.toLowerCase() === todayName;
@@ -115,7 +117,8 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
       const start = parseHHMMToMinutes(r?.startTime);
       const end = parseHHMMToMinutes(r?.endTime);
       if (start == null || end == null || end <= start) return false;
-      return nowMinutes >= start && nowMinutes < end;
+      // Allow starting up to 60 minutes early and finishing up to 30 minutes late
+      return nowMinutes >= (start - 60) && nowMinutes < (end + 30);
     });
     if (!hasActiveWindow) {
       return { ok: false, reason: 'No active reserved slot for this gig at current time' };
