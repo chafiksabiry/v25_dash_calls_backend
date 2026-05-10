@@ -163,11 +163,11 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
       const end = parseHHMMToMinutes(r?.endTime);
       if (start == null || end == null || end <= start) return false;
       
-      // Check if current time in ANY supported timezone matches the active slot (with buffer)
+      // Check if current time in ANY supported timezone matches the active slot (strictly)
       return SUPPORTED_TIMEZONES.some((tz) => {
         const mins = getMinutesInTimezone(now, tz);
         if (mins === null) return false;
-        return mins >= (start - 60) && mins < (end + 30);
+        return mins >= start && mins < end;
       });
     });
     if (!hasActiveWindow) {
