@@ -8,6 +8,7 @@ const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 
 const { Call } = require('../../models/Call');
+const Transaction = require('../../models/Transaction');
 const path = require("path");
 const fetch = require('node-fetch');
 const vertexAIService = require('../vertexai.service');
@@ -159,11 +160,6 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     if (transactionOccurred !== undefined && transactionOccurred !== null) {
       update.transactionOccurred = transactionOccurred;
-      update.transaction = {
-        validByReps: transactionOccurred,
-        validByCompany: null,
-        valid: false
-      };
     }
 
     if (call.ChildCallSid) {
@@ -196,6 +192,26 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     ).populate('agent').populate('lead');
 
     console.log(`✅ [TwilioService] Call ${callSid} processed (Upsert).`);
+
+    if (transactionOccurred !== undefined && transactionOccurred !== null) {
+      try {
+        await Transaction.findOneAndUpdate(
+          { call: result._id },
+          {
+            call: result._id,
+            agent: result.agent?._id || result.agent || agentId,
+            lead: result.lead?._id || result.lead || leadId,
+            gigId: result.gigId || gigId || undefined,
+            companyId: result.companyId || companyId || undefined,
+            validByReps: transactionOccurred,
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        console.log(`✅ [TwilioService] Separate Transaction created/updated for call ${result._id}.`);
+      } catch (err) {
+        console.error(`❌ [TwilioService] Failed to create/update transaction record:`, err);
+      }
+    }
 
     // 🔥 Automated AI Scoring disabled as per user request (Manual analysis only)
     /*
