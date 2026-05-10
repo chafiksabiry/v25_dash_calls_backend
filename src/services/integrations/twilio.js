@@ -78,6 +78,13 @@ const getCallDetails = async (callSid, userId) => {
         console.warn(`⚠️ [TwilioService] No recording found after ${MAX_RETRIES} attempts for SID: ${callSid}`);
       }
 
+      let parentPrice = callParent.price ? Math.abs(parseFloat(callParent.price)) : 0;
+      let childPrice = 0;
+      if (callFils.length > 0 && callFils[0].price) {
+        childPrice = Math.abs(parseFloat(callFils[0].price));
+      }
+      const totalPrice = parentPrice + childPrice;
+
       return {
         ParentCallSid: callSid,
         ChildCallSid: callFils[0]?.sid || null,
@@ -89,6 +96,7 @@ const getCallDetails = async (callSid, userId) => {
         endTime: callParent.endTime,
         direction: callFils[0]?.direction || callParent.direction,
         recordingUrl: recordingUrl,
+        price: totalPrice,
       };
     } catch (error) {
       if (attempt === MAX_RETRIES) {
@@ -120,6 +128,7 @@ const getChildCalls = async (parentCallSid, userId) => {
       endTime: call.endTime,
       duration: call.duration,
       direction: call.direction,
+      price: call.price,
     }));
   } catch (error) {
     console.error("❌ Error getting child calls:", error);
@@ -146,6 +155,25 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       }
     }
 
+    // Fetch price if possible
+    let calculatedPrice = 0;
+    if (call.price !== undefined && call.price !== null) {
+      calculatedPrice = Math.abs(parseFloat(call.price)) || 0;
+    } else if (callSid) {
+      try {
+        const credentials = await getTwilioCredentials(userId || agentId);
+        if (credentials && credentials.accountSid && credentials.authToken) {
+          const client = twilio(credentials.accountSid, credentials.authToken);
+          const twilioCall = await client.calls(callSid).fetch();
+          if (twilioCall && twilioCall.price) {
+            calculatedPrice = Math.abs(parseFloat(twilioCall.price));
+          }
+        }
+      } catch (err) {
+        console.warn(`⚠️ [TwilioService] Could not dynamically retrieve call price: ${err.message}`);
+      }
+    }
+
     // Build update object
     const update = {
       status: call.status || 'completed',
@@ -154,6 +182,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       recording_url_cloudinary: finalCloudinaryUrl,
       from: call.from,
       to: call.to,
+      price: calculatedPrice,
       transcript: transcript || [], // Save the real-time transcript if provided
       updatedAt: new Date()
     };

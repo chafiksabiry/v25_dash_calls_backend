@@ -73,7 +73,8 @@ exports.storeCallsInDBatEndingCall = async (phoneNumber, callSid) => {
         endTime: new Date(),
         status: callDetails.callStatus,
         duration: callDetails.callDuration,
-        recordingUrl: callDetails.audioFileURL
+        recordingUrl: callDetails.audioFileURL,
+        price: callDetails.price || callDetails.cost || 0
       },
     });
     return updatedCall;
