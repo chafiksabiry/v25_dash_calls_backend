@@ -298,6 +298,19 @@ exports.createCall = async (req, res) => {
 // @access  Private
 exports.updateCall = async (req, res) => {
   try {
+    if (req.body.transaction) {
+      req.body.transaction.valid = (req.body.transaction.validByReps === true && req.body.transaction.validByCompany === true);
+    }
+
+    if (req.body['transaction.validByReps'] !== undefined || req.body['transaction.validByCompany'] !== undefined) {
+      const existingCall = await Call.findById(req.params.id);
+      if (existingCall) {
+        const validByReps = req.body['transaction.validByReps'] !== undefined ? req.body['transaction.validByReps'] : (existingCall.transaction?.validByReps);
+        const validByCompany = req.body['transaction.validByCompany'] !== undefined ? req.body['transaction.validByCompany'] : (existingCall.transaction?.validByCompany);
+        req.body['transaction.valid'] = (validByReps === true && validByCompany === true);
+      }
+    }
+
     let call = await Call.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true

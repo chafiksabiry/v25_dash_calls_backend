@@ -115,6 +115,20 @@ const callSchema = new mongoose.Schema({
     type: Boolean,
     default: null,
   },
+  transaction: {
+    validByReps: {
+      type: Boolean,
+      default: null,
+    },
+    validByCompany: {
+      type: Boolean,
+      default: null,
+    },
+    valid: {
+      type: Boolean,
+      default: null,
+    },
+  },
   createdAt: {
     type: Date,
     default: Date.now,
@@ -127,6 +141,21 @@ const callSchema = new mongoose.Schema({
 
 callSchema.pre("save", function (next) {
   this.updatedAt = new Date();
+  if (this.transaction) {
+    this.transaction.valid = (this.transaction.validByReps === true && this.transaction.validByCompany === true);
+  }
+  next();
+});
+
+callSchema.pre("findOneAndUpdate", function (next) {
+  const update = this.getUpdate();
+  if (update) {
+    if (update.$set && update.$set.transaction) {
+      update.$set.transaction.valid = (update.$set.transaction.validByReps === true && update.$set.transaction.validByCompany === true);
+    } else if (update.transaction) {
+      update.transaction.valid = (update.transaction.validByReps === true && update.transaction.validByCompany === true);
+    }
+  }
   next();
 });
 

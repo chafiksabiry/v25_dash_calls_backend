@@ -159,6 +159,11 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     if (transactionOccurred !== undefined && transactionOccurred !== null) {
       update.transactionOccurred = transactionOccurred;
+      update.transaction = {
+        validByReps: transactionOccurred,
+        validByCompany: null,
+        valid: false
+      };
     }
 
     if (call.ChildCallSid) {
