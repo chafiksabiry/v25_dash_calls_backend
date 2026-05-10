@@ -26,19 +26,65 @@ function parseHHMMToMinutes(raw) {
   return h * 60 + mm;
 }
 
+const SUPPORTED_TIMEZONES = ['Europe/Paris', 'Africa/Casablanca', 'UTC'];
+
+function getTodayInTimezone(date, timeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone: timeZone
+    });
+    const parts = formatter.formatToParts(date);
+    const yyyy = parts.find((p) => p.type === 'year').value;
+    const mm = parts.find((p) => p.type === 'month').value;
+    const dd = parts.find((p) => p.type === 'day').value;
+    const iso = `${yyyy}-${mm}-${dd}`;
+
+    const weekdayFormatter = new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      timeZone: timeZone
+    });
+    const dayName = weekdayFormatter.format(date).toLowerCase();
+
+    return { iso, dayName };
+  } catch (e) {
+    return null;
+  }
+}
+
+function getMinutesInTimezone(date, timeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: timeZone
+    });
+    const parts = formatter.formatToParts(date);
+    const hour = Number(parts.find((p) => p.type === 'hour').value);
+    const minute = Number(parts.find((p) => p.type === 'minute').value);
+    return hour * 60 + minute;
+  } catch (e) {
+    return null;
+  }
+}
+
 function isReservationForToday(rawDate, now) {
   const v = String(rawDate || '').trim();
   if (!v) return false;
-  if (ISO_DATE_RE.test(v)) {
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    const localIso = `${yyyy}-${mm}-${dd}`;
-    const todayIso = now.toISOString().slice(0, 10);
-    return v === localIso || v === todayIso;
+
+  for (const tz of SUPPORTED_TIMEZONES) {
+    const info = getTodayInTimezone(now, tz);
+    if (!info) continue;
+    if (ISO_DATE_RE.test(v)) {
+      if (v === info.iso) return true;
+    } else {
+      if (v.toLowerCase() === info.dayName) return true;
+    }
   }
-  const todayName = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
-  return v.toLowerCase() === todayName;
+  return false;
 }
 
 async function validateCopilotCallEligibility({ agentId, gigId }) {
@@ -109,7 +155,6 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
     }
     const rows = await resvRes.json();
     const now = new Date();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
     const hasActiveWindow = (Array.isArray(rows) ? rows : []).some((r) => {
       if (String(r?.status || '').toLowerCase() !== 'reserved') return false;
       const d = r?.reservationDate || r?.date;
@@ -117,8 +162,13 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
       const start = parseHHMMToMinutes(r?.startTime);
       const end = parseHHMMToMinutes(r?.endTime);
       if (start == null || end == null || end <= start) return false;
-      // Allow starting up to 60 minutes early and finishing up to 30 minutes late
-      return nowMinutes >= (start - 60) && nowMinutes < (end + 30);
+      
+      // Check if current time in ANY supported timezone matches the active slot (with buffer)
+      return SUPPORTED_TIMEZONES.some((tz) => {
+        const mins = getMinutesInTimezone(now, tz);
+        if (mins === null) return false;
+        return mins >= (start - 60) && mins < (end + 30);
+      });
     });
     if (!hasActiveWindow) {
       return { ok: false, reason: 'No active reserved slot for this gig at current time' };
