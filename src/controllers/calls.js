@@ -380,6 +380,10 @@ exports.updateCall = async (req, res) => {
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
+
+        req.body.validByReps = validByReps;
+        req.body.validByCompany = validByCompany;
+        req.body.valid = valid;
       }
       delete req.body.transaction;
     }
@@ -407,6 +411,10 @@ exports.updateCall = async (req, res) => {
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
+
+        req.body.validByReps = validByReps;
+        req.body.validByCompany = validByCompany;
+        req.body.valid = valid;
       }
       delete req.body['transaction.validByReps'];
       delete req.body['transaction.validByCompany'];

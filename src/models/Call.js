@@ -116,6 +116,18 @@ const callSchema = new mongoose.Schema({
     type: Boolean,
     default: null,
   },
+  validByCompany: {
+    type: Boolean,
+    default: null,
+  },
+  validByReps: {
+    type: Boolean,
+    default: null,
+  },
+  valid: {
+    type: Boolean,
+    default: null,
+  },
   companyValidation: {
     type: String,
     enum: ["pending", "approved", "rejected"],
