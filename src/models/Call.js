@@ -116,6 +116,16 @@ const callSchema = new mongoose.Schema({
     type: Boolean,
     default: null,
   },
+  companyValidation: {
+    type: String,
+    enum: ["pending", "approved", "rejected"],
+    default: "pending",
+  },
+  agentValidation: {
+    type: String,
+    enum: ["pending", "approved", "rejected"],
+    default: "pending",
+  },
   price: {
     type: Number,
     default: 0,
