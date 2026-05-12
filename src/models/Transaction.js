@@ -50,7 +50,13 @@ const transactionSchema = new mongoose.Schema({
 
 transactionSchema.pre('save', function (next) {
   this.updatedAt = new Date();
-  this.valid = (this.validByReps === true && this.validByCompany === true);
+  if (this.validByReps === false || this.validByCompany === false) {
+    this.valid = false;
+  } else if (this.validByReps === true && this.validByCompany === true) {
+    this.valid = true;
+  } else {
+    this.valid = null;
+  }
   next();
 });
 
@@ -62,14 +68,26 @@ transactionSchema.pre('findOneAndUpdate', function (next) {
       if (update.$set.validByReps !== undefined || update.$set.validByCompany !== undefined) {
         const repsVal = update.$set.validByReps !== undefined ? update.$set.validByReps : null;
         const companyVal = update.$set.validByCompany !== undefined ? update.$set.validByCompany : null;
-        update.$set.valid = (repsVal === true && companyVal === true);
+        if (repsVal === false || companyVal === false) {
+          update.$set.valid = false;
+        } else if (repsVal === true && companyVal === true) {
+          update.$set.valid = true;
+        } else {
+          update.$set.valid = null;
+        }
       }
     } else {
       update.updatedAt = new Date();
       if (update.validByReps !== undefined || update.validByCompany !== undefined) {
         const repsVal = update.validByReps !== undefined ? update.validByReps : null;
         const companyVal = update.validByCompany !== undefined ? update.validByCompany : null;
-        update.valid = (repsVal === true && companyVal === true);
+        if (repsVal === false || companyVal === false) {
+          update.valid = false;
+        } else if (repsVal === true && companyVal === true) {
+          update.valid = true;
+        } else {
+          update.valid = null;
+        }
       }
     }
   }
