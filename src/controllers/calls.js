@@ -837,10 +837,18 @@ exports.getPersonalityAnalysis = async (req, res) => {
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
-    const call = await Call.findById(id).populate('lead');
+    const call = await Call.findById(id).populate({
+      path: 'lead',
+      populate: {
+        path: 'gigId'
+      }
+    });
     if (!call) {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
+
+    // Get Gig Script/Description
+    const gigScript = call.lead?.gigId?.description || "";
 
     // Attempt to get transcript.
     let transcriptData = call.transcript || [];
@@ -879,6 +887,7 @@ exports.analyzeCall = async (req, res) => {
         }
       }
       transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
+      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
     }
 
     if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
@@ -891,20 +900,54 @@ exports.analyzeCall = async (req, res) => {
       : transcriptData;
 
     console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
-    const scores = await vertexAIService.scoreCall(transcriptText);
+    const scores = await vertexAIService.scoreCall(transcriptText, gigScript);
 
+    // AI Validation Logic
+    const scriptCoherence = scores["Script coherence"]?.score || 0;
+    const argumentationScore = scores["Argumentation"]?.score || 0;
+    const transactionDetected = scores.transaction_detected || false;
+    const refusalDetected = scores.refusal_detected || false;
+
+    // Call is valid if script coherence is good OR a transaction/signature happened
+    const isValidByAI = scriptCoherence >= 70 || transactionDetected;
+    
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
+    call.validByAI = isValidByAI;
+    call.valid = isValidByAI; // Unified valid flag
+    call.argumentation_score = argumentationScore;
+
     if (Array.isArray(transcriptData)) {
       call.transcript = transcriptData;
     }
     await call.save();
 
+    // Update Transaction if detected
+    if (transactionDetected || refusalDetected) {
+      const transactionStatus = transactionDetected ? true : (refusalDetected ? false : null);
+      await Transaction.findOneAndUpdate(
+        { call: id },
+        {
+          call: id,
+          agent: call.agent,
+          lead: call.lead?._id,
+          gigId: call.lead?.gigId?._id,
+          companyId: call.companyId,
+          validByAI: transactionStatus,
+          argumentation_score: argumentationScore,
+          transaction_score: scores.overall?.score || 0,
+          updatedAt: new Date()
+        },
+        { upsert: true, new: true }
+      );
+    }
+
     res.json({ 
         success: true, 
         message: 'Call analysis completed', 
         data: scores,
-        transcript: call.transcript
+        transcript: call.transcript,
+        validByAI: isValidByAI
     });
   } catch (error) {
     console.error('Error in analyzeCall:', error);

@@ -311,10 +311,10 @@ ${transcript}`;
     }
   }
 
-  async scoreCall(transcript) {
+  async scoreCall(transcript, gigScript = "") {
     try {
       const gModel = await getGenerativeModel();
-      const promptText = generateCallScoringPrompt();
+      const promptText = generateCallScoringPrompt(gigScript);
       const prompt = `${promptText}\n\nTranscript:\n${transcript}`;
 
       console.log('🧠 [VertexAIService] Sending transcript for surgical scoring using Knowledge Base standardized prompt...');

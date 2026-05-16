@@ -90,10 +90,20 @@ const callSchema = new mongoose.Schema({
       score: { type: Number, min: 0, max: 100 },
       feedback: { type: String }
     },
+    "Script coherence": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    },
+    "Argumentation": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    },
     "overall": {
       score: { type: Number, min: 0, max: 100 },
       feedback: { type: String }
-    }
+    },
+    "transaction_detected": { type: Boolean, default: false },
+    "refusal_detected": { type: Boolean, default: false }
   },
   transcript: [{
     speaker: String,
@@ -116,17 +126,17 @@ const callSchema = new mongoose.Schema({
     type: Boolean,
     default: null,
   },
-  validByCompany: {
-    type: Boolean,
-    default: null,
-  },
-  validByReps: {
+  validByAI: {
     type: Boolean,
     default: null,
   },
   valid: {
     type: Boolean,
     default: null,
+  },
+  argumentation_score: {
+    type: Number,
+    default: 0,
   },
   companyValidation: {
     type: String,
