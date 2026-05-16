@@ -905,11 +905,15 @@ exports.analyzeCall = async (req, res) => {
     // AI Validation Logic
     const scriptCoherence = scores["Script coherence"]?.score || 0;
     const argumentationScore = scores["Argumentation"]?.score || 0;
+    const fraudScore = scores["Fraud detection"]?.score || 100;
     const transactionDetected = scores.transaction_detected || false;
     const refusalDetected = scores.refusal_detected || false;
 
-    // Call is valid if script coherence is good OR a transaction/signature happened
-    const isValidByAI = scriptCoherence >= 70 || transactionDetected;
+    // Call is valid if:
+    // 1. No significant fraud/insults (fraudScore >= 50)
+    // AND
+    // 2. Script coherence is good (>= 70) OR a transaction was detected
+    const isValidByAI = fraudScore >= 50 && (scriptCoherence >= 70 || transactionDetected);
     
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
@@ -922,9 +926,12 @@ exports.analyzeCall = async (req, res) => {
     }
     await call.save();
 
-    // Update Transaction if detected
-    if (transactionDetected || refusalDetected) {
-      const transactionStatus = transactionDetected ? true : (refusalDetected ? false : null);
+    // Update or Create Transaction
+    // Rule: If call is rejected by AI (Fraud or Coherence), transaction is automatically REJECTED.
+    // Otherwise, use detection signals.
+    const transactionStatus = !isValidByAI ? false : (transactionDetected ? true : (refusalDetected ? false : null));
+
+    if (transactionDetected || refusalDetected || !isValidByAI) {
       await Transaction.findOneAndUpdate(
         { call: id },
         {

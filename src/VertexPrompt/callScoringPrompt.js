@@ -29,7 +29,7 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
 
 - **Agent fluency**: Evaluate clarity and pace of agent speech.
 - **Sentiment analysis**: Analyze customer emotional state.
-- **Fraud detection**: Identify anomalies or robotic behavior.
+- **Fraud detection**: Identify lies, insults, defamations, or any unprofessional behavior. High fraud or insults should result in a low score. (Score 0-100, where 100 means no fraud/insults and 0 means severe violations).
 - **Script coherence**: Evaluate if the agent's argumentation is coherent with the Gig script provided. (Score 0-100)
 - **Argumentation**: Assess the quality of the sales pitch and objection handling. (Score 0-100)
 - **Transaction Detection**: Identify if a transaction was signed, agreed upon, or explicitly refused.${scriptInstructions}
