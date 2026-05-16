@@ -13,6 +13,7 @@ const vertexAIService = require('../services/vertexai.service');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
+const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -847,47 +848,29 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
-    // Get Gig Script/Description
+    // Get Gig Script/Description - First attempt from collection
     let gigScript = call.lead?.gigId?.description || "";
-
-    // Fetch detailed script from 'scripts' collection if available
     try {
-      const targetGigId = call.lead?.gigId?._id || call.gigId;
-      if (targetGigId) {
-        const detailedScriptDoc = await mongoose.connection.db.collection('scripts').findOne({ 
-          gigId: new mongoose.Types.ObjectId(targetGigId) 
-        });
-
-        if (detailedScriptDoc) {
-          console.log(`📜 [CallController] Detailed script found for gig ${targetGigId}. Formatting for AI...`);
+      const gigId = call.lead?.gigId?._id || call.lead?.gigId;
+      if (gigId) {
+        console.log(`🔍 [CallController] Fetching script from collection for Gig ${gigId}...`);
+        const scriptRes = await fetch(`${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}`);
+        if (scriptRes.ok) {
+          const scriptData = await scriptRes.json();
+          const scripts = scriptData.data || [];
+          // Prioritize active script, fallback to most recent
+          const activeScript = scripts.find(s => s.isActive) || scripts[0];
           
-          let formattedScript = "";
-          
-          // Format Script Phases if they exist
-          if (detailedScriptDoc.script && Array.isArray(detailedScriptDoc.script) && detailedScriptDoc.script.length > 0) {
-            formattedScript += "--- SCRIPT PHASES ---\n";
-            formattedScript += detailedScriptDoc.script
-              .map(s => `[Phase: ${s.phase}] ${s.actor === 'agent' ? 'AGENT' : 'CLIENT'}: ${s.replica}`)
-              .join('\n');
-            formattedScript += "\n\n";
-          }
-          
-          // Format Playbook Dialogue if it exists
-          if (detailedScriptDoc.playbook?.dialogue && Array.isArray(detailedScriptDoc.playbook.dialogue)) {
-            formattedScript += "--- PLAYBOOK DIALOGUE ---\n";
-            formattedScript += detailedScriptDoc.playbook.dialogue
-              .map(d => `[${d.role.toUpperCase()}]: ${d.text}`)
-              .join('\n');
-            formattedScript += "\n\n";
-          }
-
-          if (formattedScript) {
-            gigScript = formattedScript + (detailedScriptDoc.details ? `CONTEXTE ADDITIONNEL: ${detailedScriptDoc.details}` : "");
+          if (activeScript && activeScript.script && activeScript.script.length > 0) {
+            gigScript = activeScript.script.map(s => `[${s.phase}] ${s.actor}: ${s.replica}`).join("\n");
+            console.log(`✅ [CallController] Script from collection loaded (${activeScript.script.length} replicas).`);
+          } else {
+            console.log(`⚠️ [CallController] No script replicas found in collection, using gig description.`);
           }
         }
       }
     } catch (scriptError) {
-      console.error("⚠️ [CallController] Error fetching detailed script:", scriptError);
+      console.error(`❌ [CallController] Failed to fetch script from KB:`, scriptError.message);
     }
 
     // Attempt to get transcript.
