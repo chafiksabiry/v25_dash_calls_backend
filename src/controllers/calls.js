@@ -848,7 +848,47 @@ exports.analyzeCall = async (req, res) => {
     }
 
     // Get Gig Script/Description
-    const gigScript = call.lead?.gigId?.description || "";
+    let gigScript = call.lead?.gigId?.description || "";
+
+    // Fetch detailed script from 'scripts' collection if available
+    try {
+      const targetGigId = call.lead?.gigId?._id || call.gigId;
+      if (targetGigId) {
+        const detailedScriptDoc = await mongoose.connection.db.collection('scripts').findOne({ 
+          gigId: new mongoose.Types.ObjectId(targetGigId) 
+        });
+
+        if (detailedScriptDoc) {
+          console.log(`📜 [CallController] Detailed script found for gig ${targetGigId}. Formatting for AI...`);
+          
+          let formattedScript = "";
+          
+          // Format Script Phases if they exist
+          if (detailedScriptDoc.script && Array.isArray(detailedScriptDoc.script) && detailedScriptDoc.script.length > 0) {
+            formattedScript += "--- SCRIPT PHASES ---\n";
+            formattedScript += detailedScriptDoc.script
+              .map(s => `[Phase: ${s.phase}] ${s.actor === 'agent' ? 'AGENT' : 'CLIENT'}: ${s.replica}`)
+              .join('\n');
+            formattedScript += "\n\n";
+          }
+          
+          // Format Playbook Dialogue if it exists
+          if (detailedScriptDoc.playbook?.dialogue && Array.isArray(detailedScriptDoc.playbook.dialogue)) {
+            formattedScript += "--- PLAYBOOK DIALOGUE ---\n";
+            formattedScript += detailedScriptDoc.playbook.dialogue
+              .map(d => `[${d.role.toUpperCase()}]: ${d.text}`)
+              .join('\n');
+            formattedScript += "\n\n";
+          }
+
+          if (formattedScript) {
+            gigScript = formattedScript + (detailedScriptDoc.details ? `CONTEXTE ADDITIONNEL: ${detailedScriptDoc.details}` : "");
+          }
+        }
+      }
+    } catch (scriptError) {
+      console.error("⚠️ [CallController] Error fetching detailed script:", scriptError);
+    }
 
     // Attempt to get transcript.
     let transcriptData = call.transcript || [];
