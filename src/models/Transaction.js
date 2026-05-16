@@ -58,13 +58,8 @@ const transactionSchema = new mongoose.Schema({
 
 transactionSchema.pre('save', function (next) {
   this.updatedAt = new Date();
-  if (this.validByAI === false || this.validByCompany === false) {
-    this.valid = false;
-  } else if (this.validByAI === true && this.validByCompany === true) {
-    this.valid = true;
-  } else {
-    this.valid = null;
-  }
+  // Now valid is strictly determined by AI decision
+  this.valid = this.validByAI;
   next();
 });
 
@@ -73,33 +68,18 @@ transactionSchema.pre('findOneAndUpdate', function (next) {
   if (update) {
     if (update.$set) {
       update.$set.updatedAt = new Date();
-      if (update.$set.validByAI !== undefined || update.$set.validByCompany !== undefined) {
-        const aiVal = update.$set.validByAI !== undefined ? update.$set.validByAI : null;
-        const companyVal = update.$set.validByCompany !== undefined ? update.$set.validByCompany : null;
-        if (aiVal === false || companyVal === false) {
-          update.$set.valid = false;
-        } else if (aiVal === true && companyVal === true) {
-          update.$set.valid = true;
-        } else {
-          update.$set.valid = null;
-        }
+      if (update.$set.validByAI !== undefined) {
+        update.$set.valid = update.$set.validByAI;
       }
     } else {
       update.updatedAt = new Date();
-      if (update.validByAI !== undefined || update.validByCompany !== undefined) {
-        const aiVal = update.validByAI !== undefined ? update.validByAI : null;
-        const companyVal = update.validByCompany !== undefined ? update.validByCompany : null;
-        if (aiVal === false || companyVal === false) {
-          update.valid = false;
-        } else if (aiVal === true && companyVal === true) {
-          update.valid = true;
-        } else {
-          update.valid = null;
-        }
+      if (update.validByAI !== undefined) {
+        update.valid = update.validByAI;
       }
     }
   }
   next();
 });
+
 
 module.exports = mongoose.model('Transaction', transactionSchema);

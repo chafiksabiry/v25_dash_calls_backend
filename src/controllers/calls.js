@@ -364,7 +364,6 @@ exports.updateCall = async (req, res) => {
         const existingTx = await Transaction.findOne({ call: callId });
         const validByReps = transactionData.validByReps !== undefined ? transactionData.validByReps : (existingTx ? existingTx.validByReps : null);
         const validByCompany = transactionData.validByCompany !== undefined ? transactionData.validByCompany : (existingTx ? existingTx.validByCompany : null);
-        const valid = (validByReps === false || validByCompany === false) ? false : (validByReps === true && validByCompany === true ? true : null);
 
         await Transaction.findOneAndUpdate(
           { call: callId },
@@ -376,7 +375,6 @@ exports.updateCall = async (req, res) => {
             companyId: callObj.companyId || undefined,
             validByReps,
             validByCompany,
-            valid,
             updatedAt: new Date()
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -395,7 +393,6 @@ exports.updateCall = async (req, res) => {
         const existingTx = await Transaction.findOne({ call: callId });
         const validByReps = req.body['transaction.validByReps'] !== undefined ? req.body['transaction.validByReps'] : (existingTx ? existingTx.validByReps : null);
         const validByCompany = req.body['transaction.validByCompany'] !== undefined ? req.body['transaction.validByCompany'] : (existingTx ? existingTx.validByCompany : null);
-        const valid = (validByReps === false || validByCompany === false) ? false : (validByReps === true && validByCompany === true ? true : null);
 
         await Transaction.findOneAndUpdate(
           { call: callId },
@@ -407,7 +404,6 @@ exports.updateCall = async (req, res) => {
             companyId: callObj.companyId || undefined,
             validByReps,
             validByCompany,
-            valid,
             updatedAt: new Date()
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
