@@ -101,7 +101,7 @@ const initializeServices = async () => {
     generativeModel = vertexAI.getGenerativeModel({
       model: modelName,
       generation_config: {
-        max_output_tokens: 512,
+        max_output_tokens: 1024,
         temperature: 0.7,
       }
     });
@@ -110,8 +110,8 @@ const initializeServices = async () => {
     jsonGenerativeModel = vertexAI.getGenerativeModel({
       model: modelName,
       generation_config: {
-        max_output_tokens: 1024,
-        temperature: 0.2,
+        max_output_tokens: 2048,
+        temperature: 0.1,
         response_mime_type: 'application/json',
       }
     });
@@ -156,6 +156,11 @@ const getGenerativeModel = async () => {
   return generativeModel;
 };
 
+const getJsonGenerativeModel = async () => {
+  await initializeServices();
+  return jsonGenerativeModel;
+};
+
 class VertexAIService {
   async getSpeechClient() {
     return await getSpeechClient();
@@ -171,6 +176,10 @@ class VertexAIService {
 
   async getGenerativeModel() {
     return await getGenerativeModel();
+  }
+
+  async getJsonGenerativeModel() {
+    return await getJsonGenerativeModel();
   }
 
   async createSpeechStream(config = {}) {
@@ -313,7 +322,7 @@ ${transcript}`;
 
   async scoreCall(transcript, gigScript = "") {
     try {
-      const gModel = await getGenerativeModel();
+      const gModel = await getJsonGenerativeModel();
       const promptText = generateCallScoringPrompt(gigScript);
       const prompt = `${promptText}\n\nTranscript:\n${transcript}`;
 

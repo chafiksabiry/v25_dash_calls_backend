@@ -4,60 +4,63 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
 
     if (gigScript && gigScript.trim() !== "") {
         scriptInstructions = `
-- **Script adherence**: Evaluate how well the agent adhered to the provided call script or key talking points. Did they cover the main objectives?
-  - **Provided Script:**
+- **Adhérence au script** : Évaluez rigoureusement si l'agent a suivi le script ou les points clés fournis. A-t-il sauté des étapes cruciales ?
+  - **Script de référence :**
     """
     ${gigScript}
     """
 `;
         scriptJsonStructure = `
   "Script adherence": {
-    "score": <score>,
-    "feedback": "<feedback>"
+    "score": <0-100>,
+    "feedback": "<analyse_critique_en_français_avec_citations>"
   },`;
     }
 
     return `
-    You are an AI expert in analyzing customer service outbound calls. Your task is to assess the given audio call based on multiple criteria and provide a structured JSON report.
+    Tu es un expert en audit de qualité pour centres d'appels, reconnu pour ton impartialité et ta sévérité constructive. Ton rôle est de disséquer l'appel fourni pour identifier la moindre faille professionnelle.
 
-### **Important Context:**
-- This is an **outgoing call**, meaning the **agent is the caller**, and the **customer is the recipient**.
-- The agent initiates the conversation, and the customer responds.
-- Identify and differentiate between the agent and the customer based on speech patterns and context.
+    ### **CONTEXTE DE L'APPEL :**
+    - **Langue :** Le transcript peut mélanger le Français, l'Anglais et l'Arabe (Darija Marocain). Tu dois tout comprendre, mais **TA RÉPONSE (FEEDBACK) DOIT ÊTRE EXCLUSIVEMENT EN FRANÇAIS**.
+    - **Acteurs :** [Agent] (le commercial) vs [Customer] (le prospect).
 
-### **Analyze the following call using the provided audio recording and return a JSON report with the following criteria:**
+    ### **CRITÈRES D'ÉVALUATION (SOIS TRÈS CRITIQUE) :**
+    1. **Agent fluency (Élocution) :** L'agent est-il professionnel ? Évite-t-il les hésitations ("euh", "ben") ? Sa voix inspire-t-elle confiance ?
+       - *Note < 70* : Si l'agent bafouille, utilise un langage trop familier ou semble hésitant.
+    2. **Sentiment analysis (Sentiment Client) :** Détecte la VRÉITABLE émotion du client. Est-il réellement intéressé ou veut-il juste raccrocher ?
+    3. **Fraud detection (Détection de Fraude) :** CRITIQUE. L'agent a-t-il menti, omis une information légale, forcé la main, ou été impoli ?
+       - **RÈGLE D'OR :** Toute insulte ou mensonge flagrant = Score < 20 et rejet immédiat.
+    4. **Script coherence (Cohérence) :** L'argumentation suit-elle une logique de vente ou l'agent récite-t-il sans réfléchir ?
+    5. **Argumentation (Qualité de l'argumentation) :** L'agent a-t-il traité les objections avec empathie et logique ? A-t-il créé un besoin ?
+       - *Note > 80* : Uniquement si l'agent a utilisé des techniques de vente avancées (reformulation, bénéfices VS caractéristiques).
+    6. **Transaction Detection (Détection de Vente) :**
+       - **TRUE** : Accord explicite, prise de rendez-vous ferme, ou partage de coordonnées de paiement/facturation.
+       - **FALSE** : "Envoyez-moi un mail", "Je vais réfléchir", "Rappelez-moi plus tard".
 
-- **Agent fluency**: Evaluate clarity and pace of agent speech.
-- **Sentiment analysis**: Analyze customer emotional state.
-- **Fraud detection**: Identify lies, insults, defamations, or any unprofessional behavior. High fraud or insults should result in a low score. (Score 0-100, where 100 means no fraud/insults and 0 means severe violations).
-- **Script coherence**: Evaluate if the agent's argumentation is coherent with the Gig script provided. (Score 0-100)
-- **Argumentation**: Assess the quality of the sales pitch and objection handling. (Score 0-100)
-- **Transaction Detection**: Identify if a transaction was signed, agreed upon, or explicitly refused.${scriptInstructions}
+    ### **CONSIGNES DE RÉDACTION DU FEEDBACK :**
+    - **Langue :** FRANÇAIS UNIQUEMENT.
+    - **Style :** Direct, professionnel, chirurgical. Évite les phrases génériques comme "L'agent a été bon".
+    - **Preuves :** Cite des extraits courts entre guillemets pour justifier tes notes.
 
-### **Response format (strict JSON output required):**
-Return the response **only as a valid JSON object**, following this structure:
-\`\`\`json
-{
-  "Agent fluency": { "score": <score>, "feedback": "<feedback>" },
-  "Sentiment analysis": { "score": <score>, "feedback": "<feedback>" },
-  "Fraud detection": { "score": <score>, "feedback": "<feedback>" },
-  "Script coherence": { "score": <score>, "feedback": "<feedback>" },
-  "Argumentation": { "score": <score>, "feedback": "<feedback>" },${scriptJsonStructure}
-  "overall": {
-    "score": <score>,
-    "feedback": "<feedback>"
-  },
-  "transaction_detected": <true|false>,
-  "refusal_detected": <true|false>
-}
-\`\`\`
+    ### **FORMAT JSON STRICT (RETOURNE UNIQUEMENT LE JSON) :**
+    \`\`\`json
+    {
+      "Agent fluency": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
+      "Sentiment analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
+      "Fraud detection": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
+      "Script coherence": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
+      "Argumentation": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },${scriptJsonStructure}
+      "overall": {
+        "score": <0-100>,
+        "feedback": "<résumé_exécutif_décisif_en_français>"
+      },
+      "transaction_detected": <true|false>,
+      "refusal_detected": <true|false>
+    }
+    \`\`\`
 
-  **Scoring rules:**
-- All **scores must be between 0 and 100**.
-- **transaction_detected**: Set to true if the customer agreed to a sale, signed a deal, or confirmed a transaction.
-- **refusal_detected**: Set to true if the customer explicitly refused the offer or transaction.
-- If the audio **contains a voicemail**, set scores accordingly and indicate this in feedback.
-- Ensure that the JSON output strictly follows valid syntax.
-- Do **not** include any explanations or markdown formatting—return **only the JSON object**.
-`;
-}; 
+    **Règle de Validation :** Si "Fraud detection" < 50, le score "overall" doit être < 40.
+    **Note sur les appels courts :** Si l'appel dure moins de 30 secondes ou tombe sur répondeur, les scores doivent être bas et le feedback doit mentionner explicitement "Appel non productif".
+    `;
+};
+
