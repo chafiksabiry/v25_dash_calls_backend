@@ -934,11 +934,23 @@ exports.analyzeCall = async (req, res) => {
     // 2. Script coherence is good (>= 70) OR a transaction was detected
     const isValidByAI = fraudScore >= 50 && (scriptCoherence >= 70 || transactionDetected);
     
+    // Calculate Commissions (70% Rep / 30% Platform)
+    const baseCallCommission = call.lead?.gigId?.commission?.commission_per_call || call.lead?.gigId?.rewardPerCall || 4;
+    const baseTransactionCommission = call.lead?.gigId?.commission?.transactionCommission || call.lead?.gigId?.rewardPerSale || 30;
+
+    const repCallCommission = isValidByAI ? baseCallCommission * 0.7 : 0;
+    const platformCallCommission = isValidByAI ? baseCallCommission * 0.3 : 0;
+
+    const repTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.7 : 0;
+    const platformTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.3 : 0;
+
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
     call.validByAI = isValidByAI;
     call.valid = isValidByAI; // Unified valid flag
     call.argumentation_score = argumentationScore;
+    call.repCallCommission = repCallCommission;
+    call.platformCallCommission = platformCallCommission;
 
     if (Array.isArray(transcriptData)) {
       call.transcript = transcriptData;
@@ -959,6 +971,8 @@ exports.analyzeCall = async (req, res) => {
       validByAI: transactionStatus,
       argumentation_score: argumentationScore,
       transaction_score: scores.overall?.score || 0,
+      repTransactionCommission: repTransactionCommission,
+      platformTransactionCommission: platformTransactionCommission,
       updatedAt: new Date()
     };
 

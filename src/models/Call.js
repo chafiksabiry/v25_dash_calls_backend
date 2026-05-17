@@ -152,6 +152,14 @@ const callSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  repCallCommission: {
+    type: Number,
+    default: 0,
+  },
+  platformCallCommission: {
+    type: Number,
+    default: 0,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
