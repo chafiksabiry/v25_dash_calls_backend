@@ -41,4 +41,4 @@ function generateAudioTranscriptionPrompt() {
 This transcription will be used for subtitle generation and call analysis. Accuracy of timing is critical.`;
 }
 
-export default { generateAudioTranscriptionPrompt };
+module.exports = { generateAudioTranscriptionPrompt };
