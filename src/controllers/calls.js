@@ -969,6 +969,9 @@ exports.analyzeCall = async (req, res) => {
     call.argumentation_score = argumentationScore;
     call.repCallCommission = repCallCommission;
     call.platformCallCommission = platformCallCommission;
+    call.repTransactionCommission = repTransactionCommission;
+    call.platformTransactionCommission = platformTransactionCommission;
+    call.transaction_price = baseTransactionCommission;
 
     if (isValidByAI && call.companyId) {
       // Trigger reconciliation in orchestrator
