@@ -98,6 +98,10 @@ const callSchema = new mongoose.Schema({
       score: { type: Number, min: 0, max: 100 },
       feedback: { type: String }
     },
+    "Transaction analysis": {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String }
+    },
     "overall": {
       score: { type: Number, min: 0, max: 100 },
       feedback: { type: String }

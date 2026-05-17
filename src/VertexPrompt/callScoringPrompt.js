@@ -33,9 +33,10 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
     4. **Script coherence (Cohérence) :** L'argumentation suit-elle une logique de vente ou l'agent récite-t-il sans réfléchir ?
     5. **Argumentation (Qualité de l'argumentation) :** L'agent a-t-il traité les objections avec empathie et logique ? A-t-il créé un besoin ?
        - *Note > 80* : Uniquement si l'agent a utilisé des techniques de vente avancées (reformulation, bénéfices VS caractéristiques).
-    6. **Transaction Detection (Détection de Vente) :**
-       - **TRUE** : Accord explicite, prise de rendez-vous ferme, ou partage de coordonnées de paiement/facturation.
-       - **FALSE** : "Envoyez-moi un mail", "Je vais réfléchir", "Rappelez-moi plus tard".
+    6. **Transaction analysis (Analyse de Vente) :**
+       - Évaluez rigoureusement si une transaction (vente, accord ferme, prise de RDV) a été effectuée.
+       - Le score doit être élevé (>= 80) si la transaction est claire et conclue.
+       - Le feedback doit expliquer les indices ou les raisons de l'échec.
 
     ### **CONSIGNES DE RÉDACTION DU FEEDBACK :**
     - **Langue :** FRANÇAIS UNIQUEMENT.
@@ -49,7 +50,8 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
       "Sentiment analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
       "Fraud detection": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
       "Script coherence": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Argumentation": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },${scriptJsonStructure}
+      "Argumentation": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
+      "Transaction analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_expliquant_si_une_transaction_a_été_conclue_ou_non>" },${scriptJsonStructure}
       "overall": {
         "score": <0-100>,
         "feedback": "<résumé_exécutif_décisif_en_français>"
