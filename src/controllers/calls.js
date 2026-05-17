@@ -946,8 +946,10 @@ exports.analyzeCall = async (req, res) => {
     // Call is valid if:
     // 1. No significant fraud/insults (fraudScore >= 50)
     // AND
-    // 2. Script coherence is good (>= 70) OR a transaction was detected
-    const isValidByAI = fraudScore >= 50 && (scriptCoherence >= 70 || transactionDetected);
+    // 2. Script coherence is good (>= 50)
+    // AND
+    // 3. Argumentation score is high (> 70)
+    const isValidByAI = fraudScore >= 50 && scriptCoherence >= 50 && argumentationScore > 70;
     
     // Calculate Commissions (70% Rep / 30% Platform)
     const baseCallCommission = call.lead?.gigId?.commission?.commission_per_call || call.lead?.gigId?.rewardPerCall || 4;
