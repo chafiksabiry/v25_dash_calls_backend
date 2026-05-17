@@ -967,6 +967,15 @@ exports.analyzeCall = async (req, res) => {
     call.repCallCommission = repCallCommission;
     call.platformCallCommission = platformCallCommission;
 
+    if (isValidByAI && call.companyId) {
+      // Trigger reconciliation in orchestrator
+      const orchestratorUrl = process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003';
+      fetch(`${orchestratorUrl}/api/escrow/reconcile/${call.companyId}`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => console.log(`✅ Triggered reconciliation for company ${call.companyId}:`, data))
+        .catch(err => console.error('❌ Failed to trigger reconciliation:', err));
+    }
+
     if (Array.isArray(transcriptData)) {
       call.transcript = transcriptData;
     }
