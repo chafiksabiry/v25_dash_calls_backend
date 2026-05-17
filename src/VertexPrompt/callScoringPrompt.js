@@ -33,6 +33,7 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
     4. **Script coherence (Cohérence) :** L'argumentation suit-elle une logique de vente ou l'agent récite-t-il sans réfléchir ?
     5. **Argumentation (Qualité de l'argumentation) :** L'agent a-t-il traité les objections avec empathie et logique ? A-t-il créé un besoin ?
        - *Note > 80* : Uniquement si l'agent a utilisé des techniques de vente avancées (reformulation, bénéfices VS caractéristiques).
+       - **IMPORTANT :** Évaluez l'effort et la compétence de l'agent dans l'argumentation, même si le client finit par refuser, accepter, ou demande de rappeler plus tard. Le résultat final (vente ou échec) ne doit pas pénaliser cette note si l'agent a bien fait son travail.
     6. **Transaction analysis (Analyse de Vente) :**
        - Évaluez rigoureusement si une transaction (vente, accord ferme, prise de RDV) a été effectuée.
        - Le score doit être élevé (>= 80) si la transaction est claire et conclue.
