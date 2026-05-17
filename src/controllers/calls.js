@@ -236,10 +236,25 @@ exports.getCalls = async (req, res) => {
 
     const calls = await mongoQuery.sort({ createdAt: -1 });
 
+    // If filtering by company, negate the commissions to reflect costs
+    let processedCalls = calls;
+    if (companyId) {
+      processedCalls = calls.map(call => {
+        const callObj = call.toObject();
+        if (callObj.repCallCommission) callObj.repCallCommission = -callObj.repCallCommission;
+        if (callObj.platformCallCommission) callObj.platformCallCommission = -callObj.platformCallCommission;
+        if (callObj.transaction) {
+          if (callObj.transaction.repTransactionCommission) callObj.transaction.repTransactionCommission = -callObj.transaction.repTransactionCommission;
+          if (callObj.transaction.platformTransactionCommission) callObj.transaction.platformTransactionCommission = -callObj.transaction.platformTransactionCommission;
+        }
+        return callObj;
+      });
+    }
+
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: calls
+      data: processedCalls
     });
   } catch (err) {
     console.error('Error in getCalls:', err);
