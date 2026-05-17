@@ -950,20 +950,27 @@ exports.analyzeCall = async (req, res) => {
     // Otherwise, use detection signals.
     const transactionStatus = !isValidByAI ? false : (transactionDetected ? true : (refusalDetected ? false : null));
 
+    const transactionUpdate = {
+      call: id,
+      agent: call.agent,
+      lead: call.lead?._id,
+      gigId: call.lead?.gigId?._id,
+      companyId: call.companyId,
+      validByAI: transactionStatus,
+      argumentation_score: argumentationScore,
+      transaction_score: scores.overall?.score || 0,
+      updatedAt: new Date()
+    };
+
+    // Rule: If call is rejected by AI, transaction final validation is also automatically REJECTED.
+    if (!isValidByAI) {
+      transactionUpdate.validByCompany = false;
+    }
+
     if (transactionDetected || refusalDetected || !isValidByAI) {
       await Transaction.findOneAndUpdate(
         { call: id },
-        {
-          call: id,
-          agent: call.agent,
-          lead: call.lead?._id,
-          gigId: call.lead?.gigId?._id,
-          companyId: call.companyId,
-          validByAI: transactionStatus,
-          argumentation_score: argumentationScore,
-          transaction_score: scores.overall?.score || 0,
-          updatedAt: new Date()
-        },
+        transactionUpdate,
         { upsert: true, new: true }
       );
     }

@@ -1,5 +1,5 @@
 function generateAudioTranscriptionPrompt() {
-    return `You are given an audio file from a real-time call. Your task is to transcribe it into a structured JSON format with accurate timestamps. Follow these exact rules:
+  return `You are given an audio file from a real-time call. Your task is to transcribe it into a structured JSON format with accurate timestamps. Follow these exact rules:
 
 1. LANGUAGE: The call is primarily in FRENCH (or sometimes Arabic/English).
    - Transcribe strictly what is said.
@@ -41,4 +41,4 @@ function generateAudioTranscriptionPrompt() {
 This transcription will be used for subtitle generation and call analysis. Accuracy of timing is critical.`;
 }
 
-module.exports = { generateAudioTranscriptionPrompt };
+export default { generateAudioTranscriptionPrompt };
