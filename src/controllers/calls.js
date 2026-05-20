@@ -859,6 +859,39 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
+    // ☎️  Auto-refuse calls that never reached a human. No transcript, no
+    // audio → nothing for the LLM to score. We tag them as `validByAI=false`
+    // so they stop showing up as "Analyse en cours" forever.
+    const callStatus = (call.status || '').toString().toLowerCase();
+    const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
+    const looksUnanswered =
+      noConnectStatuses.has(callStatus) ||
+      (callStatus === 'completed' && (call.duration || 0) === 0 && !call.recording_url_cloudinary);
+
+    if (looksUnanswered) {
+      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'})`;
+      const updated = await Call.findByIdAndUpdate(
+        id,
+        {
+          $set: {
+            validByAI: false,
+            valid: false,
+            ai_refusal_reason: refusalReason,
+            repCallCommission: 0,
+            platformCallCommission: 0
+          }
+        },
+        { new: true }
+      );
+      console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) — skipped AI scoring.`);
+      return res.status(200).json({
+        success: true,
+        message: refusalReason,
+        validByAI: false,
+        data: updated
+      });
+    }
+
     // Get Gig Script/Description - First attempt from collection
     let gigScript = call.lead?.gigId?.description || "";
     try {

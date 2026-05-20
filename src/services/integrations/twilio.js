@@ -278,25 +278,76 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       }
     }
 
-    // 🔥 Automated AI Scoring disabled as per user request (Manual analysis only)
-    /*
-    if (result.recording_url_cloudinary && !result.ai_call_score?.overall?.score) {
-        console.log(`🚀 [TwilioService] Triggering automated AI analysis for call: ${result._id}`);
-        // We run this asynchronously to not block the response
-        setTimeout(async () => {
-            try {
-                // For now, use a default prompt or attempt to fetch transcript if we implement saving it
-                const transcript = result.transcript || "This is an automated analysis of the call recording."; 
-                const scores = await vertexAIService.scoreCall(transcript);
-                
-                await Call.findByIdAndUpdate(result._id, { ai_call_score: scores });
-                console.log(`✅ [TwilioService] Automated analysis completed for call: ${result._id}`);
-            } catch (error) {
-                console.error(`❌ [TwilioService] Automated analysis failed:`, error.message);
+    // ☎️  Short-circuit: calls that never reached a human (no-answer, busy,
+    // canceled, failed, or completed with zero duration) are auto-refused
+    // (`validByAI = false`). They carry no transcript / recording, so feeding
+    // them to the LLM would only waste credits and leave them stuck in
+    // "Analyse en cours" forever.
+    const callStatus = (result.status || '').toString().toLowerCase();
+    const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
+    const isUnanswered =
+      noConnectStatuses.has(callStatus) ||
+      // A "completed" call with no duration and no audio is also a non-connect.
+      (callStatus === 'completed' && (result.duration || 0) === 0 && !result.recording_url_cloudinary);
+
+    if (isUnanswered && result.validByAI == null) {
+      try {
+        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'})`;
+        const refused = await Call.findOneAndUpdate(
+          { _id: result._id },
+          {
+            $set: {
+              validByAI: false,
+              ai_refusal_reason: refusalReason
             }
-        }, 1000);
+          },
+          { new: true }
+        );
+        result.validByAI = false;
+        result.ai_refusal_reason = refusalReason;
+        console.log(`🚫 [TwilioService] Call ${callSid} auto-refused (${callStatus}) — skipping AI analysis.`);
+        // Best-effort: poke the orchestrator so its rep/company reconciliation
+        // counters re-sync without waiting for the next manual refresh.
+        try {
+          const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL
+            || 'https://v25comporchestratorback-production.up.railway.app').replace(/\/$/, '');
+          const reconcileTarget = refused?.companyId || companyId;
+          if (reconcileTarget) {
+            fetch(`${orchestratorUrl}/api/escrow/reconcile/${reconcileTarget}`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }
+            }).catch(() => {});
+          }
+        } catch (_) { /* non-blocking */ }
+      } catch (refuseErr) {
+        console.warn(`⚠️ [TwilioService] Could not mark call ${callSid} as auto-refused:`, refuseErr.message);
+      }
     }
-    */
+
+    // 🤖 Automated AI Analysis — runs `analyzeCall` asynchronously so it
+    // populates `validByAI`, scores, transcript & triggers reconciliation
+    // (RepTransaction + WalletCompany debit) the moment a call finishes.
+    // We only skip if the call has already been scored (including the
+    // auto-refusal above).
+    const alreadyScored = result.validByAI === true || result.validByAI === false
+      || (result.ai_call_score && result.ai_call_score.overall && result.ai_call_score.overall.score);
+    if (!alreadyScored && (result.recording_url_cloudinary || (Array.isArray(result.transcript) && result.transcript.length > 0))) {
+      console.log(`🤖 [TwilioService] Auto-triggering AI analysis for call: ${result._id}`);
+      setTimeout(async () => {
+        try {
+          const selfBase = process.env.SELF_API_URL || process.env.BASE_URL || 'http://localhost:3001';
+          const url = `${selfBase.replace(/\/+$/, '')}/api/calls/${result._id}/analyze`;
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          const payload = await r.json().catch(() => ({}));
+          if (r.ok && payload.success) {
+            console.log(`✅ [TwilioService] Auto AI analysis OK for call ${result._id} — validByAI=${payload.validByAI}`);
+          } else {
+            console.warn(`⚠️  [TwilioService] Auto AI analysis returned ${r.status} for call ${result._id}:`, payload.message);
+          }
+        } catch (err) {
+          console.error(`❌ [TwilioService] Auto AI analysis failed for call ${result._id}:`, err.message);
+        }
+      }, 3000);
+    }
 
     return result;
   } catch (error) {

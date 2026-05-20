@@ -138,6 +138,12 @@ const callSchema = new mongoose.Schema({
     type: Boolean,
     default: null,
   },
+  /** Why the AI (or the auto-refusal rule) rejected the call. Used to display
+   *  a meaningful badge in the frontend instead of just "Refusé AI". */
+  ai_refusal_reason: {
+    type: String,
+    default: null,
+  },
   argumentation_score: {
     type: Number,
     default: 0,
