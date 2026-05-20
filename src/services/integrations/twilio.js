@@ -222,6 +222,37 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     console.log(`✅ [TwilioService] Call ${callSid} processed (Upsert).`);
 
+    // Auto-deduct the call duration from the company's minute balance.
+    // No AI validation is required: as soon as the call is saved with a duration,
+    // MinutesCompany.minutes decreases. Idempotent on the orchestrator side
+    // thanks to the chargedCallSids tracking.
+    const targetCompanyId = result.companyId || companyId;
+    const durationSeconds = parseInt(call.duration) || 0;
+    if (targetCompanyId && durationSeconds > 0) {
+      const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL
+        || 'https://v25comporchestratorback-production.up.railway.app').replace(/\/$/, '');
+      fetch(`${orchestratorUrl}/api/minutes-company/charge-call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: String(targetCompanyId),
+          callSid,
+          duration: durationSeconds
+        })
+      })
+        .then(async (resp) => {
+          if (!resp.ok) {
+            const text = await resp.text();
+            console.warn(`⚠️ [TwilioService] charge-call returned ${resp.status}: ${text}`);
+          } else {
+            console.log(`💸 [TwilioService] Minute balance debited for call ${callSid} (${durationSeconds}s).`);
+          }
+        })
+        .catch((err) => {
+          console.warn('⚠️ [TwilioService] Failed to notify orchestrator for minute debit:', err.message);
+        });
+    }
+
     if (transactionOccurred !== undefined && transactionOccurred !== null) {
       try {
         await Transaction.findOneAndUpdate(
