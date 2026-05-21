@@ -18,64 +18,61 @@ const { Call } = require("../models/Call");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mongo expression: derive `callOutcome` for calls that don't have one yet.
-// Mirrors `classifyCallOutcome` in calls.js. Kept verbose for readability.
+// MUST mirror `classifyCallOutcome` in calls.js — when one changes, update
+// the other.
+//
+// Decision tree:
+//   1. Telephony layer (Twilio status, voicemail).
+//   2. If AI scored the call (overall.score > 0)
+//      → AI-content-only outcomes (no duration heuristic).
+//   3. Else → fall back on the duration heuristic.
 // ─────────────────────────────────────────────────────────────────────────────
 function derivedOutcomeExpr() {
   const status = { $toLower: { $ifNull: ["$status", ""] } };
   const dur = { $ifNull: ["$duration", 0] };
   const reason = { $toLower: { $ifNull: ["$ai_refusal_reason", ""] } };
   const fraudScore = { $ifNull: ["$ai_call_score.Fraud detection.score", null] };
+  const sentimentScore = { $ifNull: ["$ai_call_score.Sentiment analysis.score", 0] };
   const argScore = { $ifNull: ["$argumentation_score", 0] };
   const validByAI = { $ifNull: ["$validByAI", false] };
   const refusalDetected = { $ifNull: ["$ai_call_score.refusal_detected", false] };
   const transactionDetected = { $ifNull: ["$ai_call_score.transaction_detected", false] };
+  const overallScore = { $ifNull: ["$ai_call_score.overall.score", 0] };
+  // "AI scored" = the LLM actually returned a non-zero overall score. Mirrors
+  // `detectAiScoring()` in the controller.
+  const hasAiScoring = { $gt: [overallScore, 0] };
   const hasRecording = {
     $gt: [{ $strLenCP: { $ifNull: ["$recording_url_cloudinary", ""] } }, 0]
   };
 
-  // We use $switch to short-circuit on the strongest signals first.
-  return {
+  // Sub-expression used in both AI and no-AI branches.
+  const refusalCategory = {
     $switch: {
       branches: [
-        // Use the persisted outcome whenever we have one.
         {
-          case: { $ne: [{ $ifNull: ["$callOutcome", null] }, null] },
-          then: "$callOutcome"
-        },
-        // Telephony-level outcomes.
-        { case: { $eq: [status, "busy"] }, then: "busy" },
-        {
-          case: {
-            $in: [status, ["no-answer", "noanswer", "canceled", "cancelled"]]
-          },
-          then: "no_answer"
-        },
-        {
-          case: { $eq: [status, "failed"] },
-          then: {
-            $cond: [
-              {
-                $regexMatch: {
-                  input: reason,
-                  regex: "invalid|no.?route|wrong|format"
-                }
-              },
-              "wrong_number",
-              "no_answer"
-            ]
-          }
+          case: { $regexMatch: { input: reason, regex: "déjà assur|already insured" } },
+          then: "already_insured"
         },
         {
           case: {
-            $and: [
-              { $eq: [status, "completed"] },
-              { $eq: [dur, 0] },
-              { $not: [hasRecording] }
-            ]
+            $regexMatch: { input: reason, regex: "wrong|faux numéro|invalid phone" }
           },
-          then: "voicemail"
+          then: "wrong_number"
         },
-        // AI-level outcomes.
+        {
+          case: { $regexMatch: { input: reason, regex: "pas intéress|not interested" } },
+          then: "not_interested"
+        }
+      ],
+      default: "refusal"
+    }
+  };
+
+  // Tree applied when the AI HAS scored the call. Outcome is content-driven;
+  // we never look at `duration` here.
+  const aiBranch = {
+    $switch: {
+      branches: [
         {
           case: { $and: [{ $ne: [fraudScore, null] }, { $lt: [fraudScore, 50] }] },
           then: "fraud"
@@ -93,46 +90,79 @@ function derivedOutcomeExpr() {
               }
             ]
           },
-          then: {
-            $switch: {
-              branches: [
-                {
-                  case: {
-                    $regexMatch: { input: reason, regex: "déjà assur|already insured" }
-                  },
-                  then: "already_insured"
-                },
-                {
-                  case: {
-                    $regexMatch: {
-                      input: reason,
-                      regex: "wrong|faux numéro|invalid phone"
-                    }
-                  },
-                  then: "wrong_number"
-                },
-                {
-                  case: {
-                    $regexMatch: { input: reason, regex: "pas intéress|not interested" }
-                  },
-                  then: "not_interested"
-                }
-              ],
-              default: "refusal"
-            }
-          }
-        },
-        // Too short / engaged.
-        {
-          case: { $and: [{ $gt: [dur, 0] }, { $lt: [dur, 30] }] },
-          then: "too_short"
+          then: refusalCategory
         },
         {
-          case: { $and: [{ $gte: [argScore, 70] }, { $eq: [validByAI, true] }] },
+          case: {
+            $and: [{ $gte: [argScore, 70] }, { $eq: [validByAI, true] }]
+          },
+          then: "argued_interested"
+        },
+        {
+          // Polite but non-converting conversation: positive sentiment + at
+          // least average argumentation.
+          case: {
+            $and: [{ $gte: [sentimentScore, 70] }, { $gte: [argScore, 50] }]
+          },
           then: "argued_interested"
         }
       ],
       default: "connected_no_sale"
+    }
+  };
+
+  // Tree applied when AI didn't score the call.
+  const heuristicBranch = {
+    $cond: [
+      { $and: [{ $gt: [dur, 0] }, { $lt: [dur, 30] }] },
+      "too_short",
+      "connected_no_sale"
+    ]
+  };
+
+  return {
+    $switch: {
+      branches: [
+        // Use the persisted outcome whenever we have one.
+        {
+          case: { $ne: [{ $ifNull: ["$callOutcome", null] }, null] },
+          then: "$callOutcome"
+        },
+        // 1) Telephony layer — always wins.
+        { case: { $eq: [status, "busy"] }, then: "busy" },
+        {
+          case: {
+            $in: [status, ["no-answer", "noanswer", "canceled", "cancelled"]]
+          },
+          then: "no_answer"
+        },
+        {
+          case: { $eq: [status, "failed"] },
+          then: {
+            $cond: [
+              {
+                $regexMatch: { input: reason, regex: "invalid|no.?route|wrong|format" }
+              },
+              "wrong_number",
+              "no_answer"
+            ]
+          }
+        },
+        {
+          case: {
+            $and: [
+              { $eq: [status, "completed"] },
+              { $eq: [dur, 0] },
+              { $not: [hasRecording] }
+            ]
+          },
+          then: "voicemail"
+        },
+        // 2) AI content drives the verdict whenever the LLM ran.
+        { case: hasAiScoring, then: aiBranch }
+      ],
+      // 3) No AI signal → fall back on cheap heuristics.
+      default: heuristicBranch
     }
   };
 }

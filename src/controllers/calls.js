@@ -848,27 +848,41 @@ exports.getPersonalityAnalysis = async (req, res) => {
 
 // ────────────────────────────────────────────────────────────────────────────
 //  Call-outcome classifier — deterministic mapping from analyzer signals to
-//  the `callOutcome` enum on the Call schema. Used by `analyzeCall` (AI
-//  path + auto-refused path). Keep this pure: no DB, no LLM, just inputs →
-//  outcome string. That way the same logic can be re-used by the lazy
-//  fallback in the analytics aggregations.
+//  the `callOutcome` enum on the Call schema. Used by `analyzeCall` (AI path
+//  + auto-refused path). Keep this pure: no DB, no LLM, just inputs → outcome.
+//  That way the same logic can be re-used by the lazy fallback in the
+//  analytics aggregations.
+//
+//  Decision tree:
+//    1. Telephony layer (Twilio status, hangup before connect).
+//    2. If the AI has actually scored the call (`hasAiScoring === true`)
+//       → drive the outcome from `ai_call_score` content EXCLUSIVELY.
+//       We never fall back on duration in this branch — the LLM has more
+//       context than seconds. A 23s call that the AI judged "unproductive"
+//       is `connected_no_sale`, NOT `too_short`.
+//    3. Otherwise (no LLM run yet, or auto-refused) → cheap heuristics
+//       (duration, telephony status) for a best-effort label.
 // ────────────────────────────────────────────────────────────────────────────
 function classifyCallOutcome({
   status,
   duration,
   hasRecording,
+  hasAiScoring,
   validByAI,
   refusalDetected,
   transactionDetected,
   fraudScore,
   argumentationScore,
+  scriptCoherence,
+  sentimentScore,
+  overallScore,
   refusalReason,
 }) {
   const s = String(status || '').toLowerCase();
   const dur = Number(duration) || 0;
   const reason = String(refusalReason || '').toLowerCase();
 
-  // 1) Telephony-level outcomes — set before AI scoring even runs.
+  // 1) Telephony-level outcomes — short-circuit before AI logic.
   if (s === 'busy') return 'busy';
   if (['no-answer', 'noanswer', 'canceled', 'cancelled'].includes(s)) return 'no_answer';
   if (s === 'failed') {
@@ -877,31 +891,65 @@ function classifyCallOutcome({
     if (/invalid|no.?route|wrong|format/i.test(reason)) return 'wrong_number';
     return 'no_answer';
   }
-  // Completed with duration 0 and no audio → almost always voicemail / answering machine.
+  // Completed with no audio and duration 0 → answering machine pickup.
   if (s === 'completed' && dur === 0 && !hasRecording) return 'voicemail';
 
-  // 2) AI-level outcomes — once the LLM has scored the call.
-  if (typeof fraudScore === 'number' && fraudScore < 50) return 'fraud';
-  if (transactionDetected) return 'transaction';
+  // 2) AI-content-driven outcomes — applied whenever the LLM ran. We
+  //    intentionally do NOT consult `duration` here: a 12-second call that
+  //    the AI scored with feedback is more reliably classified by content
+  //    than by clock.
+  if (hasAiScoring) {
+    if (typeof fraudScore === 'number' && fraudScore < 50) return 'fraud';
+    if (transactionDetected) return 'transaction';
 
-  if (refusalDetected || /refus|pas intéress|not interested|déjà assur|already insured|wrong|faux numéro/.test(reason)) {
-    if (/déjà assur|already insured/.test(reason)) return 'already_insured';
-    if (/wrong|faux numéro|invalid phone/.test(reason)) return 'wrong_number';
-    if (/pas intéress|not interested/.test(reason)) return 'not_interested';
-    return 'refusal';
+    if (
+      refusalDetected ||
+      /refus|pas intéress|not interested|déjà assur|already insured|wrong|faux numéro/.test(reason)
+    ) {
+      if (/déjà assur|already insured/.test(reason)) return 'already_insured';
+      if (/wrong|faux numéro|invalid phone/.test(reason)) return 'wrong_number';
+      if (/pas intéress|not interested/.test(reason)) return 'not_interested';
+      return 'refusal';
+    }
+
+    // Engaged conversation — high argumentation AND the AI validated the call.
+    if (
+      typeof argumentationScore === 'number' &&
+      argumentationScore >= 70 &&
+      validByAI
+    ) {
+      return 'argued_interested';
+    }
+
+    // Customer leaned positive but no transaction nor strong argumentation
+    // (e.g. polite curiosity). We still tag it as "argued" so the rep can
+    // follow up — better than the catch-all bucket.
+    if (
+      typeof sentimentScore === 'number' &&
+      sentimentScore >= 70 &&
+      typeof argumentationScore === 'number' &&
+      argumentationScore >= 50
+    ) {
+      return 'argued_interested';
+    }
+
+    // AI ran but no specific signal → connected without a clear outcome.
+    // (e.g. agent silent, no engagement on either side, dead air, ...)
+    return 'connected_no_sale';
   }
 
-  // 3) Length-based heuristics — too short to count as a real conversation.
+  // 3) No AI scoring available — fall back on heuristics.
   if (dur > 0 && dur < 30) return 'too_short';
-
-  // 4) Engagement-based outcomes.
-  if (typeof argumentationScore === 'number' && argumentationScore >= 70 && validByAI) {
-    return 'argued_interested';
-  }
-
-  // 5) Fallback — call connected but no clear outcome detected.
   return 'connected_no_sale';
 }
+
+// Helper: have we got real AI scoring output for this call?
+// We rely on the overall score being a real number > 0; the schema default
+// is empty (the rubric is only populated by `vertexAIService.scoreCall`).
+function detectAiScoring(scores) {
+  return !!(scores && scores.overall && typeof scores.overall.score === 'number' && scores.overall.score > 0);
+}
+exports.detectAiScoring = detectAiScoring;
 
 exports.analyzeCall = async (req, res) => {
   try {
@@ -939,11 +987,15 @@ exports.analyzeCall = async (req, res) => {
         status: callStatus,
         duration: call.duration,
         hasRecording: !!call.recording_url_cloudinary,
+        hasAiScoring: false, // auto-refused: LLM never ran
         validByAI: false,
         refusalDetected: false,
         transactionDetected: false,
         fraudScore: null,
         argumentationScore: 0,
+        scriptCoherence: 0,
+        sentimentScore: 0,
+        overallScore: 0,
         refusalReason,
       });
       const updated = await Call.findByIdAndUpdate(
@@ -1097,11 +1149,15 @@ exports.analyzeCall = async (req, res) => {
       status: callStatus,
       duration,
       hasRecording: !!call.recording_url_cloudinary,
+      hasAiScoring: true, // LLM just ran successfully
       validByAI: isValidByAI,
       refusalDetected,
       transactionDetected,
       fraudScore,
       argumentationScore,
+      scriptCoherence,
+      sentimentScore: scores["Sentiment analysis"]?.score || 0,
+      overallScore: scores.overall?.score || 0,
       refusalReason: call.ai_refusal_reason,
     });
     call.callOutcome = callOutcome;
