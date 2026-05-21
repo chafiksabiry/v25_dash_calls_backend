@@ -1131,6 +1131,28 @@ exports.analyzeCall = async (req, res) => {
     const repTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.7 : 0;
     const platformTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.3 : 0;
 
+    // Compute a per-rubric Yes/No verdict next to each numeric score.
+    //   passed = score >= PASS_THRESHOLD (50)
+    // The verdicts are persisted on the Call doc so the rep modal and
+    // dashboards never have to re-threshold on every read.
+    const PASS_THRESHOLD = 50;
+    const RUBRIC_KEYS = [
+      "Agent fluency",
+      "Sentiment analysis",
+      "Fraud detection",
+      "Script coherence",
+      "Argumentation",
+      "Script adherence",
+      "Transaction analysis",
+      "overall"
+    ];
+    for (const k of RUBRIC_KEYS) {
+      if (scores[k] && typeof scores[k] === "object") {
+        const s = typeof scores[k].score === "number" ? scores[k].score : 0;
+        scores[k].passed = s >= PASS_THRESHOLD;
+      }
+    }
+
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
     call.validByAI = isValidByAI;

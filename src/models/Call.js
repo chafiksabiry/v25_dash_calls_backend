@@ -77,37 +77,56 @@ const callSchema = new mongoose.Schema({
     min: 0,
     max: 100,
   },
+  // ai_call_score rubric — each metric carries:
+  //   • score    (0-100, raw quality)
+  //   • feedback (LLM rationale)
+  //   • passed   (boolean verdict — true when score ≥ 50; written by analyzer)
+  //
+  // `passed` is the canonical Yes/No used by dashboards and the rep modal.
+  // Keeping it on the document avoids re-thresholding on every read.
   ai_call_score: {
     "Agent fluency": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Sentiment analysis": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Fraud detection": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Script coherence": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Argumentation": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "Script adherence": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Transaction analysis": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "overall": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "transaction_detected": { type: Boolean, default: false },
-    "refusal_detected": { type: Boolean, default: false }
+    "refusal_detected":     { type: Boolean, default: false }
   },
   transcript: [{
     speaker: String,
