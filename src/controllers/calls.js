@@ -1105,6 +1105,58 @@ exports.analyzeCall = async (req, res) => {
     console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
     const scores = await vertexAIService.scoreCall(transcriptText, gigScript);
 
+    // ── Voicemail / non-productive guard ─────────────────────────────────
+    //   On a call that never reached a human (voicemail pickup, dead-air,
+    //   no agent dialogue), the LLM has nothing useful to score and tends
+    //   to hallucinate per-rubric praise ("Agent fluency: 100% — message
+    //   clair et concis") while its own executive summary correctly says
+    //   "appel non productif, messagerie vocale, aucun élément exploitable".
+    //
+    //   We use the overall feedback as the trigger because:
+    //     • The LLM is reliable at *summarising* the call type.
+    //     • Scanning the raw transcript for voicemail boilerplate is
+    //       brittle across languages / TTS variants.
+    //   When the trigger fires we:
+    //     • zero out every individual rubric score + force passed=false,
+    //     • keep `Fraud detection` at 100 (a voicemail is NOT fraud),
+    //     • preserve `overall.score` / `overall.feedback` so the modal still
+    //       shows the truthful "Executive summary".
+    //   `callOutcome` is forced to 'voicemail' a few lines below.
+    const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
+    const VOICEMAIL_REGEX =
+      /messagerie\s+(vocale|automatique)|r[ée]pondeur|laissez\s+(votre|un)\s+message|bo[îi]te\s+vocale|voicemail|answering\s+machine|leave\s+(a|your)\s+message|after\s+the\s+(tone|beep)|appel\s+non\s+productif|aucun\s+(?:él|el)[ée]ment\s+exploitable|n['']est\s+pas\s+disponible|votre\s+correspondant/i;
+    const isNonProductiveCall = VOICEMAIL_REGEX.test(overallFeedback);
+
+    if (isNonProductiveCall) {
+      const NON_EVAL_FEEDBACK =
+        "Critère non évaluable — appel non productif (messagerie / aucun échange exploitable).";
+      const NEUTRALISE_KEYS = [
+        "Agent fluency",
+        "Sentiment analysis",
+        "Script coherence",
+        "Argumentation",
+        "Script adherence",
+        "Transaction analysis"
+      ];
+      for (const k of NEUTRALISE_KEYS) {
+        if (scores[k] && typeof scores[k] === "object") {
+          scores[k].score    = 0;
+          scores[k].feedback = NON_EVAL_FEEDBACK;
+          scores[k].passed   = false;
+        }
+      }
+      // Fraud detection follows reversed semantics (high = clean). A
+      // voicemail must NOT raise the fraud flag, so we pin it at 100 / pass.
+      if (scores["Fraud detection"] && typeof scores["Fraud detection"] === "object") {
+        scores["Fraud detection"].score    = 100;
+        scores["Fraud detection"].feedback = "Aucun signal de fraude — appel non productif.";
+        scores["Fraud detection"].passed   = true;
+      }
+      scores.transaction_detected = false;
+      scores.refusal_detected     = false;
+      console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail) — per-rubric scores neutralised.`);
+    }
+
     // AI Validation Logic
     const scriptCoherence = scores["Script coherence"]?.score || 0;
     const argumentationScore = scores["Argumentation"]?.score || 0;
@@ -1167,21 +1219,29 @@ exports.analyzeCall = async (req, res) => {
     // ── Unified call-analysis layer ───────────────────────────────────────
     //  Persist denormalised signals so the company dashboard can group/filter
     //  without re-scanning ai_call_score on every request.
-    const callOutcome = classifyCallOutcome({
-      status: callStatus,
-      duration,
-      hasRecording: !!call.recording_url_cloudinary,
-      hasAiScoring: true, // LLM just ran successfully
-      validByAI: isValidByAI,
-      refusalDetected,
-      transactionDetected,
-      fraudScore,
-      argumentationScore,
-      scriptCoherence,
-      sentimentScore: scores["Sentiment analysis"]?.score || 0,
-      overallScore: scores.overall?.score || 0,
-      refusalReason: call.ai_refusal_reason,
-    });
+    //
+    //  Voicemail short-circuit: the AI did run (we kept `overall` intact for
+    //  the modal summary), but the per-rubric scores were neutralised above.
+    //  Routing those zeros back through `classifyCallOutcome` would bucket
+    //  this call as `connected_no_sale`, which is misleading on dashboards —
+    //  force the `voicemail` outcome explicitly.
+    const callOutcome = isNonProductiveCall
+      ? 'voicemail'
+      : classifyCallOutcome({
+          status: callStatus,
+          duration,
+          hasRecording: !!call.recording_url_cloudinary,
+          hasAiScoring: true, // LLM just ran successfully
+          validByAI: isValidByAI,
+          refusalDetected,
+          transactionDetected,
+          fraudScore,
+          argumentationScore,
+          scriptCoherence,
+          sentimentScore: scores["Sentiment analysis"]?.score || 0,
+          overallScore: scores.overall?.score || 0,
+          refusalReason: call.ai_refusal_reason,
+        });
     call.callOutcome = callOutcome;
     call.callOutcomeSource = 'ai';
     call.ai_call_status = 'scored';
