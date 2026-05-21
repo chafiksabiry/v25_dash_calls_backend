@@ -846,6 +846,63 @@ exports.getPersonalityAnalysis = async (req, res) => {
   }
 };
 
+// ────────────────────────────────────────────────────────────────────────────
+//  Call-outcome classifier — deterministic mapping from analyzer signals to
+//  the `callOutcome` enum on the Call schema. Used by `analyzeCall` (AI
+//  path + auto-refused path). Keep this pure: no DB, no LLM, just inputs →
+//  outcome string. That way the same logic can be re-used by the lazy
+//  fallback in the analytics aggregations.
+// ────────────────────────────────────────────────────────────────────────────
+function classifyCallOutcome({
+  status,
+  duration,
+  hasRecording,
+  validByAI,
+  refusalDetected,
+  transactionDetected,
+  fraudScore,
+  argumentationScore,
+  refusalReason,
+}) {
+  const s = String(status || '').toLowerCase();
+  const dur = Number(duration) || 0;
+  const reason = String(refusalReason || '').toLowerCase();
+
+  // 1) Telephony-level outcomes — set before AI scoring even runs.
+  if (s === 'busy') return 'busy';
+  if (['no-answer', 'noanswer', 'canceled', 'cancelled'].includes(s)) return 'no_answer';
+  if (s === 'failed') {
+    // Twilio "failed" often = invalid number / no route. We treat it as
+    // wrong_number to surface the bad-data signal in dashboards.
+    if (/invalid|no.?route|wrong|format/i.test(reason)) return 'wrong_number';
+    return 'no_answer';
+  }
+  // Completed with duration 0 and no audio → almost always voicemail / answering machine.
+  if (s === 'completed' && dur === 0 && !hasRecording) return 'voicemail';
+
+  // 2) AI-level outcomes — once the LLM has scored the call.
+  if (typeof fraudScore === 'number' && fraudScore < 50) return 'fraud';
+  if (transactionDetected) return 'transaction';
+
+  if (refusalDetected || /refus|pas intéress|not interested|déjà assur|already insured|wrong|faux numéro/.test(reason)) {
+    if (/déjà assur|already insured/.test(reason)) return 'already_insured';
+    if (/wrong|faux numéro|invalid phone/.test(reason)) return 'wrong_number';
+    if (/pas intéress|not interested/.test(reason)) return 'not_interested';
+    return 'refusal';
+  }
+
+  // 3) Length-based heuristics — too short to count as a real conversation.
+  if (dur > 0 && dur < 30) return 'too_short';
+
+  // 4) Engagement-based outcomes.
+  if (typeof argumentationScore === 'number' && argumentationScore >= 70 && validByAI) {
+    return 'argued_interested';
+  }
+
+  // 5) Fallback — call connected but no clear outcome detected.
+  return 'connected_no_sale';
+}
+
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
@@ -859,6 +916,14 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
+    // Mark the call as "being analyzed" right away so the UI can show a real
+    // spinner instead of inferring from validByAI == null.
+    if (call.ai_call_status !== 'processing') {
+      call.ai_call_status = 'processing';
+      // Best-effort save — don't block the analyzer on this transition.
+      Call.updateOne({ _id: id }, { $set: { ai_call_status: 'processing' } }).catch(() => {});
+    }
+
     // ☎️  Auto-refuse calls that never reached a human. No transcript, no
     // audio → nothing for the LLM to score. We tag them as `validByAI=false`
     // so they stop showing up as "Analyse en cours" forever.
@@ -870,6 +935,17 @@ exports.analyzeCall = async (req, res) => {
 
     if (looksUnanswered) {
       const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'})`;
+      const callOutcome = classifyCallOutcome({
+        status: callStatus,
+        duration: call.duration,
+        hasRecording: !!call.recording_url_cloudinary,
+        validByAI: false,
+        refusalDetected: false,
+        transactionDetected: false,
+        fraudScore: null,
+        argumentationScore: 0,
+        refusalReason,
+      });
       const updated = await Call.findByIdAndUpdate(
         id,
         {
@@ -877,17 +953,25 @@ exports.analyzeCall = async (req, res) => {
             validByAI: false,
             valid: false,
             ai_refusal_reason: refusalReason,
+            ai_call_status: 'auto_refused',
+            callOutcome,
+            callOutcomeSource: 'system',
+            'flags.fraud': false,
+            'flags.serious': false,
+            'flags.transactionDetected': false,
+            'flags.refusalDetected': false,
             repCallCommission: 0,
             platformCallCommission: 0
           }
         },
         { new: true }
       );
-      console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) — skipped AI scoring.`);
+      console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome}`);
       return res.status(200).json({
         success: true,
         message: refusalReason,
         validByAI: false,
+        callOutcome,
         data: updated
       });
     }
@@ -1006,6 +1090,36 @@ exports.analyzeCall = async (req, res) => {
     call.platformTransactionCommission = platformTransactionCommission;
     call.transaction_price = baseTransactionCommission;
 
+    // ── Unified call-analysis layer ───────────────────────────────────────
+    //  Persist denormalised signals so the company dashboard can group/filter
+    //  without re-scanning ai_call_score on every request.
+    const callOutcome = classifyCallOutcome({
+      status: callStatus,
+      duration,
+      hasRecording: !!call.recording_url_cloudinary,
+      validByAI: isValidByAI,
+      refusalDetected,
+      transactionDetected,
+      fraudScore,
+      argumentationScore,
+      refusalReason: call.ai_refusal_reason,
+    });
+    call.callOutcome = callOutcome;
+    call.callOutcomeSource = 'ai';
+    call.ai_call_status = 'scored';
+    // Use the LLM's overall feedback as a starter summary. A dedicated
+    // /audio/summarize prompt can replace this later without changing the
+    // schema.
+    if (scores && scores.overall && typeof scores.overall.feedback === 'string') {
+      call.ai_summary = scores.overall.feedback;
+    }
+    call.flags = {
+      fraud:               fraudScore < 50,
+      serious:             isValidByAI,
+      transactionDetected: !!transactionDetected,
+      refusalDetected:     !!refusalDetected,
+    };
+
     if (isValidByAI && call.companyId) {
       // Trigger reconciliation in orchestrator
       const orchestratorUrl = process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003';
@@ -1061,9 +1175,21 @@ exports.analyzeCall = async (req, res) => {
     });
   } catch (error) {
     console.error('Error in analyzeCall:', error);
+    // Best-effort: mark the call as errored so the UI can surface a retry.
+    try {
+      if (req.params?.id) {
+        await Call.updateOne(
+          { _id: req.params.id },
+          { $set: { ai_call_status: 'error' } }
+        );
+      }
+    } catch (_) { /* swallow */ }
     res.status(500).json({ success: false, message: 'Failed to analyze call', error: error.message });
   }
 };
+
+// Re-export classifier so analytics aggregations can use the same logic.
+exports.classifyCallOutcome = classifyCallOutcome;
 
 exports.startRecording = async (req, res) => {
   const { callSid, userId } = req.body;

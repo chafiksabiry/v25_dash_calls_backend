@@ -12,6 +12,7 @@ const integrations = require('./routes/integrations');
 const leads = require('./routes/leads');
 const agents = require('./routes/agents');
 const calls = require('./routes/calls');
+const callsAnalytics = require('./routes/callsAnalytics');
 const gigs = require('./routes/gigs');
 const settings = require('./routes/settings');
 const analytics = require('./routes/analytics');
@@ -83,6 +84,9 @@ app.use('/api/auth', auth);
 app.use('/api/integrations', integrations);
 app.use('/api/leads', leads);
 app.use('/api/agents', agents);
+// Analytics routes are mounted FIRST so /company/:companyId/analytics/...
+// is matched before the legacy /:id pattern inside the calls router.
+app.use('/api/calls', callsAnalytics);
 app.use('/api/calls', calls);
 app.use('/api/gigs', gigs);
 app.use('/api/settings', settings);
