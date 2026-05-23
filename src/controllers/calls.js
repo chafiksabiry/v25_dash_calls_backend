@@ -774,6 +774,70 @@ exports.saveCallToDB = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/calls/amd-callback
+ * Twilio Async AMD (Answering Machine Detection) webhook.
+ * Fired automatically when Twilio determines whether the call was answered by
+ * a human or a machine — no rep action required.
+ *
+ * Key fields sent by Twilio:
+ *   CallSid       – parent call SID
+ *   AnsweredBy    – "machine_start" | "machine_end_beep" | "machine_end_silence"
+ *                   | "machine_end_other" | "human" | "fax" | "unknown"
+ *   MachineDetectionDuration – ms taken to detect
+ */
+exports.amdCallback = async (req, res) => {
+  // Always respond 200 immediately so Twilio doesn't retry
+  res.sendStatus(200);
+
+  const { CallSid, AnsweredBy } = req.body || {};
+  if (!CallSid) return;
+
+  const isMachine = AnsweredBy && AnsweredBy.startsWith('machine');
+  const isFax = AnsweredBy === 'fax';
+
+  console.log(`📠 [AMD] CallSid=${CallSid} AnsweredBy=${AnsweredBy} → isMachine=${isMachine}`);
+
+  if (!isMachine && !isFax) {
+    // Human answered — nothing to do, call flows normally
+    return;
+  }
+
+  // Mark the call document as voicemail / auto-refused
+  try {
+    const outcome = isFax ? 'voicemail' : 'voicemail';
+    const reason = isFax
+      ? 'Fax détecté par Twilio AMD'
+      : `Répondeur détecté automatiquement par Twilio AMD (${AnsweredBy})`;
+
+    const updated = await Call.findOneAndUpdate(
+      { sid: CallSid },
+      {
+        $set: {
+          callOutcome: outcome,
+          callOutcomeSource: 'system',
+          validByAI: false,
+          valid: false,
+          ai_call_status: 'auto_refused',
+          ai_refusal_reason: reason,
+          updatedAt: new Date(),
+        }
+      },
+      { new: true }
+    );
+
+    if (updated) {
+      console.log(`✅ [AMD] Call ${CallSid} auto-marked as voicemail (doc _id=${updated._id})`);
+    } else {
+      // Document may not exist yet if store-call hasn't fired — that's fine,
+      // saveCallToDB will pick up isVoicemail from the AMD flag later.
+      console.warn(`⚠️  [AMD] No Call doc found for SID ${CallSid} yet — will be handled at store-call time`);
+    }
+  } catch (err) {
+    console.error(`❌ [AMD] Failed to mark call ${CallSid} as voicemail:`, err.message);
+  }
+};
+
 exports.fetchRecording = async (req, res) => {
   const { recordingUrl, userId } = req.body;
 

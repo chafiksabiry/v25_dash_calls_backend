@@ -89,6 +89,9 @@ router.post('/call-details', callController.getCallDetails);
 router.post('/recording/start', callController.startRecording);
 router.post('/recording/stop', callController.stopRecording);
 
+// Twilio Async AMD (Answering Machine Detection) webhook — no auth, called by Twilio directly
+router.post('/amd-callback', callController.amdCallback);
+
 //@qalqul logic
 
 router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatStartingCall);

@@ -418,9 +418,22 @@ const generateTwimlResponse = async (to, callerIdOverride) => {
   }
 
   if (to) {
-    // Validating 'to' format could be done here as well
-    const dial = twiml.dial({ callerId: callerId, record: 'record-from-answer' });
-    dial.number(to);
+    const selfBase = (process.env.SELF_API_URL || process.env.BASE_URL || 'http://localhost:3001').replace(/\/+$/, '');
+    const amdCallbackUrl = `${selfBase}/api/calls/amd-callback`;
+
+    // Enable Twilio AMD (Answering Machine Detection).
+    // When Twilio detects a machine, it POSTs to amd-callback with
+    // AnsweredBy=machine_start so the backend can auto-mark the call
+    // as voicemail without any action from the rep.
+    const dial = twiml.dial({
+      callerId: callerId,
+      record: 'record-from-answer',
+    });
+    dial.number({
+      machineDetection: 'DetectMessageEnd',
+      asyncAmdStatusCallback: amdCallbackUrl,
+      asyncAmdStatusCallbackMethod: 'POST',
+    }, to);
   } else {
     twiml.say("Invalid number");
   }
