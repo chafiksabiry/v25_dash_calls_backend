@@ -120,6 +120,31 @@ const callSchema = new mongoose.Schema({
       feedback: { type: String },
       passed:   { type: Boolean, default: false }
     },
+    "PAS INTÉRESSÉS": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "PAS AU COURANT": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "DÉJÀ ÉQUIPÉS": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "RDV": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "A plus tard": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
     "overall": {
       score:    { type: Number, min: 0, max: 100 },
       feedback: { type: String },
@@ -200,7 +225,7 @@ const callSchema = new mongoose.Schema({
       'argued_interested',   // argumenté, intéressé mais pas signé
       'refusal',             // refus catégorique
       'not_interested',      // pas intéressé
-      'already_insured',     // déjà assuré
+      'already_equipped',    // déjà équipé (B2C/B2B concurrent)
       'voicemail',           // messagerie vocale
       'no_answer',           // pas de réponse
       'busy',                // occupé

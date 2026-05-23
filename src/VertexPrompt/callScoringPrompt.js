@@ -38,6 +38,16 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
        - Évaluez rigoureusement si une transaction (vente, accord ferme, prise de RDV) a été effectuée.
        - Le score doit être élevé (>= 80) si la transaction est claire et conclue.
        - Le feedback doit expliquer les indices ou les raisons de l'échec.
+    7. **PAS INTÉRESSÉS :** Le prospect a-t-il exprimé un manque d'intérêt (par exemple "non merci", "ça ne m'intéresse pas", "je n'en veux pas") ?
+       - Score élevé (>= 50) si le prospect exprime clairement son désintérêt. Verdict binaire "Yes" s'il n'est pas intéressé.
+    8. **PAS AU COURANT :** Le prospect a-t-il indiqué ne pas être au courant de l'appel, du produit, d'un formulaire préalable, ou de la démarche ?
+       - Score élevé (>= 50) si le prospect exprime une surprise ou une méconnaissance totale de la raison du démarchage.
+    9. **DÉJÀ ÉQUIPÉS :** Le prospect a-t-il mentionné qu'il dispose déjà d'un produit similaire, d'un contrat, d'un prestataire, d'une solution ou d'un fournisseur existant ?
+       - Score élevé (>= 50) si l'objection "déjà équipé", "déjà sous contrat", "déjà un fournisseur" ou "déjà chez un concurrent" est soulevée.
+    10. **RDV :** L'appel a-t-il abouti à une prise de rendez-vous (date/heure programmée ou demande explicite de rappel planifié) ?
+        - Score élevé (>= 50) si un rendez-vous futur a été convenu.
+    11. **A plus tard :** Le prospect a-t-il demandé à écourter, reporter l'appel ou à être rappelé plus tard à un moment plus opportun ?
+        - Score élevé (>= 50) si le prospect demande "rappelez-moi plus tard", "je n'ai pas le temps", "demain", etc.
 
     ### **CONSIGNES DE RÉDACTION DU FEEDBACK :**
     - **Langue :** FRANÇAIS UNIQUEMENT.
@@ -52,7 +62,12 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
       "Fraud detection": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
       "Script coherence": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
       "Argumentation": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Transaction analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_expliquant_si_une_transaction_a_été_conclue_ou_non>" },${scriptJsonStructure}
+      "Transaction analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_expliquant_si_une_transaction_a_été_conclue_ou_non>" },
+      "PAS INTÉRESSÉS": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_le_prospect_est_intéressé_ou_non>" },
+      "PAS AU COURANT": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_expliquant_si_le_prospect_est_au_courant_de_la_démarche>" },
+      "DÉJÀ ÉQUIPÉS": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_le_prospect_est_déjà_équipé_ou_a_déjà_un_fournisseur/concurrent>" },
+      "RDV": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_un_rendez-vous_a_été_pris>" },
+      "A plus tard": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_un_report/rappel_a_été_demandé>" },${scriptJsonStructure}
       "overall": {
         "score": <0-100>,
         "feedback": "<résumé_exécutif_décisif_en_français>"

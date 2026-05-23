@@ -4,6 +4,7 @@ const {
   outcomes,
   reps,
   recent,
+  repPayouts,
   callbacks
 } = require("../controllers/callsAnalytics");
 
@@ -18,7 +19,8 @@ const router = express.Router();
 router.get("/company/:companyId/analytics/overview",  overview);
 router.get("/company/:companyId/analytics/outcomes",  outcomes);
 router.get("/company/:companyId/analytics/reps",      reps);
-router.get("/company/:companyId/analytics/recent",    recent);
-router.get("/company/:companyId/analytics/callbacks", callbacks);
+router.get("/company/:companyId/analytics/recent",      recent);
+router.get("/company/:companyId/analytics/rep-payouts", repPayouts);
+router.get("/company/:companyId/analytics/callbacks",   callbacks);
 
 module.exports = router;

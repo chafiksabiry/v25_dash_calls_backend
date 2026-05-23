@@ -904,9 +904,9 @@ function classifyCallOutcome({
 
     if (
       refusalDetected ||
-      /refus|pas intéress|not interested|déjà assur|already insured|wrong|faux numéro/.test(reason)
+      /refus|pas intéress|not interested|déjà équipé|already equipped|déjà engag|déjà assur|already insured|wrong|faux numéro/.test(reason)
     ) {
-      if (/déjà assur|already insured/.test(reason)) return 'already_insured';
+      if (/déjà équipé|already equipped|déjà engag|déjà assur|already insured/.test(reason)) return 'already_equipped';
       if (/wrong|faux numéro|invalid phone/.test(reason)) return 'wrong_number';
       if (/pas intéress|not interested/.test(reason)) return 'not_interested';
       return 'refusal';
@@ -1136,7 +1136,12 @@ exports.analyzeCall = async (req, res) => {
         "Script coherence",
         "Argumentation",
         "Script adherence",
-        "Transaction analysis"
+        "Transaction analysis",
+        "PAS INTÉRESSÉS",
+        "PAS AU COURANT",
+        "DÉJÀ ÉQUIPÉS",
+        "RDV",
+        "A plus tard"
       ];
       for (const k of NEUTRALISE_KEYS) {
         if (scores[k] && typeof scores[k] === "object") {
@@ -1196,6 +1201,11 @@ exports.analyzeCall = async (req, res) => {
       "Argumentation",
       "Script adherence",
       "Transaction analysis",
+      "PAS INTÉRESSÉS",
+      "PAS AU COURANT",
+      "DÉJÀ ÉQUIPÉS",
+      "RDV",
+      "A plus tard",
       "overall"
     ];
     for (const k of RUBRIC_KEYS) {

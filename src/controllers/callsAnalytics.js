@@ -6,6 +6,7 @@
  *   • GET /api/calls/company/:companyId/analytics/outcomes     → donut + breakdown
  *   • GET /api/calls/company/:companyId/analytics/reps         → per-rep matrix
  *   • GET /api/calls/company/:companyId/analytics/recent       → enriched recent calls
+ *   • GET /api/calls/company/:companyId/analytics/rep-payouts  → rep commission payouts (wallet feed)
  *   • GET /api/calls/company/:companyId/analytics/callbacks    → scheduled callbacks + RDV
  *
  * Lazy fallback: old calls (analyzed before the `callOutcome` field existed)
@@ -50,8 +51,8 @@ function derivedOutcomeExpr() {
     $switch: {
       branches: [
         {
-          case: { $regexMatch: { input: reason, regex: "déjà assur|already insured" } },
-          then: "already_insured"
+          case: { $regexMatch: { input: reason, regex: "déjà équip|already equipped|déjà engag|already contract|déjà fourn|already supplier|déjà assur|already insured" } },
+          then: "already_equipped"
         },
         {
           case: {
@@ -85,7 +86,7 @@ function derivedOutcomeExpr() {
               {
                 $regexMatch: {
                   input: reason,
-                  regex: "refus|pas intéress|not interested|déjà assur|already insured|wrong|faux numéro"
+                  regex: "refus|pas intéress|not interested|déjà équip|already equipped|déjà engag|already contract|déjà fourn|already supplier|déjà assur|already insured|wrong|faux numéro"
                 }
               }
             ]
@@ -415,7 +416,7 @@ exports.reps = async (req, res) => {
           argued: { $sum: { $cond: [{ $eq: ["$_outcome", "argued_interested"] }, 1, 0] } },
           refusal: {
             $sum: {
-              $cond: [{ $in: ["$_outcome", ["refusal", "not_interested", "already_insured"]] }, 1, 0]
+              $cond: [{ $in: ["$_outcome", ["refusal", "not_interested", "already_equipped"]] }, 1, 0]
             }
           },
           serious: {
@@ -554,6 +555,242 @@ exports.recent = async (req, res) => {
     res.json({ success: true, calls: rows });
   } catch (err) {
     console.error("Error in analytics/recent:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/calls/company/:companyId/analytics/rep-payouts
+//  GET /api/rep-transactions/company/:companyId            (alias)
+//
+//  Source of truth: the `reptransactions` collection — one document per
+//  paid rep commission (call validation OR signed sale). We $lookup the
+//  associated call to enrich the row with duration/score/refusal reason.
+//
+//  Refused calls are surfaced from the calls collection only when no
+//  rep-transaction was created (because the AI rejected the call) so
+//  the "Refusés" tab still shows them. Validated/sale rows always come
+//  from `reptransactions`.
+//
+//  Query params:
+//    limit  — 1..100, default 30
+//    gigId  — optional, "all" or omitted = whole company
+//    status — "validated" | "refused" | "all" (default: "all")
+// ─────────────────────────────────────────────────────────────────────────────
+exports.repPayouts = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    if (!validateCompanyId(companyId, res)) return;
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 30));
+    const gigId = req.query.gigId;
+    const status = String(req.query.status || "all").toLowerCase();
+
+    const companyOid = new mongoose.Types.ObjectId(companyId);
+    const gigOid =
+      gigId && gigId !== "all" && mongoose.Types.ObjectId.isValid(gigId)
+        ? new mongoose.Types.ObjectId(gigId)
+        : null;
+
+    // ─── 1) Validated payouts from `reptransactions` ────────────────────
+    //  We hit the raw collection (no model) because the schema lives in
+    //  another microservice. Fields used here ALL fall back via $ifNull
+    //  so a schema rename in the future won't break this endpoint.
+    let validatedRows = [];
+    if (status === "validated" || status === "all") {
+      const txMatch = { companyId: companyOid };
+      if (gigOid) txMatch.gigId = gigOid;
+      // Only count rep transactions that haven't been refused downstream
+      // (validByCompany === false means the company manually rejected it).
+      txMatch.$and = [
+        { $or: [{ validByCompany: { $ne: false } }, { validByCompany: { $exists: false } }] },
+      ];
+
+      validatedRows = await mongoose.connection.db
+        .collection("reptransactions")
+        .aggregate([
+          { $match: txMatch },
+          { $sort: { createdAt: -1 } },
+          { $limit: limit },
+          // Resolve the underlying call (for duration / score / startTime).
+          {
+            $lookup: {
+              from: "calls",
+              let: { callId: { $ifNull: ["$call", "$callId"] } },
+              pipeline: [
+                { $match: { $expr: { $eq: ["$_id", "$$callId"] } } },
+                {
+                  $project: {
+                    _id: 1,
+                    startTime: 1,
+                    duration: 1,
+                    ai_call_score: 1,
+                    ai_refusal_reason: 1,
+                    ai_call_status: 1,
+                    validByAI: 1,
+                    userId: 1,
+                    price: 1,
+                    repCallCommission: 1,
+                    platformCallCommission: 1,
+                  },
+                },
+              ],
+              as: "call",
+            },
+          },
+          { $unwind: { path: "$call", preserveNullAndEmptyArrays: true } },
+          // Resolve rep user from either rep-tx.userId/agentId or the call's userId.
+          {
+            $addFields: {
+              _repId: {
+                $ifNull: ["$userId", { $ifNull: ["$agentId", "$call.userId"] }],
+              },
+            },
+          },
+          {
+            $lookup: {
+              from: "users",
+              localField: "_repId",
+              foreignField: "_id",
+              as: "user",
+            },
+          },
+          { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: "gigs",
+              localField: "gigId",
+              foreignField: "_id",
+              as: "gig",
+            },
+          },
+          { $unwind: { path: "$gig", preserveNullAndEmptyArrays: true } },
+          {
+            $project: {
+              _id: 1,
+              createdAt: 1,
+              startTime: { $ifNull: ["$call.startTime", "$createdAt"] },
+              duration:  { $ifNull: ["$call.duration", 0] },
+              score:     { $ifNull: ["$call.ai_call_score.overall.score", null] },
+              gigId: 1,
+              gigName: { $ifNull: ["$gig.title", null] },
+              repId: "$_repId",
+              repName: { $ifNull: ["$user.name", null] },
+              price: { $ifNull: ["$call.price", 0] },
+              // Per-row commissions — prefer the rep-tx values, fall back
+              // to the call-level commissions for older docs.
+              repCallCommission:        { $ifNull: ["$call.repCallCommission", 0] },
+              platformCallCommission:   { $ifNull: ["$call.platformCallCommission", 0] },
+              repTransactionCommission:      { $ifNull: ["$repTransactionCommission", 0] },
+              platformTransactionCommission: { $ifNull: ["$platformTransactionCommission", 0] },
+              validByAI:       { $ifNull: ["$validByAI", { $ifNull: ["$call.validByAI", true] }] },
+              validByCompany:  { $ifNull: ["$validByCompany", null] },
+              validByReps:     { $ifNull: ["$validByReps", null] },
+              aiRefusalReason: { $ifNull: ["$call.ai_refusal_reason", null] },
+              aiCallStatus:    { $ifNull: ["$call.ai_call_status", null] },
+              source: "reptransactions",
+              hasTransaction: {
+                $gt: [{ $ifNull: ["$repTransactionCommission", 0] }, 0],
+              },
+            },
+          },
+          {
+            $addFields: {
+              totalCommission: { $add: ["$repCallCommission", "$repTransactionCommission"] },
+              platformCommission: {
+                $add: ["$platformCallCommission", "$platformTransactionCommission"],
+              },
+            },
+          },
+        ])
+        .toArray();
+    }
+
+    // ─── 2) Refused calls from `calls` (no rep-tx ever created) ─────────
+    let refusedRows = [];
+    if (status === "refused" || status === "all") {
+      const refusedMatch = { companyId: companyOid };
+      if (gigOid) refusedMatch.gigId = gigOid;
+      refusedMatch.validByAI = false;
+      refusedMatch.ai_call_status = "scored";
+
+      refusedRows = await Call.aggregate([
+        { $match: refusedMatch },
+        { $sort: { createdAt: -1 } },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: "users",
+            localField: "userId",
+            foreignField: "_id",
+            as: "user",
+          },
+        },
+        { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: "gigs",
+            localField: "gigId",
+            foreignField: "_id",
+            as: "gig",
+          },
+        },
+        { $unwind: { path: "$gig", preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            _id: 1,
+            createdAt: 1,
+            startTime: 1,
+            duration: { $ifNull: ["$duration", 0] },
+            score:    { $ifNull: ["$ai_call_score.overall.score", null] },
+            gigId: 1,
+            gigName: { $ifNull: ["$gig.title", null] },
+            repId: "$userId",
+            repName: { $ifNull: ["$user.name", null] },
+            price: { $ifNull: ["$price", 0] },
+            repCallCommission:        { $literal: 0 },
+            platformCallCommission:   { $literal: 0 },
+            repTransactionCommission:      { $literal: 0 },
+            platformTransactionCommission: { $literal: 0 },
+            validByAI:       { $literal: false },
+            validByCompany:  { $literal: null },
+            validByReps:     { $literal: null },
+            aiRefusalReason: { $ifNull: ["$ai_refusal_reason", null] },
+            aiCallStatus:    { $ifNull: ["$ai_call_status", null] },
+            source: { $literal: "calls" },
+            hasTransaction: { $literal: false },
+            totalCommission: { $literal: 0 },
+            platformCommission: { $literal: 0 },
+          },
+        },
+      ]);
+    }
+
+    // Merge + sort + cap when status === "all".
+    const rows =
+      status === "validated"
+        ? validatedRows
+        : status === "refused"
+        ? refusedRows
+        : [...validatedRows, ...refusedRows]
+            .sort((a, b) => {
+              const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+              const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+              return tb - ta;
+            })
+            .slice(0, limit);
+
+    res.json({
+      success: true,
+      source: "reptransactions",
+      payouts: rows.map((r) => ({
+        ...r,
+        _id: String(r._id),
+        gigId: r.gigId ? String(r.gigId) : null,
+        repId: r.repId ? String(r.repId) : null,
+      })),
+    });
+  } catch (err) {
+    console.error("Error in analytics/rep-payouts:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 };
