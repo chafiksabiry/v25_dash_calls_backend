@@ -136,7 +136,7 @@ const getChildCalls = async (parentCallSid, userId) => {
   }
 };
 
-const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred) => {
+const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred, isVoicemail, appointmentAt, callbackAt) => {
   try {
     // Normalize call data
     const call = callData || {};
@@ -187,8 +187,30 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       updatedAt: new Date()
     };
 
-    if (transactionOccurred !== undefined && transactionOccurred !== null) {
-      update.transactionOccurred = transactionOccurred;
+    if (isVoicemail) {
+      update.validByAI = false;
+      update.valid = false;
+      update.ai_call_status = 'auto_refused';
+      update.callOutcome = 'voicemail';
+      update.callOutcomeSource = 'rep';
+      update.ai_refusal_reason = 'Appel sur messagerie vocale (déclaré par le rep)';
+    } else {
+      if (transactionOccurred !== undefined && transactionOccurred !== null) {
+        update.transactionOccurred = transactionOccurred;
+      }
+      if (appointmentAt) {
+        update.appointmentAt = appointmentAt;
+        update.callOutcome = 'appointment';
+        update.callOutcomeSource = 'rep';
+        update.validByAI = true;
+        update.valid = true;
+      } else if (callbackAt) {
+        update.callbackAt = callbackAt;
+        update.callOutcome = 'callback_requested';
+        update.callOutcomeSource = 'rep';
+        update.validByAI = true;
+        update.valid = true;
+      }
     }
 
     if (call.ChildCallSid) {

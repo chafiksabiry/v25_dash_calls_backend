@@ -735,7 +735,7 @@ exports.getTwilioToken = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred } = req.body;
+  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred, isVoicemail, appointmentAt, callbackAt } = req.body;
   const actualCallSid = CallSid || callSid;
 
   if (!actualCallSid) {
@@ -753,7 +753,10 @@ exports.saveCallToDB = async (req, res) => {
       gigId,
       companyId,
       userId,
-      transactionOccurred
+      transactionOccurred,
+      isVoicemail,
+      appointmentAt,
+      callbackAt
     );
 
     // Trigger automatic background analysis
