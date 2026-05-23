@@ -479,6 +479,11 @@ exports.endCall = async (req, res) => {
     // Populate lead data
     call = await Call.findById(call._id).populate('agent').populate('lead');
 
+    // Trigger automatic background analysis
+    if (call && call._id) {
+      runAnalysisInBackground(call._id);
+    }
+
     res.status(200).json({
       success: true,
       data: call
@@ -750,6 +755,12 @@ exports.saveCallToDB = async (req, res) => {
       userId,
       transactionOccurred
     );
+
+    // Trigger automatic background analysis
+    if (callDetails && callDetails._id) {
+      runAnalysisInBackground(callDetails._id);
+    }
+
     res.json(callDetails);
   } catch (error) {
     console.error('Error in saveCallToDB controller:', error);
@@ -810,6 +821,12 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
   const { phoneNumber, callSid } = req.body;
   try {
     const callDetails = await qalqulService.storeCallsInDBatEndingCall(phoneNumber, callSid);
+
+    // Trigger automatic background analysis
+    if (callDetails && callDetails._id) {
+      runAnalysisInBackground(callDetails._id);
+    }
+
     res.status(200).json({ success: true, data: callDetails });
   } catch (error) {
     console.error('Error storing call:', error);
@@ -951,6 +968,41 @@ function detectAiScoring(scores) {
 }
 exports.detectAiScoring = detectAiScoring;
 
+const runAnalysisInBackground = (callId) => {
+  console.log(`🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in 5 seconds...`);
+  setTimeout(async () => {
+    try {
+      const call = await Call.findById(callId);
+      if (!call) {
+        console.warn(`⚠️ [AutoAnalysis] Call ${callId} not found, aborting analysis.`);
+        return;
+      }
+      const alreadyScored = call.validByAI === true || call.validByAI === false || 
+                           call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused';
+      if (alreadyScored) {
+        console.log(`🤖 [AutoAnalysis] Call ${callId} is already scored or processed. Skipping.`);
+        return;
+      }
+
+      console.log(`🤖 [AutoAnalysis] Running background analysis for call: ${callId}`);
+      const mockReq = { params: { id: callId }, body: {} };
+      const mockRes = {
+        status: function(code) {
+          this.statusCode = code;
+          return this;
+        },
+        json: function(data) {
+          console.log(`🤖 [AutoAnalysis] Background analysis finished for ${callId} with status ${this.statusCode || 200}:`, data.success ? 'Success' : data.message);
+          return this;
+        }
+      };
+      await exports.analyzeCall(mockReq, mockRes);
+    } catch (err) {
+      console.error(`❌ [AutoAnalysis] Background analysis failed for call ${callId}:`, err);
+    }
+  }, 5000);
+};
+
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1057,10 +1109,12 @@ exports.analyzeCall = async (req, res) => {
     let transcriptData = call.transcript || [];
     
     // Real Audio Transcription if no transcript exists and recording is available
-    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && call.recording_url_cloudinary) {
+    const hasRecording = call.recording_url_cloudinary || call.recording_url;
+    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && hasRecording) {
         console.log(`🎙️ [CallController] Attempting real audio transcription for call ${id}...`);
         try {
-          const realTranscript = await vertexAIService.transcribeAudioFromUrl(call.recording_url_cloudinary);
+          const recordingUrl = call.recording_url_cloudinary || call.recording_url;
+          const realTranscript = await vertexAIService.transcribeAudioFromUrl(recordingUrl);
           if (realTranscript && realTranscript.length > 0) {
             transcriptData = realTranscript;
             console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
@@ -1073,7 +1127,7 @@ exports.analyzeCall = async (req, res) => {
     }
 
     // Fallback if transcription failed or no recording
-    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && !call.recording_url_cloudinary) {
+    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && !hasRecording) {
        return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
