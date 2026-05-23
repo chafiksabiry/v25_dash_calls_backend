@@ -53,8 +53,8 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
 
     ### **CONSIGNES DE RÉDACTION DU FEEDBACK :**
     - **Langues :** Tu dois rédiger deux versions pour chaque feedback :
-      1. Une version en **FRANÇAIS** dans le champ `"feedback_fr"` et dans le champ `"feedback"`.
-      2. Une version en **ANGLAIS** dans le champ `"feedback_en"`.
+      1. Une version en **FRANÇAIS** dans le champ \`"feedback_fr"\` et dans le champ \`"feedback"\`.
+      2. Une version en **ANGLAIS** dans le champ \`"feedback_en"\`.
     - **Style :** Direct, professionnel, chirurgical. Évite les phrases génériques comme "L'agent a été bon".
     - **Preuves :** Cite des extraits courts entre guillemets pour justifier tes notes (en français dans \`feedback_fr\` / \`feedback\`, en anglais dans \`feedback_en\`).
 
