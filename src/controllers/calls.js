@@ -1128,8 +1128,10 @@ exports.analyzeCall = async (req, res) => {
     const isNonProductiveCall = VOICEMAIL_REGEX.test(overallFeedback);
 
     if (isNonProductiveCall) {
-      const NON_EVAL_FEEDBACK =
+      const NON_EVAL_FEEDBACK_FR =
         "Critère non évaluable — appel non productif (messagerie / aucun échange exploitable).";
+      const NON_EVAL_FEEDBACK_EN =
+        "Criterion not evaluable — non-productive call (voicemail / no exploitable exchange).";
       const NEUTRALISE_KEYS = [
         "Agent fluency",
         "Sentiment analysis",
@@ -1145,17 +1147,21 @@ exports.analyzeCall = async (req, res) => {
       ];
       for (const k of NEUTRALISE_KEYS) {
         if (scores[k] && typeof scores[k] === "object") {
-          scores[k].score    = 0;
-          scores[k].feedback = NON_EVAL_FEEDBACK;
-          scores[k].passed   = false;
+          scores[k].score       = 0;
+          scores[k].feedback    = NON_EVAL_FEEDBACK_FR;
+          scores[k].feedback_fr = NON_EVAL_FEEDBACK_FR;
+          scores[k].feedback_en = NON_EVAL_FEEDBACK_EN;
+          scores[k].passed      = false;
         }
       }
       // Fraud detection follows reversed semantics (high = clean). A
       // voicemail must NOT raise the fraud flag, so we pin it at 100 / pass.
       if (scores["Fraud detection"] && typeof scores["Fraud detection"] === "object") {
-        scores["Fraud detection"].score    = 100;
-        scores["Fraud detection"].feedback = "Aucun signal de fraude — appel non productif.";
-        scores["Fraud detection"].passed   = true;
+        scores["Fraud detection"].score       = 100;
+        scores["Fraud detection"].feedback    = "Aucun signal de fraude — appel non productif.";
+        scores["Fraud detection"].feedback_fr = "Aucun signal de fraude — appel non productif.";
+        scores["Fraud detection"].feedback_en = "No fraud signal — non-productive call.";
+        scores["Fraud detection"].passed      = true;
       }
       scores.transaction_detected = false;
       scores.refusal_detected     = false;
@@ -1258,8 +1264,10 @@ exports.analyzeCall = async (req, res) => {
     // Use the LLM's overall feedback as a starter summary. A dedicated
     // /audio/summarize prompt can replace this later without changing the
     // schema.
-    if (scores && scores.overall && typeof scores.overall.feedback === 'string') {
-      call.ai_summary = scores.overall.feedback;
+    if (scores && scores.overall) {
+      call.ai_summary = scores.overall.feedback || scores.overall.feedback_fr || '';
+      call.ai_summary_fr = scores.overall.feedback_fr || scores.overall.feedback || '';
+      call.ai_summary_en = scores.overall.feedback_en || '';
     }
     call.flags = {
       fraud:               fraudScore < 50,

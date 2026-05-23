@@ -13,7 +13,9 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
         scriptJsonStructure = `
   "Script adherence": {
     "score": <0-100>,
-    "feedback": "<analyse_critique_en_français_avec_citations>"
+    "feedback": "<analyse_critique_en_français_avec_citations>",
+    "feedback_fr": "<analyse_critique_en_français_avec_citations>",
+    "feedback_en": "<critical_analysis_in_english_with_quotes>"
   },`;
     }
 
@@ -21,7 +23,7 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
     Tu es un expert en audit de qualité pour centres d'appels, reconnu pour ton impartialité et ta sévérité constructive. Ton rôle est de disséquer l'appel fourni pour identifier la moindre faille professionnelle.
 
     ### **CONTEXTE DE L'APPEL :**
-    - **Langue :** Le transcript peut mélanger le Français, l'Anglais et l'Arabe (Darija Marocain). Tu dois tout comprendre, mais **TA RÉPONSE (FEEDBACK) DOIT ÊTRE EXCLUSIVEMENT EN FRANÇAIS**.
+    - **Langue :** Le transcript peut mélanger le Français, l'Anglais et l'Arabe (Darija Marocain). Tu dois tout comprendre. **TU DOIS GÉNÉRER DEUX VERSIONS DE CHAQUE FEEDBACK : UNE EN FRANÇAIS ("feedback_fr") ET UNE EN ANGLAIS ("feedback_en"). LE FEEDBACK DE BASE ("feedback") SERA UNE COPIE DE LA VERSION FRANÇAISE.**
     - **Acteurs :** [Agent] (le commercial) vs [Customer] (le prospect).
 
     ### **CRITÈRES D'ÉVALUATION (SOIS TRÈS CRITIQUE) :**
@@ -43,34 +45,93 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
     8. **PAS AU COURANT :** Le prospect a-t-il indiqué ne pas être au courant de l'appel, du produit, d'un formulaire préalable, ou de la démarche ?
        - Score élevé (>= 50) si le prospect exprime une surprise ou une méconnaissance totale de la raison du démarchage.
     9. **DÉJÀ ÉQUIPÉS :** Le prospect a-t-il mentionné qu'il dispose déjà d'un produit similaire, d'un contrat, d'un prestataire, d'une solution ou d'un fournisseur existant ?
-       - Score élevé (>= 50) si l'objection "déjà équipé", "déjà sous contrat", "déjà un fournisseur" ou "déjà chez un concurrent" est soulevée.
+       - Score élevé (>= 50) si l'objection "déjà équipé", "déjà sous contrat", "déjà un fournisseur" ou "déjà chez un concurrent" is soulevée.
     10. **RDV :** L'appel a-t-il abouti à une prise de rendez-vous (date/heure programmée ou demande explicite de rappel planifié) ?
         - Score élevé (>= 50) si un rendez-vous futur a été convenu.
     11. **A plus tard :** Le prospect a-t-il demandé à écourter, reporter l'appel ou à être rappelé plus tard à un moment plus opportun ?
         - Score élevé (>= 50) si le prospect demande "rappelez-moi plus tard", "je n'ai pas le temps", "demain", etc.
 
     ### **CONSIGNES DE RÉDACTION DU FEEDBACK :**
-    - **Langue :** FRANÇAIS UNIQUEMENT.
+    - **Langues :** Tu dois rédiger deux versions pour chaque feedback :
+      1. Une version en **FRANÇAIS** dans le champ `"feedback_fr"` et dans le champ `"feedback"`.
+      2. Une version en **ANGLAIS** dans le champ `"feedback_en"`.
     - **Style :** Direct, professionnel, chirurgical. Évite les phrases génériques comme "L'agent a été bon".
-    - **Preuves :** Cite des extraits courts entre guillemets pour justifier tes notes.
+    - **Preuves :** Cite des extraits courts entre guillemets pour justifier tes notes (en français dans \`feedback_fr\` / \`feedback\`, en anglais dans \`feedback_en\`).
 
     ### **FORMAT JSON STRICT (RETOURNE UNIQUEMENT LE JSON) :**
     \`\`\`json
     {
-      "Agent fluency": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Sentiment analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Fraud detection": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Script coherence": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Argumentation": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_avec_citations>" },
-      "Transaction analysis": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_expliquant_si_une_transaction_a_été_conclue_ou_non>" },
-      "PAS INTÉRESSÉS": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_le_prospect_est_intéressé_ou_non>" },
-      "PAS AU COURANT": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_expliquant_si_le_prospect_est_au_courant_de_la_démarche>" },
-      "DÉJÀ ÉQUIPÉS": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_le_prospect_est_déjà_équipé_ou_a_déjà_un_fournisseur/concurrent>" },
-      "RDV": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_un_rendez-vous_a_été_pris>" },
-      "A plus tard": { "score": <0-100>, "feedback": "<analyse_détaillée_en_français_indiquant_si_un_report/rappel_a_été_demandé>" },${scriptJsonStructure}
+      "Agent fluency": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "Sentiment analysis": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "Fraud detection": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "Script coherence": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "Argumentation": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "Transaction analysis": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "PAS INTÉRESSÉS": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "PAS AU COURANT": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "DÉJÀ ÉQUIPÉS": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "RDV": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },
+      "A plus tard": { 
+        "score": <0-100>, 
+        "feedback": "<analyse_détaillée_en_français>", 
+        "feedback_fr": "<analyse_détaillée_en_français>", 
+        "feedback_en": "<detailed_analysis_in_english>" 
+      },${scriptJsonStructure}
       "overall": {
         "score": <0-100>,
-        "feedback": "<résumé_exécutif_décisif_en_français>"
+        "feedback": "<résumé_exécutif_décisif_en_français>",
+        "feedback_fr": "<résumé_exécutif_décisif_en_français>",
+        "feedback_en": "<executive_summary_in_english>"
       },
       "transaction_detected": <true|false>,
       "refusal_detected": <true|false>
