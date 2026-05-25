@@ -227,13 +227,16 @@ exports.overview = async (req, res) => {
     };
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    const [agg] = await Call.aggregate([
-      { $match: baseMatch },
-      { $addFields: { _outcome: derivedOutcomeExpr() } },
-      {
+    const buildFacetPipeline = (rootMatch, periodFilter) => {
+      const stages = [];
+      if (rootMatch && Object.keys(rootMatch).length > 0) {
+        stages.push({ $match: rootMatch });
+      }
+      stages.push({ $addFields: { _outcome: derivedOutcomeExpr() } });
+      stages.push({
         $facet: {
           totals: [
-            { $match: periodMatch },
+            { $match: periodFilter },
             {
               $group: {
                 _id: null,
@@ -274,7 +277,7 @@ exports.overview = async (req, res) => {
             }
           ],
           statuses: [
-            { $match: periodMatch },
+            { $match: periodFilter },
             { $group: { _id: "$_outcome", count: { $sum: 1 } } }
           ],
           series7d: [
@@ -304,8 +307,26 @@ exports.overview = async (req, res) => {
             { $sort: { _id: 1 } }
           ]
         }
+      });
+      return stages;
+    };
+
+    let [agg] = await Call.aggregate(buildFacetPipeline(baseMatch, periodMatch));
+    let fallback = false;
+
+    // Fallback: company has no calls in this period → re-run the same
+    // aggregation globally over the last 30 days so the "Appels" tab and
+    // the overview KPIs always reflect real data instead of zeros.
+    const totalsRaw0 = agg?.totals?.[0];
+    if (!totalsRaw0 || (totalsRaw0.total ?? 0) === 0) {
+      const fbFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const fbPeriod = { createdAt: { $gte: fbFrom, $lte: new Date() } };
+      const [fbAgg] = await Call.aggregate(buildFacetPipeline({}, fbPeriod));
+      if (fbAgg?.totals?.[0]?.total > 0) {
+        agg = fbAgg;
+        fallback = true;
       }
-    ]);
+    }
 
     const totals = agg.totals[0] || {
       total: 0,
@@ -324,6 +345,7 @@ exports.overview = async (req, res) => {
       success: true,
       range: { from: range.from, to: range.to },
       gigId: range.gigId && range.gigId !== "all" ? range.gigId : null,
+      fallback,
       totals: {
         total: totals.total,
         serious: totals.serious,
