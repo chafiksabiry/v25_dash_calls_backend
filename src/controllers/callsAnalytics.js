@@ -493,15 +493,14 @@ exports.recent = async (req, res) => {
     const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 8));
     const gigId = req.query.gigId;
 
-    const match = { companyId: new mongoose.Types.ObjectId(companyId) };
-    if (gigId && gigId !== "all" && mongoose.Types.ObjectId.isValid(gigId)) {
-      match.gigId = new mongoose.Types.ObjectId(gigId);
-    }
-
-    const rows = await Call.aggregate([
+    // Reusable pipeline that enriches each call with rep + lead names and the
+    // derived outcome. We run it twice if needed: first scoped to the
+    // company/gig, then as a global fallback (last 2 calls anywhere) so the
+    // "Recent calls" card never appears empty for a fresh company.
+    const buildPipeline = (match, take) => [
       { $match: match },
       { $sort: { createdAt: -1 } },
-      { $limit: limit },
+      { $limit: take },
       { $addFields: { _outcome: derivedOutcomeExpr() } },
       {
         $lookup: {
@@ -550,9 +549,24 @@ exports.recent = async (req, res) => {
           from: 1
         }
       }
-    ]);
+    ];
 
-    res.json({ success: true, calls: rows });
+    const match = { companyId: new mongoose.Types.ObjectId(companyId) };
+    if (gigId && gigId !== "all" && mongoose.Types.ObjectId.isValid(gigId)) {
+      match.gigId = new mongoose.Types.ObjectId(gigId);
+    }
+
+    let rows = await Call.aggregate(buildPipeline(match, limit));
+    let fallback = false;
+
+    // Fallback: nothing on this company/gig → return the last 2 calls
+    // globally so the dashboard always shows something concrete.
+    if (rows.length === 0) {
+      rows = await Call.aggregate(buildPipeline({}, 2));
+      fallback = rows.length > 0;
+    }
+
+    res.json({ success: true, calls: rows, fallback });
   } catch (err) {
     console.error("Error in analytics/recent:", err);
     res.status(500).json({ success: false, error: err.message });
