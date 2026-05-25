@@ -168,14 +168,25 @@ function derivedOutcomeExpr() {
   };
 }
 
-// Build the $match for calls of a company, optionally scoped to a gig + a date range.
-function buildCompanyMatch(companyId, { gigId, from, to } = {}) {
+// Some legacy call documents store companyId/gigId as strings instead of
+// ObjectId — match both shapes so analytics never return 0 incorrectly.
+function buildCompanyScopeMatch(companyId, gigId) {
   const match = {
-    companyId: new mongoose.Types.ObjectId(companyId)
+    companyId: {
+      $in: [new mongoose.Types.ObjectId(companyId), companyId]
+    }
   };
   if (gigId && gigId !== "all" && mongoose.Types.ObjectId.isValid(gigId)) {
-    match.gigId = new mongoose.Types.ObjectId(gigId);
+    match.gigId = {
+      $in: [new mongoose.Types.ObjectId(gigId), gigId]
+    };
   }
+  return match;
+}
+
+// Build the $match for calls of a company, optionally scoped to a gig + a date range.
+function buildCompanyMatch(companyId, { gigId, from, to } = {}) {
+  const match = buildCompanyScopeMatch(companyId, gigId);
   if (from || to) {
     match.createdAt = {};
     if (from) match.createdAt.$gte = new Date(from);
@@ -314,17 +325,27 @@ exports.overview = async (req, res) => {
     let [agg] = await Call.aggregate(buildFacetPipeline(baseMatch, periodMatch));
     let fallback = false;
 
-    // Fallback: company has no calls in this period → re-run the same
-    // aggregation globally over the last 30 days so the "Appels" tab and
-    // the overview KPIs always reflect real data instead of zeros.
+    // Fallback when the requested period (e.g. "today") returns 0:
+    //   1) same company, last 30 days
+    //   2) any company, last 30 days (demo / fresh account)
     const totalsRaw0 = agg?.totals?.[0];
     if (!totalsRaw0 || (totalsRaw0.total ?? 0) === 0) {
       const fbFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const fbPeriod = { createdAt: { $gte: fbFrom, $lte: new Date() } };
-      const [fbAgg] = await Call.aggregate(buildFacetPipeline({}, fbPeriod));
-      if (fbAgg?.totals?.[0]?.total > 0) {
-        agg = fbAgg;
-        fallback = true;
+      const [companyFb] = await Call.aggregate(
+        buildFacetPipeline(baseMatch, fbPeriod)
+      );
+      if (companyFb?.totals?.[0]?.total > 0) {
+        agg = companyFb;
+        fallback = "company_30d";
+      } else {
+        const [globalFb] = await Call.aggregate(
+          buildFacetPipeline({}, fbPeriod)
+        );
+        if (globalFb?.totals?.[0]?.total > 0) {
+          agg = globalFb;
+          fallback = "global_30d";
+        }
       }
     }
 
@@ -535,6 +556,15 @@ exports.recent = async (req, res) => {
       { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
       {
         $lookup: {
+          from: "agents",
+          localField: "agent",
+          foreignField: "_id",
+          as: "agentDoc"
+        }
+      },
+      { $unwind: { path: "$agentDoc", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
           from: "leads",
           localField: "lead",
           foreignField: "_id",
@@ -554,18 +584,29 @@ exports.recent = async (req, res) => {
           validByAI: 1,
           summary: { $ifNull: ["$ai_summary", null] },
           ai_call_status: 1,
-          repName: { $ifNull: ["$user.name", null] },
-          leadName: {
+          repName: {
             $ifNull: [
-              "$leadDoc.name",
-              {
-                $concat: [
-                  { $ifNull: ["$leadDoc.First_Name", ""] },
-                  " ",
-                  { $ifNull: ["$leadDoc.Last_Name", ""] }
+              "$user.name",
+              "$agentDoc.personalInfo.name",
+              null
+            ]
+          },
+          leadName: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  {
+                    $concat: [
+                      { $ifNull: ["$leadDoc.First_Name", ""] },
+                      " ",
+                      { $ifNull: ["$leadDoc.Last_Name", ""] }
+                    ]
+                  },
+                  { $ifNull: ["$leadDoc.Deal_Name", ""] },
+                  ""
                 ]
               }
-            ]
+            }
           },
           to: 1,
           from: 1
@@ -573,10 +614,7 @@ exports.recent = async (req, res) => {
       }
     ];
 
-    const match = { companyId: new mongoose.Types.ObjectId(companyId) };
-    if (gigId && gigId !== "all" && mongoose.Types.ObjectId.isValid(gigId)) {
-      match.gigId = new mongoose.Types.ObjectId(gigId);
-    }
+    const match = buildCompanyScopeMatch(companyId, gigId);
 
     let rows = await Call.aggregate(buildPipeline(match, limit));
     let fallback = false;
