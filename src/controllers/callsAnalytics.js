@@ -32,6 +32,44 @@ function derivedOutcomeExpr() {
   const status = { $toLower: { $ifNull: ["$status", ""] } };
   const dur = { $ifNull: ["$duration", 0] };
   const reason = { $toLower: { $ifNull: ["$ai_refusal_reason", ""] } };
+  const toNum = { $ifNull: ["$to", ""] };
+  // Twilio `failed` + invalid destination (e.g. +3362398470855 = 11 digits after +33).
+  const invalidPhoneExpr = {
+    $or: [
+      {
+        $and: [
+          { $regexMatch: { input: toNum, regex: /^\+33/ } },
+          {
+            $not: {
+              $regexMatch: { input: toNum, regex: /^\+33[1-9]\d{8}$/ }
+            }
+          }
+        ]
+      },
+      {
+        $and: [
+          { $regexMatch: { input: toNum, regex: /^\+/ } },
+          { $gt: [{ $strLenCP: toNum }, 15] }
+        ]
+      }
+    ]
+  };
+  const telephonyWrongNumberExpr = {
+    $or: [
+      {
+        $regexMatch: {
+          input: reason,
+          regex:
+            "invalid|no.?route|wrong|format|faux|numéro|unallocated|not found|not a valid"
+        }
+      },
+      invalidPhoneExpr
+    ]
+  };
+  // Override persisted `no_answer` when telephony failed due to bad number.
+  const failedWrongNumberExpr = {
+    $and: [{ $eq: [status, "failed"] }, telephonyWrongNumberExpr]
+  };
   const fraudScore = { $ifNull: ["$ai_call_score.Fraud detection.score", null] };
   const sentimentScore = { $ifNull: ["$ai_call_score.Sentiment analysis.score", 0] };
   const argScore = { $ifNull: ["$argumentation_score", 0] };
@@ -124,7 +162,9 @@ function derivedOutcomeExpr() {
   return {
     $switch: {
       branches: [
-        // Use the persisted outcome whenever we have one.
+        // Failed + invalid `to` or error reason → faux numéro (even if DB has no_answer).
+        { case: failedWrongNumberExpr, then: "wrong_number" },
+        // Use the persisted outcome for all other cases.
         {
           case: { $ne: [{ $ifNull: ["$callOutcome", null] }, null] },
           then: "$callOutcome"
@@ -140,13 +180,7 @@ function derivedOutcomeExpr() {
         {
           case: { $eq: [status, "failed"] },
           then: {
-            $cond: [
-              {
-                $regexMatch: { input: reason, regex: "invalid|no.?route|wrong|format" }
-              },
-              "wrong_number",
-              "no_answer"
-            ]
+            $cond: [telephonyWrongNumberExpr, "wrong_number", "no_answer"]
           }
         },
         {
@@ -214,6 +248,35 @@ function validateCompanyId(companyId, res) {
     return false;
   }
   return true;
+}
+
+/** Pad sparse Mongo $group rows into a full 7-day UTC series (zeros included). */
+function fillSeries7d(rawRows) {
+  const byDate = {};
+  for (const row of rawRows || []) {
+    const key = row.date || row._id;
+    if (!key) continue;
+    byDate[key] = row;
+  }
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const row = byDate[key];
+    out.push({
+      date: key,
+      total: row?.total ?? 0,
+      serious: row?.serious ?? 0,
+      transactions: row?.transactions ?? 0
+    });
+  }
+  return out;
+}
+
+function series7dTotal(rows) {
+  return (rows || []).reduce((sum, r) => sum + (r.total || 0), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,32 +385,12 @@ exports.overview = async (req, res) => {
       return stages;
     };
 
-    let [agg] = await Call.aggregate(buildFacetPipeline(baseMatch, periodMatch));
-    let fallback = false;
-
-    // Fallback when the requested period (e.g. "today") returns 0:
-    //   1) same company, last 30 days
-    //   2) any company, last 30 days (demo / fresh account)
-    const totalsRaw0 = agg?.totals?.[0];
-    if (!totalsRaw0 || (totalsRaw0.total ?? 0) === 0) {
-      const fbFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      const fbPeriod = { createdAt: { $gte: fbFrom, $lte: new Date() } };
-      const [companyFb] = await Call.aggregate(
-        buildFacetPipeline(baseMatch, fbPeriod)
-      );
-      if (companyFb?.totals?.[0]?.total > 0) {
-        agg = companyFb;
-        fallback = "company_30d";
-      } else {
-        const [globalFb] = await Call.aggregate(
-          buildFacetPipeline({}, fbPeriod)
-        );
-        if (globalFb?.totals?.[0]?.total > 0) {
-          agg = globalFb;
-          fallback = "global_30d";
-        }
-      }
-    }
+    const [agg] = await Call.aggregate(buildFacetPipeline(baseMatch, periodMatch));
+    // Strict company scope: never fall back to global / cross-company data.
+    // If this company has no calls in the requested period, we surface zeros
+    // — showing other companies' numbers in a dashboard labelled with this
+    // company name would be misleading.
+    const fallback = false;
 
     const totals = agg.totals[0] || {
       total: 0,
@@ -362,6 +405,15 @@ exports.overview = async (req, res) => {
         ? Math.round(totals.sumDurationSerious / totals.serious)
         : 0;
 
+    const series7dRaw = (agg?.series7d || []).map((s) => ({
+      date: s._id,
+      total: s.total,
+      serious: s.serious,
+      transactions: s.transactions ?? 0
+    }));
+    // No global fallback for the chart either — keep it strictly scoped to
+    // this company so the dashboard never mixes in other companies' data.
+
     res.json({
       success: true,
       range: { from: range.from, to: range.to },
@@ -375,13 +427,8 @@ exports.overview = async (req, res) => {
         unreachable: totals.unreachable,
         avgDuration
       },
-      statuses: agg.statuses.map((s) => ({ outcome: s._id, count: s.count })),
-      series7d: agg.series7d.map((s) => ({
-        date: s._id,
-        total: s.total,
-        serious: s.serious,
-        transactions: s.transactions ?? 0
-      }))
+      statuses: (agg.statuses || []).map((s) => ({ outcome: s._id, count: s.count })),
+      series7d: fillSeries7d(series7dRaw)
     });
   } catch (err) {
     console.error("Error in analytics/overview:", err);
@@ -615,18 +662,11 @@ exports.recent = async (req, res) => {
     ];
 
     const match = buildCompanyScopeMatch(companyId, gigId);
+    // Strict company scope: never display calls from other companies, even
+    // when this company has no calls yet. Empty arrays are the correct UX.
+    const rows = await Call.aggregate(buildPipeline(match, limit));
 
-    let rows = await Call.aggregate(buildPipeline(match, limit));
-    let fallback = false;
-
-    // Fallback: nothing on this company/gig → return the last 2 calls
-    // globally so the dashboard always shows something concrete.
-    if (rows.length === 0) {
-      rows = await Call.aggregate(buildPipeline({}, 2));
-      fallback = rows.length > 0;
-    }
-
-    res.json({ success: true, calls: rows, fallback });
+    res.json({ success: true, calls: rows, fallback: false });
   } catch (err) {
     console.error("Error in analytics/recent:", err);
     res.status(500).json({ success: false, error: err.message });
