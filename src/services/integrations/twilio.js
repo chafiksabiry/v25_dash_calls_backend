@@ -68,14 +68,24 @@ const getCallDetails = async (callSid, userId) => {
         const format = "mp3";
         recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/Recordings/${recordingSid}.${format}`;
         console.log(`✅ [TwilioService] Found recording URL on attempt ${attempt}: ${recordingUrl}`);
-      } else if (attempt < MAX_RETRIES) {
-        console.log(`⏳ [TwilioService] No recording found for SID: ${callSid}. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-        continue;
-      }
+      } else {
+        // For failed/unanswered calls there will never be a recording.
+        // Skip the retry loop immediately so we don't waste 10 s waiting.
+        const childStatus = (callFils[0]?.status || '').toLowerCase();
+        const noRecordingStatuses = new Set(['failed', 'busy', 'no-answer', 'noanswer', 'canceled', 'cancelled']);
+        const neverHasRecording = noRecordingStatuses.has(childStatus) ||
+          (childStatus === 'completed' && (callParent.duration || 0) == 0);
 
-      if (!recordingUrl) {
-        console.warn(`⚠️ [TwilioService] No recording found after ${MAX_RETRIES} attempts for SID: ${callSid}`);
+        if (neverHasRecording) {
+          console.log(`⚡ [TwilioService] No recording expected for ${childStatus} call — skipping retries.`);
+          // fall through to return below
+        } else if (attempt < MAX_RETRIES) {
+          console.log(`⏳ [TwilioService] No recording found for SID: ${callSid}. Retrying (Attempt ${attempt}/${MAX_RETRIES})...`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+          continue;
+        } else {
+          console.warn(`⚠️ [TwilioService] No recording found after ${MAX_RETRIES} attempts for SID: ${callSid}`);
+        }
       }
 
       let parentPrice = callParent.price ? Math.abs(parseFloat(callParent.price)) : 0;
