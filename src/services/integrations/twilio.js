@@ -133,6 +133,7 @@ const getChildCalls = async (parentCallSid, userId) => {
       from: call.from,
       to: call.to,
       status: call.status,
+      errorCode: call.errorCode ?? null,   // e.g. 21211 / 21214 / 13224 for failed dials
       startTime: call.startTime,
       endTime: call.endTime,
       duration: call.duration,
@@ -323,19 +324,37 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     if (isUnanswered && result.validByAI == null) {
       try {
-        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'})`;
+        // Determine callOutcome immediately so dashboard shows correct label
+        // without waiting for the 5-second background analyzeCall pass.
+        const resultErrCode = result.twilioErrorCode ? Number(result.twilioErrorCode) : null;
+        const WRONG_NUMBER_CODES = new Set([21211, 21214, 13224]);
+        let immediateOutcome;
+        if (callStatus === 'failed' || (resultErrCode && WRONG_NUMBER_CODES.has(resultErrCode))) {
+          immediateOutcome = 'wrong_number';
+        } else if (callStatus === 'busy') {
+          immediateOutcome = 'busy';
+        } else {
+          immediateOutcome = 'no_answer';
+        }
+
+        const errSuffix = resultErrCode ? `, ErrorCode: ${resultErrCode}` : '';
+        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'}${errSuffix})`;
         const refused = await Call.findOneAndUpdate(
           { _id: result._id },
           {
             $set: {
               validByAI: false,
-              ai_refusal_reason: refusalReason
+              ai_refusal_reason: refusalReason,
+              callOutcome: immediateOutcome,
+              callOutcomeSource: 'system',
+              ai_call_status: 'auto_refused',
             }
           },
           { new: true }
         );
         result.validByAI = false;
         result.ai_refusal_reason = refusalReason;
+        result.callOutcome = immediateOutcome;
         console.log(`🚫 [TwilioService] Call ${callSid} auto-refused (${callStatus}) — skipping AI analysis.`);
         // Best-effort: poke the orchestrator so its rep/company reconciliation
         // counters re-sync without waiting for the next manual refresh.
