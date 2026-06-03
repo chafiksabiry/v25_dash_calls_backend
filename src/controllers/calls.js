@@ -970,10 +970,10 @@ function classifyCallOutcome({
   if (s === 'busy') return 'busy';
   if (['no-answer', 'noanswer', 'canceled', 'cancelled'].includes(s)) return 'no_answer';
   if (s === 'failed') {
-    // Twilio "failed" often = invalid number / no route. We treat it as
-    // wrong_number to surface the bad-data signal in dashboards.
-    if (/invalid|no.?route|wrong|format/i.test(reason)) return 'wrong_number';
-    return 'no_answer';
+    // Twilio "failed" = call could not be placed at all (invalid number, no route,
+    // carrier rejected). Always surface as wrong_number — distinct from no-answer
+    // (which means the call rang but was not picked up).
+    return 'wrong_number';
   }
   // Completed with no audio and duration 0 → answering machine pickup.
   if (s === 'completed' && dur === 0 && !hasRecording) return 'voicemail';

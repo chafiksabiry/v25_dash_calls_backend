@@ -162,8 +162,10 @@ function derivedOutcomeExpr() {
   return {
     $switch: {
       branches: [
-        // Failed + invalid `to` or error reason → faux numéro (even if DB has no_answer).
-        { case: failedWrongNumberExpr, then: "wrong_number" },
+        // Twilio "failed" = call could not be placed at all (invalid number, no route,
+        // carrier rejected). Always wrong_number, even if DB has "no_answer" persisted
+        // from an older classification pass.
+        { case: { $eq: [status, "failed"] }, then: "wrong_number" },
         // Use the persisted outcome for all other cases.
         {
           case: { $ne: [{ $ifNull: ["$callOutcome", null] }, null] },
@@ -179,9 +181,7 @@ function derivedOutcomeExpr() {
         },
         {
           case: { $eq: [status, "failed"] },
-          then: {
-            $cond: [telephonyWrongNumberExpr, "wrong_number", "no_answer"]
-          }
+          then: "wrong_number"
         },
         {
           case: {
