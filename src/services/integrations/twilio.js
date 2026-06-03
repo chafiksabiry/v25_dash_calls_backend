@@ -85,13 +85,22 @@ const getCallDetails = async (callSid, userId) => {
       }
       const totalPrice = parentPrice + childPrice;
 
+      // Resolve the effective status and error code: prefer child call (the
+      // leg that actually dials the customer) over the parent (TwiML bridge).
+      const effectiveStatus = callFils[0]?.status || callParent.status;
+      // Twilio SDK exposes errorCode (camelCase) on the Call resource.
+      // For failed calls this is the 5-digit code (21211, 21214, 13224 …).
+      const effectiveErrorCode =
+        callFils[0]?.errorCode ?? callParent.errorCode ?? null;
+
       return {
         ParentCallSid: callSid,
         ChildCallSid: callFils[0]?.sid || null,
         duration: callParent.duration,
         from: callFils[0]?.from || callParent.from,
         to: callFils[0]?.to || callParent.to,
-        status: callFils[0]?.status || callParent.status,
+        status: effectiveStatus,
+        errorCode: effectiveErrorCode,   // e.g. 21211 | 21214 | 13224
         startTime: callParent.startTime,
         endTime: callParent.endTime,
         direction: callFils[0]?.direction || callParent.direction,
