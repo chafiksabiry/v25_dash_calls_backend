@@ -735,8 +735,10 @@ exports.getTwilioToken = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred, isVoicemail, appointmentAt, callbackAt } = req.body;
+  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred, isVoicemail, appointmentAt, callbackAt, ErrorCode, errorCode } = req.body;
   const actualCallSid = CallSid || callSid;
+  // Twilio error code (21211 = invalid number, 21214 = unreachable, 13224 = cannot dial)
+  const twilioErrorCode = ErrorCode || errorCode ? Number(ErrorCode || errorCode) : null;
 
   if (!actualCallSid) {
     return res.status(400).json({ message: 'Call SID is required' });
@@ -758,6 +760,11 @@ exports.saveCallToDB = async (req, res) => {
       appointmentAt,
       callbackAt
     );
+
+    // Persist Twilio error code if provided (available at call-end from Twilio webhook)
+    if (callDetails?._id && twilioErrorCode) {
+      await Call.updateOne({ _id: callDetails._id }, { $set: { twilioErrorCode } }).catch(() => {});
+    }
 
     // Trigger automatic background analysis
     if (callDetails && callDetails._id) {
@@ -947,6 +954,9 @@ exports.getPersonalityAnalysis = async (req, res) => {
 //    3. Otherwise (no LLM run yet, or auto-refused) → cheap heuristics
 //       (duration, telephony status) for a best-effort label.
 // ────────────────────────────────────────────────────────────────────────────
+// Twilio error codes that explicitly indicate an invalid/unreachable number.
+const TWILIO_WRONG_NUMBER_CODES = new Set([21211, 21214, 13224]);
+
 function classifyCallOutcome({
   status,
   duration,
@@ -961,10 +971,12 @@ function classifyCallOutcome({
   sentimentScore,
   overallScore,
   refusalReason,
+  twilioErrorCode,
 }) {
   const s = String(status || '').toLowerCase();
   const dur = Number(duration) || 0;
   const reason = String(refusalReason || '').toLowerCase();
+  const errCode = twilioErrorCode ? Number(twilioErrorCode) : null;
 
   // 1) Telephony-level outcomes — short-circuit before AI logic.
   if (s === 'busy') return 'busy';
@@ -973,8 +985,12 @@ function classifyCallOutcome({
     // Twilio "failed" = call could not be placed at all (invalid number, no route,
     // carrier rejected). Always surface as wrong_number — distinct from no-answer
     // (which means the call rang but was not picked up).
+    // Error codes 21211 (invalid number), 21214 (unreachable), 13224 (cannot dial)
+    // all confirm wrong_number, but we treat all failed calls the same way.
     return 'wrong_number';
   }
+  // Explicit Twilio error code for bad number even if status is not "failed"
+  if (errCode && TWILIO_WRONG_NUMBER_CODES.has(errCode)) return 'wrong_number';
   // Completed with no audio and duration 0 → answering machine pickup.
   if (s === 'completed' && dur === 0 && !hasRecording) return 'voicemail';
 
@@ -1101,7 +1117,9 @@ exports.analyzeCall = async (req, res) => {
       (callStatus === 'completed' && (call.duration || 0) === 0 && !call.recording_url_cloudinary);
 
     if (looksUnanswered) {
-      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'})`;
+      const errCode = call.twilioErrorCode ? Number(call.twilioErrorCode) : null;
+      const errSuffix = errCode ? `, ErrorCode: ${errCode}` : '';
+      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix})`;
       const callOutcome = classifyCallOutcome({
         status: callStatus,
         duration: call.duration,
@@ -1116,6 +1134,7 @@ exports.analyzeCall = async (req, res) => {
         sentimentScore: 0,
         overallScore: 0,
         refusalReason,
+        twilioErrorCode: errCode,
       });
       const updated = await Call.findByIdAndUpdate(
         id,

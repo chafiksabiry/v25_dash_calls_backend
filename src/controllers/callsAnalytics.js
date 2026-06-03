@@ -159,6 +159,10 @@ function derivedOutcomeExpr() {
     ]
   };
 
+  const errCode = { $ifNull: ["$twilioErrorCode", 0] };
+  // Twilio error codes that unambiguously mean "invalid / unreachable number"
+  const wrongNumberErrCodeExpr = { $in: [errCode, [21211, 21214, 13224]] };
+
   return {
     $switch: {
       branches: [
@@ -166,6 +170,8 @@ function derivedOutcomeExpr() {
         // carrier rejected). Always wrong_number, even if DB has "no_answer" persisted
         // from an older classification pass.
         { case: { $eq: [status, "failed"] }, then: "wrong_number" },
+        // Explicit Twilio error codes for bad/unreachable number even if status != failed.
+        { case: wrongNumberErrCodeExpr, then: "wrong_number" },
         // Use the persisted outcome for all other cases.
         {
           case: { $ne: [{ $ifNull: ["$callOutcome", null] }, null] },

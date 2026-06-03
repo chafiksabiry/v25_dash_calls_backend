@@ -271,6 +271,11 @@ const callSchema = new mongoose.Schema({
     enum: ['ai', 'rep', 'system'],
     default: null,
   },
+  /** Twilio error code returned when status is "failed" (e.g. 21211 = invalid
+   *  number, 21214 = unreachable, 13224 = cannot dial). Used alongside
+   *  status="failed" to classify the call as wrong_number. */
+  twilioErrorCode: { type: Number, default: null, index: true },
+
   /** Scheduled callback if the lead asked to be re-called. Drives the
    *  Leads view "À rappeler aujourd'hui / Cette semaine" KPI. */
   callbackAt: { type: Date, default: null, index: true },
