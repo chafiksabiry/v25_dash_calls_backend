@@ -1099,6 +1099,32 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
+    // Idempotent: return existing results when analysis already finished.
+    if (call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused') {
+      const hasScores = detectAiScoring(call.ai_call_score);
+      if (hasScores || call.ai_call_status === 'auto_refused') {
+        return res.json({
+          success: true,
+          message: 'Call already analyzed',
+          alreadyAnalyzed: true,
+          data: call.ai_call_score,
+          transcript: call.transcript,
+          validByAI: call.validByAI,
+          callOutcome: call.callOutcome,
+        });
+      }
+    }
+
+    // Another worker (usually auto-analysis after store-call) is already running.
+    if (call.ai_call_status === 'processing') {
+      return res.status(202).json({
+        success: true,
+        inProgress: true,
+        message: 'Analysis already in progress for this call.',
+        ai_call_status: 'processing',
+      });
+    }
+
     // Atomically claim this call for analysis. Multiple triggers can fire for
     // the same call within seconds (the in-process background auto-analysis
     // and the frontend's manual /analyze POST). Running two analyses in
@@ -1111,9 +1137,12 @@ exports.analyzeCall = async (req, res) => {
       { $set: { ai_call_status: 'processing' } }
     );
     if (!claimed) {
-      return res.status(409).json({
-        success: false,
-        message: 'Analysis already in progress for this call.'
+      // Race: status flipped to `processing` between the read above and the claim.
+      return res.status(202).json({
+        success: true,
+        inProgress: true,
+        message: 'Analysis already in progress for this call.',
+        ai_call_status: 'processing',
       });
     }
     call.ai_call_status = 'processing';
