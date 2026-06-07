@@ -383,31 +383,15 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       }
     }
 
-    // 🤖 Automated AI Analysis — runs `analyzeCall` asynchronously so it
-    // populates `validByAI`, scores, transcript & triggers reconciliation
-    // (RepTransaction + WalletCompany debit) the moment a call finishes.
-    // We only skip if the call has already been scored (including the
-    // auto-refusal above).
-    const alreadyScored = result.validByAI === true || result.validByAI === false
-      || (result.ai_call_score && result.ai_call_score.overall && result.ai_call_score.overall.score);
-    if (!alreadyScored && (result.recording_url_cloudinary || (Array.isArray(result.transcript) && result.transcript.length > 0))) {
-      console.log(`🤖 [TwilioService] Auto-triggering AI analysis for call: ${result._id}`);
-      setTimeout(async () => {
-        try {
-          const selfBase = process.env.SELF_API_URL || process.env.BASE_URL || 'http://localhost:3001';
-          const url = `${selfBase.replace(/\/+$/, '')}/api/calls/${result._id}/analyze`;
-          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-          const payload = await r.json().catch(() => ({}));
-          if (r.ok && payload.success) {
-            console.log(`✅ [TwilioService] Auto AI analysis OK for call ${result._id} — validByAI=${payload.validByAI}`);
-          } else {
-            console.warn(`⚠️  [TwilioService] Auto AI analysis returned ${r.status} for call ${result._id}:`, payload.message);
-          }
-        } catch (err) {
-          console.error(`❌ [TwilioService] Auto AI analysis failed for call ${result._id}:`, err.message);
-        }
-      }, 3000);
-    }
+    // 🤖 Automated AI Analysis is intentionally NOT triggered from here.
+    // The calls controller already schedules `runAnalysisInBackground(callId)`
+    // in-process right after this store completes (see saveCallToDB /
+    // store-call / call-details handlers). Firing an extra HTTP self-call to
+    // `${SELF_API_URL || localhost:3001}/api/calls/:id/analyze` was both
+    // failing on Railway (localhost is unreachable in the container) and
+    // racing the in-process run — two concurrent `analyzeCall`s loaded the
+    // same Mongoose document and the second `save()` threw a VersionError.
+    // Keeping a single in-process analysis path removes both problems.
 
     return result;
   } catch (error) {

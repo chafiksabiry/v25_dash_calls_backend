@@ -1099,13 +1099,24 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
-    // Mark the call as "being analyzed" right away so the UI can show a real
-    // spinner instead of inferring from validByAI == null.
-    if (call.ai_call_status !== 'processing') {
-      call.ai_call_status = 'processing';
-      // Best-effort save — don't block the analyzer on this transition.
-      Call.updateOne({ _id: id }, { $set: { ai_call_status: 'processing' } }).catch(() => {});
+    // Atomically claim this call for analysis. Multiple triggers can fire for
+    // the same call within seconds (the in-process background auto-analysis
+    // and the frontend's manual /analyze POST). Running two analyses in
+    // parallel made both load the document at the same version and the second
+    // `save()` threw a Mongoose VersionError. The atomic findOneAndUpdate
+    // below lets exactly one invocation win the lock; any concurrent caller
+    // gets a clean 409 instead of crashing the analyzer.
+    const claimed = await Call.findOneAndUpdate(
+      { _id: id, ai_call_status: { $ne: 'processing' } },
+      { $set: { ai_call_status: 'processing' } }
+    );
+    if (!claimed) {
+      return res.status(409).json({
+        success: false,
+        message: 'Analysis already in progress for this call.'
+      });
     }
+    call.ai_call_status = 'processing';
 
     // ☎️  Auto-refuse calls that never reached a human. No transcript, no
     // audio → nothing for the LLM to score. We tag them as `validByAI=false`
@@ -1428,7 +1439,37 @@ exports.analyzeCall = async (req, res) => {
     if (Array.isArray(transcriptData)) {
       call.transcript = transcriptData;
     }
-    await call.save();
+
+    // Persist atomically via $set instead of `call.save()`. The loaded
+    // document can become stale during the multi-second transcription +
+    // scoring window (store-call upserts and other writers touch the same
+    // call), which made `save()` fail with a Mongoose VersionError. An atomic
+    // update bypasses the optimistic version check while writing the exact
+    // fields we computed here.
+    const analysisUpdate = {
+      ai_call_score: call.ai_call_score,
+      validByAI: call.validByAI,
+      valid: call.valid,
+      argumentation_score: call.argumentation_score,
+      repCallCommission: call.repCallCommission,
+      platformCallCommission: call.platformCallCommission,
+      repTransactionCommission: call.repTransactionCommission,
+      platformTransactionCommission: call.platformTransactionCommission,
+      transaction_price: call.transaction_price,
+      callOutcome: call.callOutcome,
+      callOutcomeSource: call.callOutcomeSource,
+      ai_call_status: call.ai_call_status,
+      flags: call.flags,
+    };
+    if (scores && scores.overall) {
+      analysisUpdate.ai_summary = call.ai_summary;
+      analysisUpdate.ai_summary_fr = call.ai_summary_fr;
+      analysisUpdate.ai_summary_en = call.ai_summary_en;
+    }
+    if (Array.isArray(transcriptData)) {
+      analysisUpdate.transcript = call.transcript;
+    }
+    await Call.findByIdAndUpdate(id, { $set: analysisUpdate });
 
     // Update or Create Transaction
     // Rule: If call is rejected by AI (Fraud or Coherence), transaction is automatically REJECTED.
