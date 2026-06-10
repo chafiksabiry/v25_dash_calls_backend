@@ -17,6 +17,35 @@ const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// A call stuck in `processing` longer than this is considered dead (the worker
+// hung or the process restarted mid-analysis). Such locks may be reclaimed so
+// the analysis can be retried instead of spinning forever in the UI.
+const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
+
+// Hard caps for the external Vertex AI calls so a hung request surfaces as an
+// `error` status instead of leaving the call frozen in `processing`.
+const TRANSCRIPTION_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+const SCORING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+/** Reject a promise if it does not settle within `ms`. */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label || 'Operation'} timed out after ${ms}ms`));
+    }, ms);
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 function parseHHMMToMinutes(raw) {
   const m = String(raw || '').trim().match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return null;
@@ -1115,14 +1144,22 @@ exports.analyzeCall = async (req, res) => {
       }
     }
 
-    // Another worker (usually auto-analysis after store-call) is already running.
-    if (call.ai_call_status === 'processing') {
+    // Another worker (usually auto-analysis after store-call) is already
+    // running — but only treat the lock as live if it is recent. A stale
+    // `processing` lock (worker hung / process restarted mid-analysis) is
+    // reclaimable so the call doesn't spin forever in the UI.
+    const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS);
+    const lockIsStale = !call.updatedAt || new Date(call.updatedAt) < staleBefore;
+    if (call.ai_call_status === 'processing' && !lockIsStale) {
       return res.status(202).json({
         success: true,
         inProgress: true,
         message: 'Analysis already in progress for this call.',
         ai_call_status: 'processing',
       });
+    }
+    if (call.ai_call_status === 'processing' && lockIsStale) {
+      console.warn(`♻️ [CallController] Reclaiming stale processing lock for call ${id} (updatedAt=${call.updatedAt}).`);
     }
 
     // Atomically claim this call for analysis. Multiple triggers can fire for
@@ -1131,10 +1168,19 @@ exports.analyzeCall = async (req, res) => {
     // parallel made both load the document at the same version and the second
     // `save()` threw a Mongoose VersionError. The atomic findOneAndUpdate
     // below lets exactly one invocation win the lock; any concurrent caller
-    // gets a clean 409 instead of crashing the analyzer.
+    // gets a clean 202 instead of crashing the analyzer. We also bump
+    // `updatedAt` so the lock's freshness can be measured (the `$set` path
+    // bypasses the pre-save hook that normally maintains it).
     const claimed = await Call.findOneAndUpdate(
-      { _id: id, ai_call_status: { $ne: 'processing' } },
-      { $set: { ai_call_status: 'processing' } }
+      {
+        _id: id,
+        $or: [
+          { ai_call_status: { $ne: 'processing' } },
+          { updatedAt: { $lt: staleBefore } },
+          { updatedAt: { $exists: false } },
+        ],
+      },
+      { $set: { ai_call_status: 'processing', updatedAt: new Date() } }
     );
     if (!claimed) {
       // Race: status flipped to `processing` between the read above and the claim.
@@ -1240,7 +1286,11 @@ exports.analyzeCall = async (req, res) => {
         console.log(`🎙️ [CallController] Attempting real audio transcription for call ${id}...`);
         try {
           const recordingUrl = call.recording_url_cloudinary || call.recording_url;
-          const realTranscript = await vertexAIService.transcribeAudioFromUrl(recordingUrl);
+          const realTranscript = await withTimeout(
+            vertexAIService.transcribeAudioFromUrl(recordingUrl),
+            TRANSCRIPTION_TIMEOUT_MS,
+            'Audio transcription'
+          );
           if (realTranscript && realTranscript.length > 0) {
             transcriptData = realTranscript;
             console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
@@ -1252,8 +1302,10 @@ exports.analyzeCall = async (req, res) => {
         }
     }
 
-    // Fallback if transcription failed or no recording
+    // Fallback if transcription failed or no recording. Reset the lock so the
+    // call doesn't stay frozen in `processing` (the UI would spin forever).
     if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && !hasRecording) {
+       await Call.updateOne({ _id: id }, { $set: { ai_call_status: 'error', updatedAt: new Date() } });
        return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
@@ -1274,6 +1326,7 @@ exports.analyzeCall = async (req, res) => {
     }
 
     if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
+        await Call.updateOne({ _id: id }, { $set: { ai_call_status: 'error', updatedAt: new Date() } });
         return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
@@ -1283,7 +1336,11 @@ exports.analyzeCall = async (req, res) => {
       : transcriptData;
 
     console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
-    const scores = await vertexAIService.scoreCall(transcriptText, gigScript);
+    const scores = await withTimeout(
+      vertexAIService.scoreCall(transcriptText, gigScript),
+      SCORING_TIMEOUT_MS,
+      'AI scoring'
+    );
 
     // ── Voicemail / non-productive guard ─────────────────────────────────
     //   On a call that never reached a human (voicemail pickup, dead-air,
@@ -1546,7 +1603,7 @@ exports.analyzeCall = async (req, res) => {
       if (req.params?.id) {
         await Call.updateOne(
           { _id: req.params.id },
-          { $set: { ai_call_status: 'error' } }
+          { $set: { ai_call_status: 'error', updatedAt: new Date() } }
         );
       }
     } catch (_) { /* swallow */ }
