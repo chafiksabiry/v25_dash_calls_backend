@@ -64,26 +64,34 @@ const transactionSchema = new mongoose.Schema({
   }
 });
 
+function resolveTransactionValid(validByAI, validByCompany) {
+  if (validByAI === false || validByCompany === false) return false;
+  if (validByAI === true && validByCompany === true) return true;
+  return null;
+}
+
 transactionSchema.pre('save', function (next) {
   this.updatedAt = new Date();
-  // Now valid is strictly determined by AI decision
-  this.valid = this.validByAI;
+  this.valid = resolveTransactionValid(this.validByAI, this.validByCompany);
   next();
 });
 
 transactionSchema.pre('findOneAndUpdate', function (next) {
   const update = this.getUpdate();
   if (update) {
+    const applyValid = (target) => {
+      if (target.validByAI !== undefined || target.validByCompany !== undefined) {
+        const aiVal = target.validByAI !== undefined ? target.validByAI : null;
+        const companyVal = target.validByCompany !== undefined ? target.validByCompany : null;
+        target.valid = resolveTransactionValid(aiVal, companyVal);
+      }
+    };
     if (update.$set) {
       update.$set.updatedAt = new Date();
-      if (update.$set.validByAI !== undefined) {
-        update.$set.valid = update.$set.validByAI;
-      }
+      applyValid(update.$set);
     } else {
       update.updatedAt = new Date();
-      if (update.validByAI !== undefined) {
-        update.valid = update.validByAI;
-      }
+      applyValid(update);
     }
   }
   next();

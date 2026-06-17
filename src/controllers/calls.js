@@ -27,6 +27,21 @@ const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
 const TRANSCRIPTION_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
 const SCORING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
+function resolveTransactionValid(validByAI, validByCompany) {
+  if (validByAI === false || validByCompany === false) return false;
+  if (validByAI === true && validByCompany === true) return true;
+  return null;
+}
+
+function triggerCompanyReconcile(companyId) {
+  if (!companyId) return;
+  const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
+  fetch(`${orchestratorUrl}/api/escrow/reconcile/${companyId}`, { method: 'POST' })
+    .then(res => res.json().catch(() => ({})))
+    .then(data => console.log(`✅ Triggered company reconcile for ${companyId}:`, data))
+    .catch(err => console.error('❌ Failed to trigger company reconcile:', err.message));
+}
+
 /** Reject a promise if it does not settle within `ms`. */
 function withTimeout(promise, ms, label) {
   return new Promise((resolve, reject) => {
@@ -408,6 +423,8 @@ exports.updateCall = async (req, res) => {
         const existingTx = await Transaction.findOne({ call: callId });
         const validByReps = transactionData.validByReps !== undefined ? transactionData.validByReps : (existingTx ? existingTx.validByReps : null);
         const validByCompany = transactionData.validByCompany !== undefined ? transactionData.validByCompany : (existingTx ? existingTx.validByCompany : null);
+        const validByAI = existingTx ? existingTx.validByAI : null;
+        const valid = resolveTransactionValid(validByAI, validByCompany);
 
         await Transaction.findOneAndUpdate(
           { call: callId },
@@ -419,14 +436,21 @@ exports.updateCall = async (req, res) => {
             companyId: callObj.companyId || undefined,
             validByReps,
             validByCompany,
+            valid,
             updatedAt: new Date()
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 
+        if (validByCompany === true) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          triggerCompanyReconcile(callObj.companyId);
+        } else if (validByCompany === false) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
+        }
+
         req.body.validByReps = validByReps;
         req.body.validByCompany = validByCompany;
-        req.body.valid = valid;
       }
       delete req.body.transaction;
     }
@@ -437,6 +461,8 @@ exports.updateCall = async (req, res) => {
         const existingTx = await Transaction.findOne({ call: callId });
         const validByReps = req.body['transaction.validByReps'] !== undefined ? req.body['transaction.validByReps'] : (existingTx ? existingTx.validByReps : null);
         const validByCompany = req.body['transaction.validByCompany'] !== undefined ? req.body['transaction.validByCompany'] : (existingTx ? existingTx.validByCompany : null);
+        const validByAI = existingTx ? existingTx.validByAI : null;
+        const valid = resolveTransactionValid(validByAI, validByCompany);
 
         await Transaction.findOneAndUpdate(
           { call: callId },
@@ -448,14 +474,21 @@ exports.updateCall = async (req, res) => {
             companyId: callObj.companyId || undefined,
             validByReps,
             validByCompany,
+            valid,
             updatedAt: new Date()
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 
+        if (validByCompany === true) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          triggerCompanyReconcile(callObj.companyId);
+        } else if (validByCompany === false) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
+        }
+
         req.body.validByReps = validByReps;
         req.body.validByCompany = validByCompany;
-        req.body.valid = valid;
       }
       delete req.body['transaction.validByReps'];
       delete req.body['transaction.validByCompany'];
@@ -1579,7 +1612,15 @@ exports.analyzeCall = async (req, res) => {
     // Rule: If call is rejected by AI, transaction final validation is also automatically REJECTED.
     if (!isValidByAI) {
       transactionUpdate.validByCompany = false;
+    } else if (transactionDetected) {
+      // Reset stale company rejection so the company UI can approve the sale.
+      transactionUpdate.validByCompany = null;
     }
+
+    transactionUpdate.valid = resolveTransactionValid(
+      transactionUpdate.validByAI,
+      transactionUpdate.validByCompany !== undefined ? transactionUpdate.validByCompany : null
+    );
 
     if (transactionDetected || refusalDetected || !isValidByAI) {
       await Transaction.findOneAndUpdate(
