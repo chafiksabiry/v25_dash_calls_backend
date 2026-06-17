@@ -35,12 +35,15 @@ function resolveTransactionValid(validByAI, validByCompany) {
 }
 
 function triggerCompanyReconcile(companyId) {
-  if (!companyId) return;
+  if (!companyId) return Promise.resolve();
   const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
-  fetch(`${orchestratorUrl}/api/escrow/reconcile/${companyId}`, { method: 'POST' })
+  const id = String(companyId);
+  return fetch(`${orchestratorUrl}/api/escrow/reconcile/${id}`, { method: 'POST' })
     .then(res => res.json().catch(() => ({})))
-    .then(data => console.log(`✅ Triggered company reconcile for ${companyId}:`, data))
-    .catch(err => console.error('❌ Failed to trigger company reconcile:', err.message));
+    .then(data => console.log(`✅ Triggered company reconcile for ${id}:`, data))
+    .catch(err => {
+      console.error('❌ Failed to trigger company reconcile:', err.message);
+    });
 }
 
 /** Reject a promise if it does not settle within `ms`. */
@@ -445,7 +448,7 @@ exports.updateCall = async (req, res) => {
 
         if (validByCompany === true) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
-          triggerCompanyReconcile(callObj.companyId);
+          await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
         }
@@ -483,7 +486,7 @@ exports.updateCall = async (req, res) => {
 
         if (validByCompany === true) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
-          triggerCompanyReconcile(callObj.companyId);
+          await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
         }
