@@ -65,8 +65,9 @@ const transactionSchema = new mongoose.Schema({
 });
 
 function resolveTransactionValid(validByAI, validByCompany) {
-  if (validByAI === false || validByCompany === false) return false;
-  if (validByAI === true && validByCompany === true) return true;
+  if (validByCompany === false) return false;
+  if (validByCompany === true) return true;
+  if (validByAI === false) return false;
   return null;
 }
 

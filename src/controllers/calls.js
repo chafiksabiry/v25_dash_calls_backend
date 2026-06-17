@@ -28,8 +28,9 @@ const TRANSCRIPTION_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
 const SCORING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
 function resolveTransactionValid(validByAI, validByCompany) {
-  if (validByAI === false || validByCompany === false) return false;
-  if (validByAI === true && validByCompany === true) return true;
+  if (validByCompany === false) return false;
+  if (validByCompany === true) return true;
+  if (validByAI === false) return false;
   return null;
 }
 
