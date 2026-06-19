@@ -54,6 +54,29 @@ const transactionSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  /** Date the client signed — starts the retraction window. */
+  signedAt: {
+    type: Date,
+    default: null,
+  },
+  /** signedAt + 14 days — commission becomes withdrawable for the rep. */
+  retractionEndsAt: {
+    type: Date,
+    default: null,
+  },
+  retractionStatus: {
+    type: String,
+    enum: ['pending', 'cleared', 'retracted'],
+    default: null,
+  },
+  retractedAt: {
+    type: Date,
+    default: null,
+  },
+  retractionReason: {
+    type: String,
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
