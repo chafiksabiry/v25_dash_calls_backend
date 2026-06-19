@@ -34,6 +34,26 @@ function resolveTransactionValid(validByAI, validByCompany) {
   return null;
 }
 
+async function markLeadContractSigned(leadId, agentId) {
+  if (!leadId || !agentId || !mongoose.Types.ObjectId.isValid(String(leadId))) return;
+  try {
+    await mongoose.connection.db.collection('leads').updateOne(
+      { _id: new mongoose.Types.ObjectId(String(leadId)) },
+      {
+        $set: {
+          signedByAgent: new mongoose.Types.ObjectId(String(agentId)),
+          signedAt: new Date(),
+          assignedTo: new mongoose.Types.ObjectId(String(agentId)),
+          updatedAt: new Date(),
+        },
+      }
+    );
+    console.log(`✅ Lead ${leadId} marked as signed by agent ${agentId}`);
+  } catch (err) {
+    console.error('[markLeadContractSigned] failed:', err.message);
+  }
+}
+
 function triggerCompanyReconcile(companyId) {
   if (!companyId) return Promise.resolve();
   const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
@@ -448,6 +468,7 @@ exports.updateCall = async (req, res) => {
 
         if (validByCompany === true) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
@@ -486,6 +507,7 @@ exports.updateCall = async (req, res) => {
 
         if (validByCompany === true) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
           await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
