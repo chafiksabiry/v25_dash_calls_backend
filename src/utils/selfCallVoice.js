@@ -137,6 +137,24 @@ function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec }) {
   return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
 }
 
+/** Relabel inferred Customer turns when audio fraud proves a single speaker. */
+function correctTranscriptForSelfCallFraud(transcript, fraudResult) {
+  if (!fraudResult?.isFraud || !Array.isArray(transcript)) return transcript;
+
+  return transcript.map((turn) => {
+    if (!turn || typeof turn !== 'object') return turn;
+    const label = String(turn.speaker || '');
+    if (isAgentSpeaker(label)) return turn;
+
+    return {
+      ...turn,
+      originalSpeaker: label,
+      speaker: 'Voix simulée',
+      simulated: true,
+    };
+  });
+}
+
 function applySelfCallFraudToScores(scores, fraudResult) {
   if (!fraudResult?.isFraud || !scores || typeof scores !== 'object') return scores;
 
@@ -197,6 +215,7 @@ module.exports = {
   SELF_CALL_CONFIDENCE_THRESHOLD,
   normalizeVoiceAnalysis,
   resolveSelfCallFraud,
+  correctTranscriptForSelfCallFraud,
   applySelfCallFraudToScores,
   readFraudScore,
   isFraudFromScores,

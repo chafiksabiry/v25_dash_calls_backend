@@ -37,6 +37,7 @@ function generateAudioTranscriptionPrompt() {
 6. Do NOT round timestamps. Use millisecond-precision alignment.
 7. Do NOT include silence or background noise.
 8. Return an empty array [] if no speech is detected.
+9. SPEAKER COUNT: If you hear only ONE human voice (even if the person alternates phrases as if playing two roles), label every turn with the same speaker (e.g. "Speaker 1"). Do NOT invent a second speaker.
 
 This transcription will be used for subtitle generation and call analysis. Accuracy of timing is critical.`;
 }

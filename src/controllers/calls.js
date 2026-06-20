@@ -12,6 +12,7 @@ const telnyxService = require('../services/integrations/telnyxService');
 const vertexAIService = require('../services/vertexai.service');
 const {
   resolveSelfCallFraud,
+  correctTranscriptForSelfCallFraud,
   applySelfCallFraudToScores,
   MIN_DURATION_VOICE_AI_SEC,
   isFraudFromScores,
@@ -1472,6 +1473,9 @@ exports.analyzeCall = async (req, res) => {
         `🚨 [CallController] Self-call voice fraud on call ${id}: ${selfCallFraud.reason} (confidence=${selfCallFraud.confidence})`
       );
       applySelfCallFraudToScores(scores, selfCallFraud);
+      if (Array.isArray(transcriptData)) {
+        transcriptData = correctTranscriptForSelfCallFraud(transcriptData, selfCallFraud);
+      }
     }
 
     // ── Voicemail / non-productive guard ─────────────────────────────────
