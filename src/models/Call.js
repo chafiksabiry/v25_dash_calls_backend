@@ -302,6 +302,7 @@ const callSchema = new mongoose.Schema({
    *  frontend. */
   flags: {
     fraud:               { type: Boolean, default: false, index: true },
+    selfCall:            { type: Boolean, default: false, index: true },
     serious:             { type: Boolean, default: false, index: true },
     transactionDetected: { type: Boolean, default: false },
     refusalDetected:     { type: Boolean, default: false },

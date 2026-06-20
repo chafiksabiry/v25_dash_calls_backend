@@ -10,6 +10,8 @@ const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment')
 const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
 const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt');
 const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
+const { generateSelfCallVoicePrompt } = require('../VertexPrompt/selfCallVoicePrompt');
+const { normalizeVoiceAnalysis } = require('../utils/selfCallVoice');
 const { Storage } = require('@google-cloud/storage');
 const axios = require('axios'); // Preferring axios if available or node-fetch
 const fetch = require('node-fetch');
@@ -553,6 +555,82 @@ ${fullTranscript}`;
     } catch (error) {
       console.error('❌ [VertexAIService] Error in transcribeAudioFromUrl:', error);
       return [];
+    }
+  }
+
+  detectAudioMimeType(audioBuffer) {
+    const header = audioBuffer.slice(0, 4);
+    const isWav = header.toString() === 'RIFF';
+    const isMp3 =
+      header.toString().startsWith('ID3') ||
+      (audioBuffer[0] === 0xff && (audioBuffer[1] & 0xe0) === 0xe0);
+    if (isWav) return 'audio/wav';
+    if (isMp3) return 'audio/mpeg';
+    return 'audio/mpeg';
+  }
+
+  /**
+   * Listen to a call recording and detect if Agent and Customer are the same voice.
+   * Returns normalised voiceAnalysis or null when the check could not run.
+   */
+  async detectSelfCallFromBuffer(audioBuffer) {
+    try {
+      await initializeServices();
+      const mimeType = this.detectAudioMimeType(audioBuffer);
+      const base64Audio = audioBuffer.toString('base64');
+      const prompt = generateSelfCallVoicePrompt();
+
+      const request = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Audio,
+                },
+              },
+              {
+                text: `${prompt}\nReturn ONLY the JSON object.`,
+              },
+            ],
+          },
+        ],
+      };
+
+      console.log('🔊 [VertexAIService] Running self-call voice fraud detection...');
+      const result = await jsonGenerativeModel.generateContent(request);
+
+      let responseText = '';
+      if (result.response && typeof result.response.text === 'function') {
+        responseText = result.response.text();
+      } else if (
+        result.response?.candidates?.[0]?.content?.parts?.[0]?.text
+      ) {
+        responseText = result.response.candidates[0].content.parts[0].text;
+      }
+
+      const parsed = normalizeVoiceAnalysis(this.parseJsonResponse(responseText));
+      if (parsed) {
+        console.log('🔊 [VertexAIService] Self-call voice analysis:', JSON.stringify(parsed));
+      }
+      return parsed;
+    } catch (error) {
+      console.error('❌ [VertexAIService] Self-call voice detection failed:', error.message);
+      return null;
+    }
+  }
+
+  async detectSelfCallFromUrl(audioUrl) {
+    try {
+      const response = await fetch(audioUrl);
+      if (!response.ok) throw new Error(`Failed to fetch audio: ${response.statusText}`);
+      const audioBuffer = await response.buffer();
+      return await this.detectSelfCallFromBuffer(audioBuffer);
+    } catch (error) {
+      console.error('❌ [VertexAIService] detectSelfCallFromUrl failed:', error.message);
+      return null;
     }
   }
 

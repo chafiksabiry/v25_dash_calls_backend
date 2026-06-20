@@ -10,6 +10,11 @@ const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
 const vertexAIService = require('../services/vertexai.service');
+const {
+  resolveSelfCallFraud,
+  applySelfCallFraudToScores,
+  MIN_DURATION_VOICE_AI_SEC,
+} = require('../utils/selfCallVoice');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
@@ -26,6 +31,7 @@ const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
 // `error` status instead of leaving the call frozen in `processing`.
 const TRANSCRIPTION_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
 const SCORING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const VOICE_FRAUD_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
 function resolveTransactionValid(validByAI, validByCompany) {
   if (validByCompany === false) return false;
@@ -1394,12 +1400,40 @@ exports.analyzeCall = async (req, res) => {
       ? transcriptData.map(t => `[${t.speaker}]: ${t.text}`).join("\n")
       : transcriptData;
 
+    const callDurationSec = call.duration || call._doc?.duration || 0;
+    let voiceAnalysis = null;
+    if (hasRecording && callDurationSec >= MIN_DURATION_VOICE_AI_SEC) {
+      try {
+        const recordingUrl = call.recording_url_cloudinary || call.recording_url;
+        console.log(`🔊 [CallController] Running self-call voice check for call ${id} (${callDurationSec}s)...`);
+        voiceAnalysis = await withTimeout(
+          vertexAIService.detectSelfCallFromUrl(recordingUrl),
+          VOICE_FRAUD_TIMEOUT_MS,
+          'Self-call voice detection'
+        );
+      } catch (voiceErr) {
+        console.warn(`⚠️ [CallController] Self-call voice detection failed for ${id}:`, voiceErr.message);
+      }
+    }
+
     console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
     const scores = await withTimeout(
       vertexAIService.scoreCall(transcriptText, gigScript),
       SCORING_TIMEOUT_MS,
       'AI scoring'
     );
+
+    let selfCallFraud = resolveSelfCallFraud({
+      voiceAnalysis,
+      transcript: Array.isArray(transcriptData) ? transcriptData : [],
+      durationSec: callDurationSec,
+    });
+    if (selfCallFraud.isFraud) {
+      console.warn(
+        `🚨 [CallController] Self-call voice fraud on call ${id}: ${selfCallFraud.reason} (confidence=${selfCallFraud.confidence})`
+      );
+      applySelfCallFraudToScores(scores, selfCallFraud);
+    }
 
     // ── Voicemail / non-productive guard ─────────────────────────────────
     //   On a call that never reached a human (voicemail pickup, dead-air,
@@ -1462,6 +1496,9 @@ exports.analyzeCall = async (req, res) => {
       scores.transaction_detected = false;
       scores.refusal_detected     = false;
       console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail) — per-rubric scores neutralised.`);
+      if (selfCallFraud.isFraud) {
+        selfCallFraud = { isFraud: false, voiceAnalysis: selfCallFraud.voiceAnalysis || voiceAnalysis };
+      }
     }
 
     // AI Validation Logic
@@ -1567,6 +1604,7 @@ exports.analyzeCall = async (req, res) => {
     }
     call.flags = {
       fraud:               fraudScore < 50,
+      selfCall:            selfCallFraud.isFraud === true,
       serious:             isValidByAI,
       transactionDetected: !!transactionDetected,
       refusalDetected:     !!refusalDetected,

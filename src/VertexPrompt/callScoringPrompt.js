@@ -31,7 +31,8 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
        - *Note < 70* : Si l'agent bafouille, utilise un langage trop familier ou semble hésitant.
     2. **Sentiment analysis (Sentiment Client) :** Détecte la VRÉITABLE émotion du client. Est-il réellement intéressé ou veut-il juste raccrocher ?
     3. **Fraud detection (Détection de Fraude) :** CRITIQUE. L'agent a-t-il menti, omis une information légale, forcé la main, ou été impoli ?
-       - **RÈGLE D'OR :** Toute insulte ou mensonge flagrant = Score < 20 et rejet immédiat.
+       - **Auto-appel / simulation :** L'agent parle-t-il seul ou joue-t-il les deux rôles (Agent + Client) avec la même voix ou un dialogue simulé ? Si oui, score < 10.
+       - **RÈGLE D'OR :** Toute insulte, mensonge flagrant ou auto-appel simulé = Score < 20 et rejet immédiat.
     4. **Script coherence (Cohérence) :** L'argumentation suit-elle une logique de vente ou l'agent récite-t-il sans réfléchir ?
     5. **Argumentation (Qualité de l'argumentation) :** L'agent a-t-il traité les objections avec empathie et logique ? A-t-il créé un besoin ?
        - *Note > 80* : Uniquement si l'agent a utilisé des techniques de vente avancées (reformulation, bénéfices VS caractéristiques).
