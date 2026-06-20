@@ -1147,6 +1147,37 @@ function detectAiScoring(scores) {
 }
 exports.detectAiScoring = detectAiScoring;
 
+function resolveLeadDisplayName(lead) {
+  if (!lead) return 'Client';
+  if (lead.First_Name) return `${lead.First_Name} ${lead.Last_Name || ''}`.trim();
+  return lead.name || lead.Deal_Name || 'Client';
+}
+
+/** Push a real-time WS event to the rep when call analysis finishes. */
+function notifyRepCallAnalysisComplete(call, overrides = {}) {
+  const repId = call.agent?._id || call.agent;
+  if (!repId) return;
+
+  const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
+  const payload = {
+    callId: String(call._id),
+    repId: String(repId),
+    companyId: call.companyId ? String(call.companyId) : undefined,
+    leadName: resolveLeadDisplayName(call.lead),
+    ai_call_status: overrides.ai_call_status ?? call.ai_call_status,
+    validByAI: overrides.validByAI !== undefined ? overrides.validByAI : call.validByAI,
+    completedAt: new Date().toISOString(),
+  };
+
+  fetch(`${orchestratorUrl}/api/escrow/call-analysis-complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((err) => {
+    console.error('❌ Failed to broadcast call analysis complete:', err.message);
+  });
+}
+
 const runAnalysisInBackground = (callId) => {
   console.log(`🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in 5 seconds...`);
   setTimeout(async () => {
@@ -1310,6 +1341,10 @@ exports.analyzeCall = async (req, res) => {
         { new: true }
       );
       console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome}`);
+      notifyRepCallAnalysisComplete(call, {
+        ai_call_status: 'auto_refused',
+        validByAI: false,
+      });
       return res.status(200).json({
         success: true,
         message: refusalReason,
@@ -1373,6 +1408,7 @@ exports.analyzeCall = async (req, res) => {
     // call doesn't stay frozen in `processing` (the UI would spin forever).
     if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && !hasRecording) {
        await Call.updateOne({ _id: id }, { $set: { ai_call_status: 'error', updatedAt: new Date() } });
+       notifyRepCallAnalysisComplete(call, { ai_call_status: 'error', validByAI: call.validByAI });
        return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
@@ -1394,6 +1430,7 @@ exports.analyzeCall = async (req, res) => {
 
     if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
         await Call.updateOne({ _id: id }, { $set: { ai_call_status: 'error', updatedAt: new Date() } });
+        notifyRepCallAnalysisComplete(call, { ai_call_status: 'error', validByAI: call.validByAI });
         return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
     }
 
@@ -1681,6 +1718,11 @@ exports.analyzeCall = async (req, res) => {
     }
     await Call.findByIdAndUpdate(id, { $set: analysisUpdate });
 
+    notifyRepCallAnalysisComplete(call, {
+      ai_call_status: 'scored',
+      validByAI: isValidByAI,
+    });
+
     // Update or Create Transaction
     // Rule: If call is rejected by AI (Fraud or Coherence), transaction is automatically REJECTED.
     // Otherwise, use detection signals.
@@ -1737,6 +1779,10 @@ exports.analyzeCall = async (req, res) => {
           { _id: req.params.id },
           { $set: { ai_call_status: 'error', updatedAt: new Date() } }
         );
+        const failedCall = await Call.findById(req.params.id).populate('lead');
+        if (failedCall) {
+          notifyRepCallAnalysisComplete(failedCall, { ai_call_status: 'error' });
+        }
       }
     } catch (_) { /* swallow */ }
     res.status(500).json({ success: false, message: 'Failed to analyze call', error: error.message });
