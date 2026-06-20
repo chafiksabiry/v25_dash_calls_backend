@@ -49,7 +49,7 @@ const allowedOrigins = [
   'https://copilot.harx.ai',
   'http://38.242.208.242:5186',
   'http://localhost:5173',
-  'https://harx25pageslinks.netlify.app',
+  'https://harx.ai',
   'https://harxv25dashboardfrontend.netlify.app',
   'https://harxv25comporchestratorfront.netlify.app'
 ];
