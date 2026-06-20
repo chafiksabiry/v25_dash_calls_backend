@@ -156,6 +156,20 @@ function applySelfCallFraudToScores(scores, fraudResult) {
   scores.transaction_detected = false;
   scores.refusal_detected = false;
 
+  const TX_RUBRIC_KEYS = [
+    'Transaction analysis',
+    'PAS INTÉRESSÉS',
+    'PAS AU COURANT',
+    'DÉJÀ ÉQUIPÉS',
+    'RDV',
+    'A plus tard',
+  ];
+  for (const key of TX_RUBRIC_KEYS) {
+    if (scores[key] && typeof scores[key] === 'object') {
+      scores[key].passed = false;
+    }
+  }
+
   if (scores.overall && typeof scores.overall === 'object') {
     scores.overall.score = Math.min(typeof scores.overall.score === 'number' ? scores.overall.score : 0, 15);
     scores.overall.feedback_fr = `Fraude (auto-appel) : ${fraudResult.feedback_fr}`;
@@ -167,10 +181,23 @@ function applySelfCallFraudToScores(scores, fraudResult) {
   return scores;
 }
 
+/** Fraud rubric uses 0–100 where higher = cleaner. Never use `|| 100` (0 is valid). */
+function readFraudScore(scores) {
+  const raw = scores?.['Fraud detection']?.score;
+  return typeof raw === 'number' ? raw : 100;
+}
+
+function isFraudFromScores(scores, selfCallFraud) {
+  if (selfCallFraud?.isFraud) return true;
+  return readFraudScore(scores) < 50;
+}
+
 module.exports = {
   MIN_DURATION_VOICE_AI_SEC,
   SELF_CALL_CONFIDENCE_THRESHOLD,
   normalizeVoiceAnalysis,
   resolveSelfCallFraud,
   applySelfCallFraudToScores,
+  readFraudScore,
+  isFraudFromScores,
 };

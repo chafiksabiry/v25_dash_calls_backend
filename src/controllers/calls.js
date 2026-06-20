@@ -14,6 +14,8 @@ const {
   resolveSelfCallFraud,
   applySelfCallFraudToScores,
   MIN_DURATION_VOICE_AI_SEC,
+  isFraudFromScores,
+  readFraudScore,
 } = require('../utils/selfCallVoice');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
@@ -1504,18 +1506,26 @@ exports.analyzeCall = async (req, res) => {
     // AI Validation Logic
     const scriptCoherence = scores["Script coherence"]?.score || 0;
     const argumentationScore = scores["Argumentation"]?.score || 0;
-    const fraudScore = scores["Fraud detection"]?.score || 100;
-    const transactionDetected = scores.transaction_detected || false;
-    const refusalDetected = scores.refusal_detected || false;
+    const fraudScore = readFraudScore(scores);
+    const isFraudDetected = isFraudFromScores(scores, selfCallFraud);
+    let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
+    let refusalDetected = scores.refusal_detected || false;
 
     // Call is valid if:
-    // 1. No significant fraud/insults (fraudScore >= 50)
-    // AND
+    // 1. No fraud (score >= 50 and no self-call signal)
     // 2. Script coherence is good (>= 50)
-    // AND
-    // 3. Call duration is greater than 70 seconds (implies reached argumentation)
+    // 3. Call duration is greater than 70 seconds
     const duration = call.duration || call._doc?.duration || 0;
-    const isValidByAI = fraudScore >= 50 && scriptCoherence >= 50 && duration > 70;
+    const isValidByAI =
+      !isFraudDetected && fraudScore >= 50 && scriptCoherence >= 50 && duration > 70;
+
+    if (isFraudDetected) {
+      transactionDetected = false;
+      scores.transaction_detected = false;
+      if (scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
+        scores['Fraud detection'].passed = false;
+      }
+    }
     
     // Calculate Commissions (70% Rep / 30% Platform)
     const baseCallCommission = call.lead?.gigId?.commission?.commission_per_call || call.lead?.gigId?.rewardPerCall || 4;
@@ -1554,6 +1564,21 @@ exports.analyzeCall = async (req, res) => {
       }
     }
 
+    // Fraud rubric: low score = fraud detected → never mark as passed.
+    if (isFraudDetected && scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
+      scores['Fraud detection'].passed = false;
+      scores['Fraud detection'].score = Math.min(readFraudScore(scores), 49);
+    }
+
+    // Discourse rubrics (RDV, déjà équipé, etc.) must not validate when fraud.
+    if (isFraudDetected) {
+      for (const k of ['Transaction analysis', 'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard']) {
+        if (scores[k] && typeof scores[k] === 'object') {
+          scores[k].passed = false;
+        }
+      }
+    }
+
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
     call.validByAI = isValidByAI;
@@ -1576,6 +1601,8 @@ exports.analyzeCall = async (req, res) => {
     //  force the `voicemail` outcome explicitly.
     const callOutcome = isNonProductiveCall
       ? 'voicemail'
+      : isFraudDetected
+      ? 'fraud'
       : classifyCallOutcome({
           status: callStatus,
           duration,
@@ -1603,10 +1630,10 @@ exports.analyzeCall = async (req, res) => {
       call.ai_summary_en = scores.overall.feedback_en || '';
     }
     call.flags = {
-      fraud:               fraudScore < 50,
+      fraud:               isFraudDetected,
       selfCall:            selfCallFraud.isFraud === true,
       serious:             isValidByAI,
-      transactionDetected: !!transactionDetected,
+      transactionDetected: isFraudDetected ? false : !!transactionDetected,
       refusalDetected:     !!refusalDetected,
     };
 
