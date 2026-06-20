@@ -514,7 +514,7 @@ ${fullTranscript}`;
                 "data": base64Audio
               }
             },
-            { "text": `${prompt}\nIMPORTANT: Identify the speakers as "Agent" (the one initiating or representing the company) and "Customer" (the lead being called). Return ONLY the JSON array.` }
+            { "text": `${prompt}\nIMPORTANT: Identify speakers as "Agent" (company/rep) and "Customer" (lead) ONLY when you hear two distinct human voices. If a single voice simulates both sides of the dialogue, label ALL turns as "Agent" — never invent a Customer. Return ONLY the JSON array.` }
           ]
         }],
       };
