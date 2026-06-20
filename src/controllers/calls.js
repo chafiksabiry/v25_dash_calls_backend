@@ -1746,6 +1746,88 @@ exports.analyzeCall = async (req, res) => {
 // Re-export classifier so analytics aggregations can use the same logic.
 exports.classifyCallOutcome = classifyCallOutcome;
 
+/**
+ * Rep signale une analyse bloquée — persiste l'alerte sur l'appel et notifie
+ * la company en temps réel via le WebSocket comporchestrator.
+ */
+exports.requestAnalysisHelp = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const agentId = req.body?.agentId || req.headers['x-agent-id'];
+
+    const call = await Call.findById(id).populate('agent').populate('lead');
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+
+    const isFinished =
+      call.ai_call_status === 'scored' ||
+      call.ai_call_status === 'auto_refused' ||
+      (call.ai_call_score?.overall?.score != null && call.ai_call_status !== 'error');
+
+    if (isFinished) {
+      return res.status(400).json({
+        success: false,
+        message: 'Call analysis already completed',
+      });
+    }
+
+    const repName =
+      call.agent?.personalInfo?.name ||
+      call.agent?.name ||
+      'Rep';
+    const leadName = call.lead?.First_Name
+      ? `${call.lead.First_Name} ${call.lead.Last_Name || ''}`.trim()
+      : call.lead?.name || call.lead?.Deal_Name || 'Client';
+
+    const alert = {
+      requestedAt: new Date(),
+      requestedByAgentId: agentId || call.agent?._id || null,
+      repName,
+      message: `Le rep ${repName} signale une analyse bloquée pour l'appel avec ${leadName}.`,
+      acknowledgedAt: call.analysisCompanyAlert?.acknowledgedAt || null,
+      requestCount: (call.analysisCompanyAlert?.requestCount || 0) + 1,
+    };
+
+    await Call.findByIdAndUpdate(id, {
+      $set: { analysisCompanyAlert: alert, updatedAt: new Date() },
+    });
+
+    const companyId = call.companyId;
+    if (companyId) {
+      const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
+      fetch(`${orchestratorUrl}/api/escrow/call-analysis-help`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: String(companyId),
+          callId: String(id),
+          repName,
+          leadName,
+          message: alert.message,
+          requestedAt: alert.requestedAt.toISOString(),
+          requestCount: alert.requestCount,
+        }),
+      }).catch((err) => {
+        console.error('❌ Failed to broadcast call analysis help:', err.message);
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Company notified',
+      data: { analysisCompanyAlert: alert },
+    });
+  } catch (error) {
+    console.error('Error in requestAnalysisHelp:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to notify company',
+      error: error.message,
+    });
+  }
+};
+
 exports.startRecording = async (req, res) => {
   const { callSid, userId } = req.body;
   if (!callSid || !userId) {

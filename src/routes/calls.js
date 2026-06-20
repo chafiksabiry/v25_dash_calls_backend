@@ -58,6 +58,7 @@ router.route('/:id/quality-score')
   .put(updateQualityScore);
 
 router.post('/:id/analyze', callController.analyzeCall);
+router.post('/:id/request-analysis-help', callController.requestAnalysisHelp);
 
 // Route pour créer un Dialplan
 router.post('/dialplan', callController.createDialplan);
