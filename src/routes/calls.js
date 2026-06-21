@@ -23,6 +23,8 @@ router.route('/')
   .get(getCalls)
   .post(createCall);
 
+router.get('/company/:companyId/fraud-stats', callController.getCompanyFraudStats);
+router.get('/agent/:agentId/fraud-stats', callController.getAgentFraudStats);
 router.get('/agent/:agentId', callController.getCallsByAgent);
 
 

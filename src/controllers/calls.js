@@ -18,6 +18,12 @@ const {
   isFraudFromScores,
   readFraudScore,
 } = require('../utils/selfCallVoice');
+const {
+  buildCompanyFraudStatsFromCalls,
+  buildAgentFraudStatsFromCalls,
+  buildCompanyFraudMatchQuery,
+  buildAgentFraudMatchQuery,
+} = require('../utils/fraudStats');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
@@ -331,7 +337,14 @@ exports.getCalls = async (req, res) => {
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: processedCalls
+      data: processedCalls,
+      ...(companyId
+        ? {
+            fraudStats: buildCompanyFraudStatsFromCalls(
+              processedCalls.map((call) => (typeof call.toObject === 'function' ? call.toObject() : call))
+            ),
+          }
+        : {}),
     });
   } catch (err) {
     console.error('Error in getCalls:', err);
@@ -368,10 +381,13 @@ exports.getCallsByAgent = async (req, res) => {
       .populate('transaction')
       .sort({ createdAt: -1 });
 
+    const callObjects = calls.map((call) => call.toObject());
+
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: calls
+      data: calls,
+      fraudStats: buildAgentFraudStatsFromCalls(callObjects, agentId),
     });
   } catch (error) {
     console.error("Erreur lors de la récupération des appels :", error);
@@ -380,6 +396,53 @@ exports.getCallsByAgent = async (req, res) => {
       message: "Erreur serveur",
       error: error.message
     });
+  }
+};
+
+// @desc    Fraud stats for a company (total + per agent + FR/EN warnings)
+// @route   GET /api/calls/company/:companyId/fraud-stats
+exports.getCompanyFraudStats = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'companyId is required' });
+    }
+
+    const calls = await Call.find(buildCompanyFraudMatchQuery(companyId))
+      .populate('agent')
+      .lean()
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: buildCompanyFraudStatsFromCalls(calls),
+    });
+  } catch (error) {
+    console.error('Error in getCompanyFraudStats:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Fraud stats for a rep/agent (count + FR/EN blacklist warning)
+// @route   GET /api/calls/agent/:agentId/fraud-stats
+exports.getAgentFraudStats = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    if (!agentId) {
+      return res.status(400).json({ success: false, message: 'agentId is required' });
+    }
+
+    const calls = await Call.find(buildAgentFraudMatchQuery(agentId))
+      .lean()
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: buildAgentFraudStatsFromCalls(calls, agentId),
+    });
+  } catch (error) {
+    console.error('Error in getAgentFraudStats:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
@@ -1772,7 +1835,24 @@ exports.analyzeCall = async (req, res) => {
         message: 'Call analysis completed', 
         data: scores,
         transcript: call.transcript,
-        validByAI: isValidByAI
+        validByAI: isValidByAI,
+        ...(isFraudDetected
+          ? {
+              fraudStats: {
+                agent: buildAgentFraudStatsFromCalls(
+                  await Call.find(buildAgentFraudMatchQuery(call.agent?._id || call.agent)).lean(),
+                  String(call.agent?._id || call.agent)
+                ),
+                ...(call.companyId
+                  ? {
+                      company: buildCompanyFraudStatsFromCalls(
+                        await Call.find(buildCompanyFraudMatchQuery(call.companyId)).populate('agent').lean()
+                      ),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
     });
   } catch (error) {
     console.error('Error in analyzeCall:', error);
