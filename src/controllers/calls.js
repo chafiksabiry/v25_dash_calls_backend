@@ -1287,6 +1287,9 @@ const runAnalysisInBackground = (callId) => {
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
+    const force =
+      req.body?.force === true ||
+      String(req.query?.force || '').toLowerCase() === 'true';
     const call = await Call.findById(id).populate({
       path: 'lead',
       populate: {
@@ -1298,7 +1301,12 @@ exports.analyzeCall = async (req, res) => {
     }
 
     // Idempotent: return existing results when analysis already finished.
-    if (call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused') {
+    // `force=true` (company relaunch) bypasses this so legacy analyses can be
+    // re-scored after backend rule changes (e.g. voicemail shape cleanup).
+    if (
+      !force &&
+      (call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused')
+    ) {
       const hasScores = detectAiScoring(call.ai_call_score);
       if (hasScores || call.ai_call_status === 'auto_refused') {
         return res.json({
@@ -1311,6 +1319,9 @@ exports.analyzeCall = async (req, res) => {
           callOutcome: call.callOutcome,
         });
       }
+    }
+    if (force) {
+      console.log(`♻️ [CallController] Force re-analysis requested for call ${id}.`);
     }
 
     // Another worker (usually auto-analysis after store-call) is already
