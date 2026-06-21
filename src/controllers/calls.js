@@ -1208,7 +1208,7 @@ function classifyCallOutcome({
 // We rely on the overall score being a real number > 0; the schema default
 // is empty (the rubric is only populated by `vertexAIService.scoreCall`).
 function detectAiScoring(scores) {
-  return !!(scores && scores.overall && typeof scores.overall.score === 'number' && scores.overall.score > 0);
+  return !!(scores && scores.overall && typeof scores.overall.score === 'number');
 }
 exports.detectAiScoring = detectAiScoring;
 
@@ -1556,8 +1556,8 @@ exports.analyzeCall = async (req, res) => {
     //   When the trigger fires we:
     //     • zero out every individual rubric score + force passed=false,
     //     • keep `Fraud detection` at 100 (a voicemail is NOT fraud),
-    //     • preserve `overall.score` / `overall.feedback` so the modal still
-    //       shows the truthful "Executive summary".
+    //     • zero `overall.score` but preserve `overall.feedback` so the modal
+    //       still shows the truthful "Executive summary" text.
     //   `callOutcome` is forced to 'voicemail' a few lines below.
     const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
     const isNonProductiveCall =
@@ -1603,6 +1603,10 @@ exports.analyzeCall = async (req, res) => {
       }
       scores.transaction_detected = false;
       scores.refusal_detected     = false;
+      if (scores.overall && typeof scores.overall === 'object') {
+        scores.overall.score = 0;
+        scores.overall.passed = false;
+      }
       console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail) — per-rubric scores neutralised.`);
       if (selfCallFraud.isFraud) {
         selfCallFraud = { isFraud: false, voiceAnalysis: selfCallFraud.voiceAnalysis || voiceAnalysis };
@@ -1632,6 +1636,10 @@ exports.analyzeCall = async (req, res) => {
       scores.transaction_detected = false;
       if (scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
         scores['Fraud detection'].passed = false;
+      }
+      if (scores.overall && typeof scores.overall === 'object') {
+        scores.overall.score = 0;
+        scores.overall.passed = false;
       }
     }
     
