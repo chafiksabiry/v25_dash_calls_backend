@@ -189,7 +189,7 @@ function applySelfCallFraudToScores(scores, fraudResult) {
   }
 
   if (scores.overall && typeof scores.overall === 'object') {
-    scores.overall.score = Math.min(typeof scores.overall.score === 'number' ? scores.overall.score : 0, 15);
+    scores.overall.score = 0;
     scores.overall.feedback_fr = `Fraude (auto-appel) : ${fraudResult.feedback_fr}`;
     scores.overall.feedback_en = `Fraud (self-call): ${fraudResult.feedback_en}`;
     scores.overall.feedback = scores.overall.feedback_fr;
