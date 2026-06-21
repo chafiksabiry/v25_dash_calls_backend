@@ -24,6 +24,7 @@ const {
   buildCompanyFraudMatchQuery,
   buildAgentFraudMatchQuery,
 } = require('../utils/fraudStats');
+const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
@@ -1559,9 +1560,10 @@ exports.analyzeCall = async (req, res) => {
     //       shows the truthful "Executive summary".
     //   `callOutcome` is forced to 'voicemail' a few lines below.
     const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
-    const VOICEMAIL_REGEX =
-      /messagerie\s+(vocale|automatique)|r[ée]pondeur|laissez\s+(votre|un)\s+message|bo[îi]te\s+vocale|voicemail|answering\s+machine|leave\s+(a|your)\s+message|after\s+the\s+(tone|beep)|appel\s+non\s+productif|aucun\s+(?:él|el)[ée]ment\s+exploitable|n['']est\s+pas\s+disponible|votre\s+correspondant/i;
-    const isNonProductiveCall = VOICEMAIL_REGEX.test(overallFeedback);
+    const isNonProductiveCall =
+      isVoicemailFromFeedback(overallFeedback) ||
+      isVoicemailFromFeedback(scores?.overall?.feedback_fr || '') ||
+      isVoicemailFromFeedback(scores?.overall?.feedback_en || '');
 
     if (isNonProductiveCall) {
       const NON_EVAL_FEEDBACK_FR =
@@ -1611,7 +1613,9 @@ exports.analyzeCall = async (req, res) => {
     const scriptCoherence = scores["Script coherence"]?.score || 0;
     const argumentationScore = scores["Argumentation"]?.score || 0;
     const fraudScore = readFraudScore(scores);
-    const isFraudDetected = isFraudFromScores(scores, selfCallFraud);
+    const isFraudDetected = isNonProductiveCall
+      ? false
+      : isFraudFromScores(scores, selfCallFraud);
     let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
     let refusalDetected = scores.refusal_detected || false;
 
@@ -1734,10 +1738,10 @@ exports.analyzeCall = async (req, res) => {
       call.ai_summary_en = scores.overall.feedback_en || '';
     }
     call.flags = {
-      fraud:               isFraudDetected,
-      selfCall:            selfCallFraud.isFraud === true,
+      fraud:               isNonProductiveCall ? false : isFraudDetected,
+      selfCall:            isNonProductiveCall ? false : selfCallFraud.isFraud === true,
       serious:             isValidByAI,
-      transactionDetected: isFraudDetected ? false : !!transactionDetected,
+      transactionDetected: isNonProductiveCall ? false : (isFraudDetected ? false : !!transactionDetected),
       refusalDetected:     !!refusalDetected,
     };
 

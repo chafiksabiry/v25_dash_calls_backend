@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { readFraudScore } = require('./selfCallVoice');
+const { isCallVoicemail } = require('./voicemailDetection');
 
 function isEnglishLanguage(language) {
   return String(language || '').toLowerCase().startsWith('en');
@@ -7,6 +8,7 @@ function isEnglishLanguage(language) {
 
 function isCallFraudDetected(call) {
   if (!call || typeof call !== 'object') return false;
+  if (isCallVoicemail(call)) return false;
   if (call.flags?.fraud === true || call.flags?.selfCall === true) return true;
   if (call.callOutcome === 'fraud') return true;
   const fraudScore = readFraudScore(call.ai_call_score);
