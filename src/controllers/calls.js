@@ -25,6 +25,12 @@ const {
   buildAgentFraudMatchQuery,
 } = require('../utils/fraudStats');
 const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
+const {
+  applyVoicemailAnalysisShape,
+  applyFraudAnalysisShape,
+  VOICEMAIL_SUMMARY_FR,
+  VOICEMAIL_SUMMARY_EN,
+} = require('../utils/nonEvaluableCall');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
@@ -1553,12 +1559,8 @@ exports.analyzeCall = async (req, res) => {
     //     • The LLM is reliable at *summarising* the call type.
     //     • Scanning the raw transcript for voicemail boilerplate is
     //       brittle across languages / TTS variants.
-    //   When the trigger fires we:
-    //     • zero out every individual rubric score + force passed=false,
-    //     • keep `Fraud detection` at 100 (a voicemail is NOT fraud),
-    //     • zero `overall.score` but preserve `overall.feedback` so the modal
-    //       still shows the truthful "Executive summary" text.
-    //   `callOutcome` is forced to 'voicemail' a few lines below.
+    //   When the trigger fires we strip all rubric cards later via
+    //   `applyVoicemailAnalysisShape` and force `callOutcome` to 'voicemail'.
     const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
     const isNonProductiveCall =
       isVoicemailFromFeedback(overallFeedback) ||
@@ -1566,48 +1568,7 @@ exports.analyzeCall = async (req, res) => {
       isVoicemailFromFeedback(scores?.overall?.feedback_en || '');
 
     if (isNonProductiveCall) {
-      const NON_EVAL_FEEDBACK_FR =
-        "Critère non évaluable — appel non productif (messagerie / aucun échange exploitable).";
-      const NON_EVAL_FEEDBACK_EN =
-        "Criterion not evaluable — non-productive call (voicemail / no exploitable exchange).";
-      const NEUTRALISE_KEYS = [
-        "Agent fluency",
-        "Sentiment analysis",
-        "Script coherence",
-        "Argumentation",
-        "Script adherence",
-        "Transaction analysis",
-        "PAS INTÉRESSÉS",
-        "PAS AU COURANT",
-        "DÉJÀ ÉQUIPÉS",
-        "RDV",
-        "A plus tard"
-      ];
-      for (const k of NEUTRALISE_KEYS) {
-        if (scores[k] && typeof scores[k] === "object") {
-          scores[k].score       = 0;
-          scores[k].feedback    = NON_EVAL_FEEDBACK_FR;
-          scores[k].feedback_fr = NON_EVAL_FEEDBACK_FR;
-          scores[k].feedback_en = NON_EVAL_FEEDBACK_EN;
-          scores[k].passed      = false;
-        }
-      }
-      // Fraud detection follows reversed semantics (high = clean). A
-      // voicemail must NOT raise the fraud flag, so we pin it at 100 / pass.
-      if (scores["Fraud detection"] && typeof scores["Fraud detection"] === "object") {
-        scores["Fraud detection"].score       = 100;
-        scores["Fraud detection"].feedback    = "Aucun signal de fraude — appel non productif.";
-        scores["Fraud detection"].feedback_fr = "Aucun signal de fraude — appel non productif.";
-        scores["Fraud detection"].feedback_en = "No fraud signal — non-productive call.";
-        scores["Fraud detection"].passed      = true;
-      }
-      scores.transaction_detected = false;
-      scores.refusal_detected     = false;
-      if (scores.overall && typeof scores.overall === 'object') {
-        scores.overall.score = 0;
-        scores.overall.passed = false;
-      }
-      console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail) — per-rubric scores neutralised.`);
+      console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail).`);
       if (selfCallFraud.isFraud) {
         selfCallFraud = { isFraud: false, voiceAnalysis: selfCallFraud.voiceAnalysis || voiceAnalysis };
       }
@@ -1629,17 +1590,17 @@ exports.analyzeCall = async (req, res) => {
     // 3. Call duration is greater than 70 seconds
     const duration = call.duration || call._doc?.duration || 0;
     const isValidByAI =
-      !isFraudDetected && fraudScore >= 50 && scriptCoherence >= 50 && duration > 70;
+      !isNonProductiveCall &&
+      !isFraudDetected &&
+      fraudScore >= 50 &&
+      scriptCoherence >= 50 &&
+      duration > 70;
 
     if (isFraudDetected) {
       transactionDetected = false;
       scores.transaction_detected = false;
       if (scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
         scores['Fraud detection'].passed = false;
-      }
-      if (scores.overall && typeof scores.overall === 'object') {
-        scores.overall.score = 0;
-        scores.overall.passed = false;
       }
     }
     
@@ -1695,11 +1656,18 @@ exports.analyzeCall = async (req, res) => {
       }
     }
 
+    // Messagerie / fraude: no analysis cards persisted — overall summary only.
+    if (isNonProductiveCall) {
+      applyVoicemailAnalysisShape(scores);
+    } else if (isFraudDetected) {
+      applyFraudAnalysisShape(scores);
+    }
+
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
     call.validByAI = isValidByAI;
     call.valid = isValidByAI; // Unified valid flag
-    call.argumentation_score = argumentationScore;
+    call.argumentation_score = isNonProductiveCall || isFraudDetected ? 0 : argumentationScore;
     call.repCallCommission = repCallCommission;
     call.platformCallCommission = platformCallCommission;
     call.repTransactionCommission = repTransactionCommission;
@@ -1710,11 +1678,7 @@ exports.analyzeCall = async (req, res) => {
     //  Persist denormalised signals so the company dashboard can group/filter
     //  without re-scanning ai_call_score on every request.
     //
-    //  Voicemail short-circuit: the AI did run (we kept `overall` intact for
-    //  the modal summary), but the per-rubric scores were neutralised above.
-    //  Routing those zeros back through `classifyCallOutcome` would bucket
-    //  this call as `connected_no_sale`, which is misleading on dashboards —
-    //  force the `voicemail` outcome explicitly.
+    //  Voicemail short-circuit: rubrics were stripped above; force outcome explicitly.
     const callOutcome = isNonProductiveCall
       ? 'voicemail'
       : isFraudDetected
@@ -1740,7 +1704,11 @@ exports.analyzeCall = async (req, res) => {
     // Use the LLM's overall feedback as a starter summary. A dedicated
     // /audio/summarize prompt can replace this later without changing the
     // schema.
-    if (scores && scores.overall) {
+    if (isNonProductiveCall) {
+      call.ai_summary = VOICEMAIL_SUMMARY_FR;
+      call.ai_summary_fr = VOICEMAIL_SUMMARY_FR;
+      call.ai_summary_en = VOICEMAIL_SUMMARY_EN;
+    } else if (scores && scores.overall) {
       call.ai_summary = scores.overall.feedback || scores.overall.feedback_fr || '';
       call.ai_summary_fr = scores.overall.feedback_fr || scores.overall.feedback || '';
       call.ai_summary_en = scores.overall.feedback_en || '';
