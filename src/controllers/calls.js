@@ -1447,13 +1447,13 @@ exports.analyzeCall = async (req, res) => {
           const scriptData = await scriptRes.json();
           const scripts = scriptData.data || [];
           // Prioritize active script, fallback to most recent
-          const activeScript = scripts.find(s => s.isActive) || scripts[0];
+          const activeScript = scripts.find(s => s.isActive);
           
           if (activeScript && activeScript.script && activeScript.script.length > 0) {
             gigScript = activeScript.script.map(s => `[${s.phase}] ${s.actor}: ${s.replica}`).join("\n");
             console.log(`✅ [CallController] Script from collection loaded (${activeScript.script.length} replicas).`);
           } else {
-            console.log(`⚠️ [CallController] No script replicas found in collection, using gig description.`);
+            console.log(`⚠️ [CallController] No active script found in collection, using gig description.`);
           }
         }
       }
