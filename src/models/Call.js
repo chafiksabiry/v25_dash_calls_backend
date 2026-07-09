@@ -50,7 +50,7 @@ const callSchema = new mongoose.Schema({
   },
   provider: {
     type: String,
-    enum: ["twilio", "qalqul"],
+    enum: ["twilio", "qalqul", "telnyx"],
     //required: true,
   },
   startTime: {

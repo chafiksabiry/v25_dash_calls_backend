@@ -1988,3 +1988,54 @@ exports.getLoginToken = async (req, res) => {
     res.status(500).json({ error: 'Failed to get Telnyx login token' });
   }
 };
+
+exports.handleTelnyxCallControlWebhook = async (req, res) => {
+  try {
+    const event = req.body?.data;
+    if (!event) {
+      return res.status(400).send('No event data');
+    }
+
+    const { event_type, payload } = event;
+    const callControlId = payload.call_control_id || payload.call_session_id;
+
+    if (!callControlId) {
+      return res.status(200).send('No call_control_id');
+    }
+
+    let callDoc = await Call.findOne({ call_id: callControlId });
+    if (!callDoc) {
+      callDoc = await Call.findOne({ sid: callControlId });
+    }
+
+    if (!callDoc) {
+      console.warn(`Webhook received for unknown call_control_id: ${callControlId}`);
+      return res.status(200).send('OK');
+    }
+
+    if (event_type === 'call.answered') {
+      callDoc.status = 'active';
+      await callDoc.save();
+    } else if (event_type === 'call.hangup') {
+      callDoc.status = 'completed';
+      callDoc.endTime = payload.end_time ? new Date(payload.end_time) : new Date();
+      if (payload.sip_hangup_cause) {
+        callDoc.twilioErrorCode = payload.sip_hangup_cause === 'Normal Clearing' ? null : 1000;
+        if (payload.sip_hangup_cause !== 'Normal Clearing') {
+            callDoc.ai_refusal_reason = `Hangup Cause: ${payload.sip_hangup_cause}`;
+        }
+      }
+      await callDoc.save();
+    } else if (event_type === 'call.recording.saved') {
+      if (payload.public_recording_urls && payload.public_recording_urls.mp3) {
+        callDoc.recording_url = payload.public_recording_urls.mp3;
+        await callDoc.save();
+      }
+    }
+
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error handling Telnyx webhook:', error);
+    res.status(500).send('Internal Server Error');
+  }
+};
