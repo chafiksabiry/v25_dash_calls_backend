@@ -49,9 +49,14 @@ const allowedOrigins = [
   'https://copilot.harx.ai',
   'http://38.242.208.242:5186',
   'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://localhost:8100',
   'https://harx.ai',
   'https://harxv25dashboardfrontend.netlify.app',
-  'https://harxv25comporchestratorfront.netlify.app'
+  'https://harxv25comporchestratorfront.netlify.app',
+  'capacitor://localhost',
+  'ionic://localhost',
 ];
 
 app.use(cors({
@@ -59,7 +64,8 @@ app.use(cors({
     // allow requests with no origin
     if (!origin) return callback(null, true);
     
-    const isAllowed = allowedOrigins.indexOf(origin) !== -1 || 
+    const isAllowed = allowedOrigins.indexOf(origin) !== -1 ||
+                     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
                      origin.endsWith('.harx.ai') || 
                      origin.endsWith('.netlify.app');
                      
