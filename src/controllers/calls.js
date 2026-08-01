@@ -2347,7 +2347,11 @@ exports.getLoginToken = async (req, res) => {
     const token = await telnyxService.generateLoginToken();
     res.json({ login_token: token });
   } catch (error) {
-    console.error('Error in controller:', error);
+    // Never log full Axios config — it includes Authorization: Bearer ...
+    console.error('Error in getLoginToken:', error.message);
+    if (error?.response?.data) {
+      console.error('Telnyx response:', JSON.stringify(error.response.data));
+    }
     res.status(500).json({
       error: 'Failed to get Telnyx login token',
       message: error.message,
