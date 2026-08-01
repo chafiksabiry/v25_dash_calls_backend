@@ -1,12 +1,13 @@
 const WebSocket = require('ws');
 
-const DEFAULT_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-realtime-preview';
+// GA Realtime models (beta header retired). Override via OPENAI_REALTIME_MODEL.
+const DEFAULT_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
 const DEFAULT_VOICE = process.env.OPENAI_VOICE || 'alloy';
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
 
 /**
- * Reusable OpenAI Realtime Voice session manager.
- * Streams PCM16 audio both ways and supports tool/function calls.
+ * OpenAI Realtime Voice (GA API) — PCMU passthrough for Telnyx telephony.
+ * No OpenAI-Beta header; nested session.audio.* shape.
  */
 class OpenAIRealtimeService {
   constructor({
@@ -27,7 +28,8 @@ class OpenAIRealtimeService {
     this.connected = false;
     this.closed = false;
     this.reconnectAttempts = 0;
-    this.maxReconnects = 3;
+    this.maxReconnects = 2;
+    this._fatal = false;
     this.handlers = {
       onAudioDelta: null,
       onTranscript: null,
@@ -37,8 +39,8 @@ class OpenAIRealtimeService {
       onSpeechStarted: null,
       onSpeechStopped: null,
     };
-    this._pendingTools = new Map();
     this._sessionCreatedAt = null;
+    this._connectArgs = null;
   }
 
   on(event, fn) {
@@ -50,15 +52,17 @@ class OpenAIRealtimeService {
 
   async connect({ instructions, tools = [], voice } = {}) {
     if (this.ws && this.connected) return;
+    if (this._fatal) throw new Error('OpenAI Realtime session marked fatal');
 
+    this._connectArgs = { instructions, tools, voice };
     const url = `${REALTIME_URL}?model=${encodeURIComponent(this.model)}`;
-    this.logger.log('[OpenAIRealtime] session connecting', { model: this.model });
+    this.logger.log('[OpenAIRealtime] session connecting (GA)', { model: this.model });
 
     await new Promise((resolve, reject) => {
+      // GA: do NOT send OpenAI-Beta: realtime=v1
       const ws = new WebSocket(url, {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
-          'OpenAI-Beta': 'realtime=v1',
         },
       });
 
@@ -74,8 +78,12 @@ class OpenAIRealtimeService {
         this.closed = false;
         this.reconnectAttempts = 0;
         this._sessionCreatedAt = Date.now();
-        this.logger.log('[OpenAIRealtime] websocket connected');
-        this._configureSession({ instructions, tools, voice: voice || this.voice });
+        this.logger.log('[OpenAIRealtime] websocket connected (GA)');
+        this._configureSession({
+          instructions,
+          tools,
+          voice: voice || this.voice,
+        });
         resolve();
       });
 
@@ -90,11 +98,24 @@ class OpenAIRealtimeService {
 
       ws.on('close', (code, reason) => {
         this.connected = false;
+        const reasonStr = reason?.toString?.() || '';
         this.logger.log('[OpenAIRealtime] websocket disconnected', {
           code,
-          reason: reason?.toString?.() || '',
+          reason: reasonStr,
         });
         if (this.handlers.onClose) this.handlers.onClose({ code, reason });
+
+        const fatal =
+          this._fatal ||
+          reasonStr.includes('beta_api_shape_disabled') ||
+          reasonStr.includes('invalid_api_key') ||
+          code === 1008;
+        if (fatal) {
+          this._fatal = true;
+          this.closed = true;
+          return;
+        }
+
         if (!this.closed && this.reconnectAttempts < this.maxReconnects) {
           this.reconnectAttempts += 1;
           const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 8000);
@@ -103,7 +124,8 @@ class OpenAIRealtimeService {
             delay,
           });
           setTimeout(() => {
-            this.connect({ instructions, tools, voice }).catch((e) => {
+            const args = this._connectArgs || { instructions, tools, voice };
+            this.connect(args).catch((e) => {
               if (this.handlers.onError) this.handlers.onError(e);
             });
           }, delay);
@@ -113,27 +135,36 @@ class OpenAIRealtimeService {
   }
 
   _configureSession({ instructions, tools, voice }) {
-    // g711_ulaw = PCMU @ 8kHz — matches Telnyx bidirectional RTP without resampling.
+    // GA session shape — nested audio + session.type required
     this.send({
       type: 'session.update',
       session: {
-        modalities: ['text', 'audio'],
+        type: 'realtime',
+        model: this.model,
         instructions:
           instructions ||
           'You are a professional outbound sales voice agent for HARX. Speak French unless the lead uses another language. Be concise and natural.',
-        voice: voice || this.voice,
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        input_audio_transcription: { model: 'whisper-1' },
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 400,
-          create_response: true,
-        },
+        output_modalities: ['audio'],
         tools: tools || [],
         tool_choice: 'auto',
+        audio: {
+          input: {
+            format: { type: 'audio/pcmu' },
+            transcription: { model: 'gpt-4o-mini-transcribe' },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 400,
+              create_response: true,
+              interrupt_response: true,
+            },
+          },
+          output: {
+            format: { type: 'audio/pcmu' },
+            voice: voice || this.voice,
+          },
+        },
       },
     });
   }
@@ -145,10 +176,10 @@ class OpenAIRealtimeService {
     this.ws.send(JSON.stringify(payload));
   }
 
-  /** Append base64 PCM16 audio from the caller. */
-  appendInputAudio(base64Pcm16) {
-    if (!base64Pcm16) return;
-    this.send({ type: 'input_audio_buffer.append', audio: base64Pcm16 });
+  /** Append base64 PCMU (g711 µ-law) audio from the caller. */
+  appendInputAudio(base64Pcmu) {
+    if (!base64Pcmu) return;
+    this.send({ type: 'input_audio_buffer.append', audio: base64Pcmu });
   }
 
   commitInputAudio() {
@@ -196,8 +227,11 @@ class OpenAIRealtimeService {
 
     switch (event.type) {
       case 'session.created':
-        this.sessionId = event.session?.id || null;
-        this.logger.log('[OpenAIRealtime] session created', { sessionId: this.sessionId });
+      case 'session.updated':
+        this.sessionId = event.session?.id || this.sessionId;
+        if (event.type === 'session.created') {
+          this.logger.log('[OpenAIRealtime] session created', { sessionId: this.sessionId });
+        }
         break;
       case 'input_audio_buffer.speech_started':
         if (this.handlers.onSpeechStarted) this.handlers.onSpeechStarted(event);
@@ -206,11 +240,14 @@ class OpenAIRealtimeService {
       case 'input_audio_buffer.speech_stopped':
         if (this.handlers.onSpeechStopped) this.handlers.onSpeechStopped(event);
         break;
+      // GA renamed audio deltas; keep beta name as fallback
+      case 'response.output_audio.delta':
       case 'response.audio.delta':
         if (event.delta && this.handlers.onAudioDelta) {
           this.handlers.onAudioDelta(event.delta);
         }
         break;
+      case 'response.output_audio_transcript.delta':
       case 'response.audio_transcript.delta':
       case 'conversation.item.input_audio_transcription.completed':
         if (this.handlers.onTranscript) this.handlers.onTranscript(event);
@@ -238,10 +275,16 @@ class OpenAIRealtimeService {
         }
         break;
       }
-      case 'error':
-        this.logger.error('[OpenAIRealtime] API error', event.error || event);
-        if (this.handlers.onError) this.handlers.onError(event.error || event);
+      case 'error': {
+        const errObj = event.error || event;
+        this.logger.error('[OpenAIRealtime] API error', errObj);
+        if (errObj?.code === 'beta_api_shape_disabled') {
+          this._fatal = true;
+          this.closed = true;
+        }
+        if (this.handlers.onError) this.handlers.onError(errObj);
         break;
+      }
       default:
         break;
     }
