@@ -4,7 +4,9 @@ WORKDIR /app
 
 # Install deps from lockfile only — never reuse a host/copied node_modules tree
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev \
+  && (test -f node_modules/mongoose/node_modules/mongodb/lib/cursor/explainable_cursor.js \
+      || test -f node_modules/mongodb/lib/cursor/explainable_cursor.js)
 
 COPY . .
 

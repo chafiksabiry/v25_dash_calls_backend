@@ -9,4 +9,3 @@ temp
 *.md
 package-lock.json.backup
 check_db.js
-scripts
