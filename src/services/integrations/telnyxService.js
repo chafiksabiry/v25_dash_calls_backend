@@ -15,7 +15,13 @@ function telnyxHeaders(apiKey) {
 }
 
 function extractToken(payload) {
-  return payload?.data?.token || payload?.token || null;
+  if (!payload) return null;
+  // Telnyx may return the JWT as a bare string, as data:<jwt>, or data.token
+  if (typeof payload === 'string' && payload.length > 20) return payload;
+  if (typeof payload.data === 'string' && payload.data.length > 20) return payload.data;
+  if (typeof payload.data?.token === 'string') return payload.data.token;
+  if (typeof payload.token === 'string') return payload.token;
+  return null;
 }
 
 function formatTelnyxError(err) {
@@ -43,7 +49,10 @@ async function tokenFromCredentialId(apiKey, credentialId) {
   );
   const token = extractToken(response.data);
   if (!token) {
-    throw new Error('Telnyx credential token response missing token');
+    const shape = response.data && typeof response.data === 'object'
+      ? Object.keys(response.data).join(',')
+      : typeof response.data;
+    throw new Error(`Telnyx credential token response missing token (shape=${shape})`);
   }
   return token;
 }
@@ -76,11 +85,14 @@ async function tokenFromConnectionId(apiKey, connectionId) {
       if (!credentialId) {
         throw new Error('Telnyx create telephony_credential response missing id');
       }
+      console.log('[Telnyx] Created telephony credential', credentialId, 'on', connectionId);
       return tokenFromCredentialId(apiKey, credentialId);
     } catch (err) {
       lastErr = err;
+      // Distinguish create vs token step for clearer Railway logs
+      const step = err.message?.includes('token') ? 'token' : 'create';
       console.error(
-        '[Telnyx] create telephony_credential failed for',
+        `[Telnyx] ${step} telephony_credential failed for`,
         connectionId,
         formatTelnyxError(err)
       );
