@@ -1,4 +1,41 @@
+const mongoose = require('mongoose');
 const Gig = require('../models/Gig');
+
+async function persistVoiceAssistant(gigId, voiceAssistant, gigTitle) {
+  const gigIdStr = String(gigId);
+  const _id = mongoose.Types.ObjectId.isValid(gigIdStr)
+    ? new mongoose.Types.ObjectId(gigIdStr)
+    : gigIdStr;
+
+  await mongoose.connection.db.collection('gigs').updateOne(
+    { _id },
+    {
+      $set: {
+        voiceAssistant,
+        updatedAt: new Date(),
+        ...(gigTitle ? { title: gigTitle } : {}),
+      },
+      $setOnInsert: {
+        status: 'active',
+        title: gigTitle || 'Gig',
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+
+  await mongoose.connection.db.collection('gig_voice_assistants').updateOne(
+    { gigId: gigIdStr },
+    {
+      $set: {
+        gigId: gigIdStr,
+        ...voiceAssistant,
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+}
 
 // @desc    Get single gig
 // @route   GET /api/gigs/:id
@@ -34,22 +71,33 @@ exports.getGig = async (req, res) => {
 exports.updateGigVoiceAssistant = async (req, res) => {
     try {
         const gigId = req.params.id;
-        let gig = await Gig.findById(gigId);
-        // dash_calls may not hold the canonical gig doc — upsert a stub for voice config.
-        if (!gig) {
-            gig = new Gig({
-                _id: gigId,
-                title: req.body?.gigTitle || 'Gig',
-                status: 'active',
-            });
+        const body = req.body || {};
+        const gigIdStr = String(gigId);
+        const orId = [{ _id: gigIdStr }];
+        if (mongoose.Types.ObjectId.isValid(gigIdStr)) {
+            orId.push({ _id: new mongoose.Types.ObjectId(gigIdStr) });
         }
 
-        const body = req.body || {};
-        const prev = (gig.voiceAssistant && typeof gig.voiceAssistant === 'object')
-            ? gig.voiceAssistant
-            : {};
+        const existing =
+            (await mongoose.connection.db.collection('gigs').findOne({ $or: orId })) ||
+            (await mongoose.connection.db.collection('gig_voice_assistants').findOne({ gigId: gigIdStr }));
 
-        gig.voiceAssistant = {
+        const prev =
+            (existing?.voiceAssistant && typeof existing.voiceAssistant === 'object'
+                ? existing.voiceAssistant
+                : null) ||
+            (existing?.enabled !== undefined
+                ? {
+                    enabled: existing.enabled,
+                    name: existing.name,
+                    voice: existing.voice,
+                    model: existing.model,
+                    systemPrompt: existing.systemPrompt,
+                    greeting: existing.greeting,
+                  }
+                : {});
+
+        const voiceAssistant = {
             ...prev,
             enabled: body.enabled !== undefined ? Boolean(body.enabled) : Boolean(prev.enabled),
             name: body.name !== undefined ? body.name : (prev.name || 'HARX AI Voice'),
@@ -60,13 +108,15 @@ exports.updateGigVoiceAssistant = async (req, res) => {
             updatedAt: new Date(),
         };
 
-        await gig.save();
+        await persistVoiceAssistant(gigIdStr, voiceAssistant, body.gigTitle);
+        console.log('[VoiceAssistant] saved', { gigId: gigIdStr, enabled: voiceAssistant.enabled });
 
         return res.status(200).json({
             success: true,
-            data: { voiceAssistant: gig.voiceAssistant },
+            data: { voiceAssistant, gigId: gigIdStr },
         });
     } catch (err) {
+        console.error('[VoiceAssistant] save failed', err?.message || err);
         return res.status(400).json({ success: false, error: err.message });
     }
 };
