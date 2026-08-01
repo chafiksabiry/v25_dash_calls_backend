@@ -113,6 +113,7 @@ class OpenAIRealtimeService {
   }
 
   _configureSession({ instructions, tools, voice }) {
+    // g711_ulaw = PCMU @ 8kHz — matches Telnyx bidirectional RTP without resampling.
     this.send({
       type: 'session.update',
       session: {
@@ -121,14 +122,14 @@ class OpenAIRealtimeService {
           instructions ||
           'You are a professional outbound sales voice agent for HARX. Speak French unless the lead uses another language. Be concise and natural.',
         voice: voice || this.voice,
-        input_audio_format: 'pcm16',
-        output_audio_format: 'pcm16',
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
         input_audio_transcription: { model: 'whisper-1' },
         turn_detection: {
           type: 'server_vad',
           threshold: 0.5,
           prefix_padding_ms: 300,
-          silence_duration_ms: 500,
+          silence_duration_ms: 400,
           create_response: true,
         },
         tools: tools || [],

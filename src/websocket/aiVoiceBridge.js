@@ -1,13 +1,12 @@
 const WebSocket = require('ws');
 const { getActiveSession } = require('../services/aiOutboundCallService');
-const {
-  mulawBufferToPcm16Base64_24k,
-  pcm16Base64_24kToMulawBuffer,
-} = require('../utils/audioCodec');
 
 /**
- * Telnyx media stream <-> OpenAI Realtime bridge.
+ * Telnyx media stream <-> OpenAI Realtime bridge (PCMU passthrough).
  * Path: /ai-voice-stream?callControlId=...
+ *
+ * Audio is g711 µ-law @ 8kHz end-to-end (Telnyx PCMU ↔ OpenAI g711_ulaw)
+ * so there is no resampling — required for natural barge-in conversation.
  */
 function setupAiVoiceBridge(server) {
   const wss = new WebSocket.Server({
@@ -25,32 +24,61 @@ function setupAiVoiceBridge(server) {
     }
 
     const ctx = callControlId ? getActiveSession(callControlId) : null;
-    if (!ctx || !ctx.realtime) {
-      console.error('[AiVoiceBridge] no active AI session for', callControlId);
+    if (!ctx) {
+      console.error('[AiVoiceBridge] no session ctx for', callControlId);
       ws.close(1008, 'no_session');
       return;
     }
 
-    console.log('[AiVoiceBridge] telnyx stream connected', callControlId);
-    const realtime = ctx.realtime;
+    // Telnyx may connect before OpenAI is ready — hold the socket.
     ctx.telnyxStreamWs = ws;
+    ctx.telnyxStreamId = null;
+    let mediaIn = 0;
+    let mediaOut = 0;
 
-    realtime.on('onAudioDelta', (base64Pcm24) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      try {
-        const mulaw = pcm16Base64_24kToMulawBuffer(base64Pcm24);
-        ws.send(
-          JSON.stringify({
-            event: 'media',
-            media: {
-              payload: mulaw.toString('base64'),
-            },
-          })
-        );
-      } catch (err) {
-        console.warn('[AiVoiceBridge] outbound audio encode failed', err?.message || err);
-      }
-    });
+    const attachRealtimeHandlers = (realtime) => {
+      if (!realtime || realtime.__bridgeAttached) return;
+      realtime.__bridgeAttached = true;
+
+      realtime.on('onAudioDelta', (base64Pcmu) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        try {
+          mediaOut += 1;
+          ws.send(
+            JSON.stringify({
+              event: 'media',
+              media: { payload: base64Pcmu },
+            })
+          );
+          if (mediaOut === 1 || mediaOut % 50 === 0) {
+            console.log('[AiVoiceBridge] audio out frames', mediaOut, callControlId);
+          }
+        } catch (err) {
+          console.warn('[AiVoiceBridge] outbound send failed', err?.message || err);
+        }
+      });
+
+      realtime.on('onSpeechStarted', () => {
+        // Barge-in: clear Telnyx playback queue so the caller can interrupt.
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ event: 'clear' }));
+          } catch {
+            /* ignore */
+          }
+        }
+        console.log('[AiVoiceBridge] barge-in clear', callControlId);
+      });
+    };
+
+    if (ctx.realtime) {
+      attachRealtimeHandlers(ctx.realtime);
+    } else {
+      ctx._attachBridgeWhenReady = attachRealtimeHandlers;
+      console.log('[AiVoiceBridge] telnyx connected early, waiting for OpenAI', callControlId);
+    }
+
+    console.log('[AiVoiceBridge] telnyx stream connected', callControlId);
 
     ws.on('message', (raw) => {
       let msg;
@@ -61,26 +89,44 @@ function setupAiVoiceBridge(server) {
       }
 
       const event = msg.event || msg.type;
+
+      if (event === 'start') {
+        ctx.telnyxStreamId = msg.stream_id || null;
+        const fmt = msg.start?.media_format;
+        console.log('[AiVoiceBridge] stream start', {
+          callControlId,
+          streamId: ctx.telnyxStreamId,
+          encoding: fmt?.encoding,
+          sampleRate: fmt?.sample_rate,
+        });
+        return;
+      }
+
       if (event === 'media' && msg.media?.payload) {
+        const realtime = ctx.realtime;
+        if (!realtime || !realtime.connected) return;
+        // Only forward caller audio (inbound). Ignore echoed outbound if both_tracks.
+        const track = msg.media.track || '';
+        if (track && track !== 'inbound' && track !== 'inbound_track') return;
         try {
-          const mulawBuf = Buffer.from(msg.media.payload, 'base64');
-          const pcm24b64 = mulawBufferToPcm16Base64_24k(mulawBuf);
-          realtime.appendInputAudio(pcm24b64);
+          mediaIn += 1;
+          realtime.appendInputAudio(msg.media.payload);
+          if (mediaIn === 1 || mediaIn % 50 === 0) {
+            console.log('[AiVoiceBridge] audio in frames', mediaIn, callControlId);
+          }
         } catch (err) {
-          console.warn('[AiVoiceBridge] invalid inbound audio', err?.message || err);
+          console.warn('[AiVoiceBridge] inbound audio failed', err?.message || err);
         }
         return;
       }
 
-      if (event === 'start') {
-        console.log('[AiVoiceBridge] stream start', callControlId);
-        return;
-      }
-
       if (event === 'stop' || event === 'ended') {
-        console.log('[AiVoiceBridge] stream stop', callControlId);
+        console.log('[AiVoiceBridge] stream stop', callControlId, {
+          mediaIn,
+          mediaOut,
+        });
         try {
-          realtime.close();
+          ctx.realtime?.close();
         } catch {
           /* ignore */
         }
@@ -88,7 +134,10 @@ function setupAiVoiceBridge(server) {
     });
 
     ws.on('close', () => {
-      console.log('[AiVoiceBridge] telnyx stream closed', callControlId);
+      console.log('[AiVoiceBridge] telnyx stream closed', callControlId, {
+        mediaIn,
+        mediaOut,
+      });
     });
 
     ws.on('error', (err) => {
@@ -96,7 +145,7 @@ function setupAiVoiceBridge(server) {
     });
   });
 
-  console.log('[AiVoiceBridge] listening on /ai-voice-stream');
+  console.log('[AiVoiceBridge] listening on /ai-voice-stream (PCMU passthrough)');
 }
 
 module.exports = setupAiVoiceBridge;
