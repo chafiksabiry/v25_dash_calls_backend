@@ -7,20 +7,24 @@ async function persistVoiceAssistant(gigId, voiceAssistant, gigTitle) {
     ? new mongoose.Types.ObjectId(gigIdStr)
     : gigIdStr;
 
+  // Mongo forbids the same path in both $set and $setOnInsert.
+  const $set = {
+    voiceAssistant,
+    updatedAt: new Date(),
+  };
+  const $setOnInsert = {
+    status: 'active',
+    createdAt: new Date(),
+  };
+  if (gigTitle) {
+    $set.title = gigTitle;
+  } else {
+    $setOnInsert.title = 'Gig';
+  }
+
   await mongoose.connection.db.collection('gigs').updateOne(
     { _id },
-    {
-      $set: {
-        voiceAssistant,
-        updatedAt: new Date(),
-        ...(gigTitle ? { title: gigTitle } : {}),
-      },
-      $setOnInsert: {
-        status: 'active',
-        title: gigTitle || 'Gig',
-        createdAt: new Date(),
-      },
-    },
+    { $set, $setOnInsert },
     { upsert: true }
   );
 
