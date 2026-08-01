@@ -1,8 +1,9 @@
 const mongoose = require('mongoose');
 
 /**
- * Resolve the active phone line for a gig (most recent voice-capable number).
- * Provider on this document drives Workspace dialer selection.
+ * Resolve an active phone line for a gig.
+ * Picks randomly among active voice-capable numbers so Caller ID rotates
+ * when a gig has several lines (Twilio and/or Telnyx).
  */
 async function resolveActiveLineForGig(gigId) {
   if (!gigId) return null;
@@ -19,14 +20,13 @@ async function resolveActiveLineForGig(gigId) {
       $or: orGig,
       status: 'active',
     })
-    .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
-    .limit(20)
     .toArray();
 
   if (!docs.length) return null;
 
-  const withVoice = docs.find((d) => d.features?.voice !== false);
-  const chosen = withVoice || docs[0];
+  const voiceCapable = docs.filter((d) => d.features?.voice !== false);
+  const pool = voiceCapable.length ? voiceCapable : docs;
+  const chosen = pool[Math.floor(Math.random() * pool.length)];
 
   return {
     phoneNumberId: String(chosen._id),
