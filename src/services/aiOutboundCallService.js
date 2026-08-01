@@ -161,10 +161,16 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
+  // Call Control App ID (Mission Control → Call Control Applications).
+  // Do NOT reuse the WebRTC Credential Connection id here — Telnyx rejects it.
   const connectionId =
-    process.env.TELNYX_CONNECTION_ID || process.env.TELNYX_APPLICATION_ID;
+    process.env.TELNYX_CALL_CONTROL_APP_ID ||
+    process.env.TELNYX_APPLICATION_ID ||
+    process.env.TELNYX_CONNECTION_ID;
   if (!connectionId) {
-    const err = new Error('TELNYX_CONNECTION_ID is not configured');
+    const err = new Error(
+      'TELNYX_CALL_CONTROL_APP_ID is not configured (Call Control Application with webhook URL)'
+    );
     err.status = 500;
     throw err;
   }
