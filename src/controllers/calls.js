@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
+const { resolveActiveLineForLead } = require('../utils/resolveGigPhoneLine');
 const vertexAIService = require('../services/vertexai.service');
 const {
   resolveSelfCallFraud,
@@ -771,40 +772,45 @@ exports.handleVoice = async (req, res) => {
 
   let callerId = null;
   let leadGigId = null;
+  let lineProvider = null;
 
   if (LeadId && mongoose.Types.ObjectId.isValid(LeadId)) {
     try {
-      // 1. Trouver le lead pour obtenir le gigId
-      const lead = await mongoose.connection.db.collection('leads').findOne({
-        _id: new mongoose.Types.ObjectId(LeadId)
-      });
-
-      if (lead && lead.gigId) {
+      const { lead, line } = await resolveActiveLineForLead(LeadId);
+      if (lead?.gigId) {
         leadGigId = String(lead.gigId);
         console.log(`🔍 Found lead for gigId: ${lead.gigId}`);
-
-        // 2. Trouver le numéro de téléphone associé à ce gigId
-        // Note: gigId peut être stocké comme String ou ObjectId selon l'origine
-        const phoneNumberDoc = await mongoose.connection.db.collection('phonenumbers').findOne({
-          $or: [
-            { gigId: lead.gigId },
-            { gigId: lead.gigId.toString() }
-          ],
-          status: 'active'
-        });
-
-        if (phoneNumberDoc) {
-          callerId = phoneNumberDoc.phoneNumber;
-          console.log(`🚀 Using dynamic CallerID from Gig: ${callerId}`);
-        } else {
-          console.warn(`⚠️ No active phone number found for gigId: ${lead.gigId}`);
-        }
+      }
+      if (line) {
+        callerId = line.phoneNumber;
+        lineProvider = line.provider;
+        console.log(`🚀 Using dynamic CallerID from Gig: ${callerId} (provider=${lineProvider})`);
+      } else if (lead?.gigId) {
+        console.warn(`⚠️ No active phone number found for gigId: ${lead.gigId}`);
       } else {
         console.warn(`⚠️ No lead or gigId found for LeadId: ${LeadId}`);
       }
     } catch (err) {
       console.error("❌ Error resolving gig phone number:", err);
     }
+  }
+
+  // Telnyx numbers must not be used as Twilio caller IDs.
+  if (lineProvider && lineProvider !== 'twilio') {
+    console.warn('[TwilioVoice] Refusing non-Twilio line on Twilio voice webhook:', {
+      leadId: LeadId,
+      gigId: leadGigId,
+      provider: lineProvider,
+      callerId,
+    });
+    const wrongProviderTwiml = new twilio.twiml.VoiceResponse();
+    wrongProviderTwiml.say(
+      { voice: 'alice' },
+      'This gig uses a Telnyx phone line. Please place the call with the Telnyx dialer.'
+    );
+    wrongProviderTwiml.hangup();
+    res.type('text/xml');
+    return res.status(200).send(wrongProviderTwiml.toString());
   }
 
   const eligibility = await validateCopilotCallEligibility({
@@ -838,6 +844,47 @@ exports.handleVoice = async (req, res) => {
     twiml.say("An application error occurred.");
     res.type("text/xml");
     res.status(200).send(twiml.toString());
+  }
+};
+
+/**
+ * GET /api/calls/line-for-lead/:leadId
+ * Returns the active telephony line for the lead's gig (provider + E.164).
+ */
+exports.getLineForLead = async (req, res) => {
+  try {
+    const leadId = req.params.leadId || req.query.leadId;
+    if (!leadId) {
+      return res.status(400).json({ message: 'leadId is required' });
+    }
+
+    const { lead, line } = await resolveActiveLineForLead(leadId);
+    if (!lead) {
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+    if (!lead.gigId) {
+      return res.status(404).json({ message: 'Lead has no gig', leadId });
+    }
+    if (!line) {
+      return res.status(404).json({
+        message: 'No active phone number for this gig',
+        leadId,
+        gigId: String(lead.gigId),
+      });
+    }
+
+    return res.json({
+      provider: line.provider,
+      phoneNumber: line.phoneNumber,
+      phoneNumberId: line.phoneNumberId,
+      gigId: line.gigId,
+      companyId: line.companyId,
+      status: line.status,
+      features: line.features,
+    });
+  } catch (error) {
+    console.error('Error in getLineForLead:', error);
+    return res.status(500).json({ message: 'Failed to resolve gig phone line', error: error.message });
   }
 };
 
@@ -902,35 +949,88 @@ exports.getTwilioToken = async (req, res) => {
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, callSid, agentId, leadId, call, cloudinaryrecord, transcript, gigId, companyId, userId, transactionOccurred, isVoicemail, appointmentAt, callbackAt, ErrorCode, errorCode } = req.body;
-  const actualCallSid = CallSid || callSid;
+  const {
+    CallSid,
+    callSid,
+    externalId,
+    provider: bodyProvider,
+    agentId,
+    leadId,
+    call,
+    cloudinaryrecord,
+    transcript,
+    gigId,
+    companyId,
+    userId,
+    transactionOccurred,
+    isVoicemail,
+    appointmentAt,
+    callbackAt,
+    ErrorCode,
+    errorCode,
+    from,
+    to,
+    duration,
+    startTime,
+    endTime,
+    status,
+  } = req.body;
+
+  const provider = bodyProvider === 'telnyx' ? 'telnyx' : 'twilio';
+  const actualCallSid = CallSid || callSid || externalId;
   // Twilio error code (21211 = invalid number, 21214 = unreachable, 13224 = cannot dial)
   const twilioErrorCode = ErrorCode || errorCode ? Number(ErrorCode || errorCode) : null;
 
   if (!actualCallSid) {
-    return res.status(400).json({ message: 'Call SID is required' });
+    return res.status(400).json({ message: 'Call SID / externalId is required' });
   }
 
   try {
-    const callDetails = await twilioService.saveCallToDB(
-      actualCallSid, 
-      agentId, 
-      leadId, 
-      call, 
-      cloudinaryrecord, 
-      transcript,
-      gigId,
-      companyId,
-      userId,
-      transactionOccurred,
-      isVoicemail,
-      appointmentAt,
-      callbackAt
-    );
+    let callDetails;
 
-    // Persist Twilio error code if provided (available at call-end from Twilio webhook)
-    if (callDetails?._id && twilioErrorCode) {
-      await Call.updateOne({ _id: callDetails._id }, { $set: { twilioErrorCode } }).catch(() => {});
+    if (provider === 'telnyx') {
+      callDetails = await saveTelnyxCallDocument({
+        externalId: actualCallSid,
+        agentId,
+        leadId,
+        call: call || {},
+        cloudinaryrecord,
+        transcript,
+        gigId,
+        companyId,
+        userId,
+        transactionOccurred,
+        isVoicemail,
+        appointmentAt,
+        callbackAt,
+        from,
+        to,
+        duration,
+        startTime,
+        endTime,
+        status,
+      });
+    } else {
+      callDetails = await twilioService.saveCallToDB(
+        actualCallSid,
+        agentId,
+        leadId,
+        call,
+        cloudinaryrecord,
+        transcript,
+        gigId,
+        companyId,
+        userId,
+        transactionOccurred,
+        isVoicemail,
+        appointmentAt,
+        callbackAt
+      );
+
+      // Persist Twilio error code if provided (available at call-end from Twilio webhook)
+      if (callDetails?._id && twilioErrorCode) {
+        await Call.updateOne({ _id: callDetails._id }, { $set: { twilioErrorCode } }).catch(() => {});
+      }
     }
 
     // Trigger automatic background analysis
@@ -944,6 +1044,255 @@ exports.saveCallToDB = async (req, res) => {
     res.status(500).json({
       message: 'Failed to save call details',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Upsert a Telnyx WebRTC call into the Call collection.
+ * Uses `sid` + `call_id` = Telnyx call id for uniqueness / webhook matching.
+ */
+async function saveTelnyxCallDocument({
+  externalId,
+  agentId,
+  leadId,
+  call,
+  cloudinaryrecord,
+  transcript,
+  gigId,
+  companyId,
+  userId,
+  transactionOccurred,
+  isVoicemail,
+  appointmentAt,
+  callbackAt,
+  from,
+  to,
+  duration,
+  startTime,
+  endTime,
+  status,
+}) {
+  let finalCloudinaryUrl = cloudinaryrecord || null;
+  const recordingUrl = call?.recordingUrl || call?.recording_url || null;
+
+  if (!finalCloudinaryUrl && recordingUrl) {
+    try {
+      finalCloudinaryUrl = await telnyxService.archivePublicRecording(recordingUrl);
+    } catch (err) {
+      console.warn('[Telnyx] recording archive failed:', err.message);
+    }
+  }
+
+  // If webhook already attached a recording, prefer that after a short wait.
+  if (!finalCloudinaryUrl) {
+    const existing = await Call.findOne({
+      $or: [{ sid: externalId }, { call_id: externalId }],
+    }).lean();
+    if (existing?.recording_url_cloudinary) {
+      finalCloudinaryUrl = existing.recording_url_cloudinary;
+    } else if (existing?.recording_url) {
+      try {
+        finalCloudinaryUrl = await telnyxService.archivePublicRecording(existing.recording_url);
+      } catch (err) {
+        console.warn('[Telnyx] existing recording archive failed:', err.message);
+      }
+    }
+  }
+
+  const update = {
+    status: status || call?.status || 'completed',
+    duration: parseInt(duration ?? call?.duration, 10) || 0,
+    recording_url: recordingUrl || undefined,
+    recording_url_cloudinary: finalCloudinaryUrl || undefined,
+    from: from || call?.from || undefined,
+    to: to || call?.to || undefined,
+    transcript: transcript || [],
+    provider: 'telnyx',
+    call_id: externalId,
+    updatedAt: new Date(),
+    endTime: endTime ? new Date(endTime) : new Date(),
+  };
+
+  if (isVoicemail) {
+    update.validByAI = false;
+    update.valid = false;
+    update.ai_call_status = 'auto_refused';
+    update.callOutcome = 'voicemail';
+    update.callOutcomeSource = 'rep';
+    update.ai_refusal_reason = 'Appel sur messagerie vocale (déclaré par le rep)';
+  } else {
+    if (transactionOccurred !== undefined && transactionOccurred !== null) {
+      update.transactionOccurred = transactionOccurred;
+    }
+    if (appointmentAt) {
+      update.appointmentAt = appointmentAt;
+      update.callOutcome = 'appointment';
+      update.callOutcomeSource = 'rep';
+      update.validByAI = true;
+      update.valid = true;
+    } else if (callbackAt) {
+      update.callbackAt = callbackAt;
+      update.callOutcome = 'callback_requested';
+      update.callOutcomeSource = 'rep';
+      update.validByAI = true;
+      update.valid = true;
+    }
+  }
+
+  // Prefer sid lookup (unique). Fall back to call_id for webhook-created docs.
+  let existingDoc = await Call.findOne({ sid: externalId });
+  if (!existingDoc) {
+    existingDoc = await Call.findOne({ call_id: externalId });
+  }
+
+  let result;
+  if (existingDoc) {
+    Object.assign(existingDoc, update);
+    if (!existingDoc.sid) existingDoc.sid = externalId;
+    if (!existingDoc.call_id) existingDoc.call_id = externalId;
+    if (agentId && !existingDoc.agent) existingDoc.agent = agentId;
+    if (leadId && !existingDoc.lead) existingDoc.lead = leadId;
+    if (gigId && !existingDoc.gigId) existingDoc.gigId = gigId;
+    if (companyId && !existingDoc.companyId) existingDoc.companyId = companyId;
+    await existingDoc.save();
+    result = await Call.findById(existingDoc._id).populate('agent').populate('lead');
+  } else {
+    result = await Call.create({
+      ...update,
+      agent: agentId || undefined,
+      lead: leadId || undefined,
+      gigId: gigId || undefined,
+      companyId: companyId || undefined,
+      userId: userId || undefined,
+      sid: externalId,
+      call_id: externalId,
+      direction: call?.direction || 'outbound',
+      provider: 'telnyx',
+      createdAt: startTime ? new Date(startTime) : new Date(),
+      startTime: startTime ? new Date(startTime) : new Date(),
+    });
+    result = await Call.findById(result._id).populate('agent').populate('lead');
+  }
+
+  // Charge minutes (same fire-and-forget pattern as Twilio path).
+  try {
+    const targetCompanyId = result.companyId || companyId;
+    const durationSeconds = parseInt(result.duration, 10) || 0;
+    if (targetCompanyId && durationSeconds > 0) {
+      const orchestratorUrl = (
+        process.env.ORCHESTRATOR_API_URL ||
+        'https://v25comporchestratorback-production.up.railway.app'
+      ).replace(/\/$/, '');
+      fetch(`${orchestratorUrl}/api/minutes-company/charge-call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: targetCompanyId,
+          callSid: externalId,
+          durationSeconds,
+          provider: 'telnyx',
+        }),
+      }).catch((err) => console.warn('[Telnyx] minutes charge failed:', err.message));
+    }
+  } catch (err) {
+    console.warn('[Telnyx] minutes charge error:', err.message);
+  }
+
+  return result;
+}
+
+/**
+ * POST /api/calls/telnyx/finalize
+ * Wait briefly for Telnyx recording webhook, then upsert Call + archive recording.
+ */
+exports.finalizeTelnyxCall = async (req, res) => {
+  try {
+    const {
+      externalId,
+      callId,
+      agentId,
+      leadId,
+      gigId,
+      companyId,
+      userId,
+      transcript,
+      from,
+      to,
+      duration,
+      startTime,
+      endTime,
+      status,
+      transactionOccurred,
+      isVoicemail,
+      appointmentAt,
+      callbackAt,
+      waitForRecordingMs = 8000,
+    } = req.body;
+
+    const id = externalId || callId;
+    if (!id) {
+      return res.status(400).json({ message: 'externalId is required' });
+    }
+
+    const waitMs = Math.min(Math.max(Number(waitForRecordingMs) || 0, 0), 20000);
+    if (waitMs > 0) {
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+
+    // Prefer recording already written by webhook.
+    let existing = await Call.findOne({
+      $or: [{ sid: id }, { call_id: id }],
+    }).lean();
+
+    let cloudinaryrecord = existing?.recording_url_cloudinary || null;
+    if (!cloudinaryrecord && existing?.recording_url) {
+      try {
+        cloudinaryrecord = await telnyxService.archivePublicRecording(existing.recording_url);
+      } catch (err) {
+        console.warn('[Telnyx finalize] archive failed:', err.message);
+      }
+    }
+
+    const callDetails = await saveTelnyxCallDocument({
+      externalId: id,
+      agentId,
+      leadId,
+      call: {
+        status: status || existing?.status || 'completed',
+        duration: duration ?? existing?.duration ?? 0,
+        from: from || existing?.from,
+        to: to || existing?.to,
+        recordingUrl: existing?.recording_url,
+        direction: 'outbound',
+      },
+      cloudinaryrecord,
+      transcript,
+      gigId,
+      companyId,
+      userId,
+      transactionOccurred,
+      isVoicemail,
+      appointmentAt,
+      callbackAt,
+      from,
+      to,
+      duration,
+      startTime: startTime || existing?.startTime,
+      endTime,
+      status,
+    });
+
+    if (callDetails?._id) {
+      runAnalysisInBackground(callDetails._id);
+    }
+
+    return res.json(callDetails);
+  } catch (error) {
+    console.error('Error in finalizeTelnyxCall:', error);
+    return res.status(500).json({
+      message: 'Failed to finalize Telnyx call',
+      error: error.message,
     });
   }
 };
@@ -2027,8 +2376,20 @@ exports.handleTelnyxCallControlWebhook = async (req, res) => {
       }
       await callDoc.save();
     } else if (event_type === 'call.recording.saved') {
-      if (payload.public_recording_urls && payload.public_recording_urls.mp3) {
-        callDoc.recording_url = payload.public_recording_urls.mp3;
+      const publicMp3 =
+        payload.public_recording_urls?.mp3 ||
+        payload.recording_urls?.mp3 ||
+        null;
+      if (publicMp3) {
+        callDoc.recording_url = publicMp3;
+        try {
+          const cloudUrl = await telnyxService.archivePublicRecording(publicMp3);
+          if (cloudUrl) {
+            callDoc.recording_url_cloudinary = cloudUrl;
+          }
+        } catch (err) {
+          console.warn('[Telnyx webhook] Cloudinary archive failed:', err.message);
+        }
         await callDoc.save();
       }
     }

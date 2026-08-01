@@ -42,6 +42,10 @@ router.get('/token', (req, res, next) => {
 
 router.post('/store-call', callController.saveCallToDB);
 
+// Resolve active gig phone line (provider + E.164) before Workspace dial.
+// Must be registered before `/:id` so "line-for-lead" is not captured as an id.
+router.get('/line-for-lead/:leadId', callController.getLineForLead);
+router.post('/telnyx/finalize', callController.finalizeTelnyxCall);
 
 router.route('/initiate')
   .post(initiateCall);
@@ -105,6 +109,7 @@ router.post('/ai-assist', callController.getAIAssistance);
 router.post('/personality-analysis', callController.getPersonalityAnalysis);
 
 router.post('/get-login-token', callController.getLoginToken);
+router.get('/get-login-token', callController.getLoginToken);
 
 router.post('/webhooks/telnyx/call-control', express.json(), callController.handleTelnyxCallControlWebhook);
 
