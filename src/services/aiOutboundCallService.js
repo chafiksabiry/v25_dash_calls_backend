@@ -352,10 +352,32 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     },
   });
 
-  // Short token URL — Telnyx often fails WSS handshakes with `:` / long query strings.
+  // Register stream session BEFORE dial so early Telnyx WSS upgrades find a ctx.
+  // Do NOT attach stream_url on dial — Telnyx was connecting before answer and
+  // burning the stream (90046) when the handshake raced our session setup.
   const streamToken = createStreamToken();
   const wsBase = publicWsBase(req);
   const streamUrl = `${wsBase}/ai-voice-stream/${streamToken}`;
+
+  const ctx = {
+    callMongoId: String(callDoc._id),
+    leadId: String(lead._id),
+    gigId: resolvedGigId,
+    companyId: companyId || (lead.companyId ? String(lead.companyId) : null),
+    from: line.phoneNumber,
+    to: toNumber,
+    callControlId: null,
+    streamToken,
+    streamUrl,
+    voiceAssistant,
+    callScript,
+    gig,
+    lead: lead.toObject ? lead.toObject() : lead,
+    realtime: null,
+    streamStarted: false,
+    wsBase,
+  };
+  sessionsByStreamToken.set(streamToken, ctx);
 
   const dialBody = {
     connection_id: connectionId,
@@ -364,14 +386,6 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     webhook_url: webhookUrl,
     webhook_url_method: 'POST',
     answering_machine_detection: 'disabled',
-    // Start media stream as soon as the callee answers (backup to streaming_start).
-    stream_url: streamUrl,
-    stream_track: 'inbound_track',
-    stream_codec: 'PCMU',
-    stream_bidirectional_mode: 'rtp',
-    stream_bidirectional_codec: 'PCMU',
-    stream_bidirectional_target_legs: 'self',
-    send_silence_when_idle: true,
   };
 
   console.log('[AiOutbound] dialing', {
@@ -386,6 +400,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   const response = await telnyxPost('https://api.telnyx.com/v2/calls', dialBody);
 
   if (response.status >= 400) {
+    sessionsByStreamToken.delete(streamToken);
     callDoc.status = 'failed';
     await callDoc.save();
     const detail =
@@ -408,26 +423,8 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   callDoc.status = 'ringing';
   await callDoc.save();
 
-  const ctx = {
-    callMongoId: String(callDoc._id),
-    leadId: String(lead._id),
-    gigId: resolvedGigId,
-    companyId: companyId || (lead.companyId ? String(lead.companyId) : null),
-    from: line.phoneNumber,
-    to: toNumber,
-    callControlId,
-    streamToken,
-    streamUrl,
-    voiceAssistant,
-    callScript,
-    gig,
-    lead: lead.toObject ? lead.toObject() : lead,
-    realtime: null,
-    streamStarted: false,
-    wsBase,
-  };
+  ctx.callControlId = callControlId;
   if (callControlId) activeSessions.set(callControlId, ctx);
-  sessionsByStreamToken.set(streamToken, ctx);
 
   return {
     success: true,
@@ -495,12 +492,18 @@ async function startMediaStream(callControlId) {
     })
   );
 
-  // 2) If dial-time stream did not connect, try streaming_start with clean token URL.
+  // 2) Fresh token for streaming_start (avoids a burned URL from an earlier attempt).
   if (!ctx.telnyxStreamWs) {
+    const freshToken = createStreamToken();
+    if (ctx.streamToken) sessionsByStreamToken.delete(ctx.streamToken);
+    ctx.streamToken = freshToken;
+    ctx.streamUrl = `${ctx.wsBase}/ai-voice-stream/${freshToken}`;
+    sessionsByStreamToken.set(freshToken, ctx);
+
     const res = await telnyxPost(
       `https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`,
       {
-        stream_url: streamUrl,
+        stream_url: ctx.streamUrl,
         stream_track: 'inbound_track',
         stream_codec: 'PCMU',
         stream_bidirectional_mode: 'rtp',
@@ -512,24 +515,26 @@ async function startMediaStream(callControlId) {
 
     if (res.status >= 400) {
       console.error('[AiOutbound] streaming_start failed', res.status, res.data);
-      console.error(
-        '[AiOutbound] Telnyx cannot open WSS to',
-        streamUrl,
-        '— check PUBLIC_BASE_URL and that /ai-voice-stream upgrades are accepted'
-      );
-      await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
-        payload:
-          ctx.callScript?.greeting ||
-          ctx.voiceAssistant?.greeting ||
-          'Bonjour, un instant s il vous plait.',
-        voice: 'female',
-        language: 'fr-FR',
-      }).catch(() => null);
-      return;
+      console.error('[AiOutbound] Telnyx cannot open WSS to', ctx.streamUrl);
+      // Wait briefly — upgrade may still land after 422 in some edge cases.
+      await new Promise((r) => setTimeout(r, 1500));
+      if (!ctx.telnyxStreamWs) {
+        await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
+          payload:
+            ctx.callScript?.greeting ||
+            ctx.voiceAssistant?.greeting ||
+            'Bonjour, un instant s il vous plait.',
+          voice: 'female',
+          language: 'fr-FR',
+        }).catch(() => null);
+        return;
+      }
+      console.log('[AiOutbound] stream connected after 422 race — continuing', callControlId);
+    } else {
+      console.log('[AiOutbound] streaming_start ok', callControlId, ctx.streamUrl);
     }
-    console.log('[AiOutbound] streaming_start ok', callControlId);
   } else {
-    console.log('[AiOutbound] Telnyx stream already connected via dial', callControlId);
+    console.log('[AiOutbound] Telnyx stream already connected', callControlId);
   }
 
   // 3) Kick off with script opening

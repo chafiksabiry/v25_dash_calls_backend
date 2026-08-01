@@ -119,11 +119,9 @@ const PORT = config.PORT;
 
 // Create HTTP server
 const server = http.createServer(app);
-//console.log("server",server);
-// Set up WebSocket handler for speech-to-text
-setupSpeechToTextWebSocket(server);
-// Telnyx media stream <-> OpenAI Realtime bridge
+// AI voice upgrade MUST register before STT so /ai-voice-stream is claimed first.
 setupAiVoiceBridge(server);
+setupSpeechToTextWebSocket(server);
 
 // Listen on server instead of app
 server.listen(PORT, () => {

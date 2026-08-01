@@ -7,9 +7,10 @@ const {
 
 /**
  * Telnyx media stream <-> OpenAI Realtime (PCMU passthrough).
- * Uses noServer + explicit upgrade so Telnyx can always handshake on Railway.
- *
  * URL: wss://<host>/ai-voice-stream/<streamToken>
+ *
+ * Uses noServer; app.js must call attachAiVoiceUpgrade(server) OR
+ * setupAiVoiceBridge(server) which registers the upgrade handler.
  */
 function setupAiVoiceBridge(server) {
   const wss = new WebSocket.Server({
@@ -17,7 +18,7 @@ function setupAiVoiceBridge(server) {
     perMessageDeflate: false,
   });
 
-  server.on('upgrade', (request, socket, head) => {
+  const onUpgrade = (request, socket, head) => {
     let pathname = '';
     try {
       pathname = new URL(request.url, 'http://localhost').pathname || '';
@@ -25,11 +26,7 @@ function setupAiVoiceBridge(server) {
       return;
     }
 
-    if (!pathname.startsWith('/ai-voice-stream')) {
-      return;
-    }
-
-    // Health is HTTP-only; ignore accidental upgrade
+    if (!pathname.startsWith('/ai-voice-stream')) return;
     if (pathname === '/ai-voice-stream/health') {
       socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
       socket.destroy();
@@ -39,25 +36,33 @@ function setupAiVoiceBridge(server) {
     console.log('[AiVoiceBridge] upgrade accept', {
       url: request.url,
       pathname,
-      headers: {
-        upgrade: request.headers.upgrade,
-        connection: request.headers.connection,
-        host: request.headers.host,
-      },
     });
 
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  });
+    try {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } catch (err) {
+      console.error('[AiVoiceBridge] handleUpgrade threw', err?.message || err);
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  // Register BEFORE other upgrade listeners when possible — app.js order matters.
+  server.on('upgrade', onUpgrade);
 
   wss.on('connection', (ws, request) => {
+    console.log('[AiVoiceBridge] connection event', { url: request.url });
+
     let streamToken = null;
     let callControlId = null;
     try {
       const url = new URL(request.url, 'http://localhost');
       const parts = url.pathname.split('/').filter(Boolean);
-      // /ai-voice-stream/<token>
       if (parts[0] === 'ai-voice-stream' && parts[1]) {
         streamToken = parts[1];
       }
@@ -71,12 +76,18 @@ function setupAiVoiceBridge(server) {
     const ctx =
       (streamToken && getSessionByStreamToken(streamToken)) ||
       (callControlId ? getActiveSession(callControlId) : null);
+
     if (!ctx) {
-      console.error('[AiVoiceBridge] no session', { streamToken, callControlId });
+      console.error('[AiVoiceBridge] no session — closing', {
+        streamToken,
+        callControlId,
+      });
       ws.close(1008, 'no_session');
       return;
     }
 
+    // Prefer resolved callControlId from ctx
+    callControlId = ctx.callControlId || callControlId;
     ctx.telnyxStreamWs = ws;
     ctx.telnyxStreamId = null;
     let mediaIn = 0;
@@ -115,12 +126,13 @@ function setupAiVoiceBridge(server) {
       attachRealtimeHandlers(ctx.realtime);
     } else {
       ctx._attachBridgeWhenReady = attachRealtimeHandlers;
-      console.log('[AiVoiceBridge] waiting for OpenAI', callControlId);
+      console.log('[AiVoiceBridge] waiting for OpenAI', callControlId || streamToken);
     }
 
     console.log('[AiVoiceBridge] telnyx stream connected', {
       callControlId,
       streamToken,
+      hasRealtime: Boolean(ctx.realtime),
     });
 
     ws.on('message', (raw) => {
@@ -134,7 +146,7 @@ function setupAiVoiceBridge(server) {
       const event = msg.event || msg.type;
 
       if (event === 'connected') {
-        console.log('[AiVoiceBridge] telnyx connected event', callControlId);
+        console.log('[AiVoiceBridge] telnyx connected frame', callControlId);
         return;
       }
 
@@ -177,11 +189,15 @@ function setupAiVoiceBridge(server) {
       }
     });
 
-    ws.on('close', () => {
-      console.log('[AiVoiceBridge] telnyx stream closed', callControlId, {
+    ws.on('close', (code, reason) => {
+      console.log('[AiVoiceBridge] telnyx stream closed', {
+        callControlId,
+        code,
+        reason: reason?.toString?.() || '',
         mediaIn,
         mediaOut,
       });
+      if (ctx.telnyxStreamWs === ws) ctx.telnyxStreamWs = null;
     });
 
     ws.on('error', (err) => {
@@ -190,6 +206,7 @@ function setupAiVoiceBridge(server) {
   });
 
   console.log('[AiVoiceBridge] listening (noServer) on /ai-voice-stream/<token>');
+  return wss;
 }
 
 module.exports = setupAiVoiceBridge;
