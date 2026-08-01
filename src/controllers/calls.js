@@ -1256,13 +1256,24 @@ exports.finalizeTelnyxCall = async (req, res) => {
 
     // Prefer recording already written by webhook.
     let existing = await Call.findOne({
-      $or: [{ sid: id }, { call_id: id }],
+      $or: [{ sid: id }, { call_id: id }, { parentCallSid: id }],
     }).lean();
 
     let cloudinaryrecord = existing?.recording_url_cloudinary || null;
-    if (!cloudinaryrecord && existing?.recording_url) {
+    let recordingUrl = existing?.recording_url || null;
+
+    // Webhook may be late / missing — pull recording from Telnyx API.
+    if (!cloudinaryrecord && !recordingUrl) {
       try {
-        cloudinaryrecord = await telnyxService.archivePublicRecording(existing.recording_url);
+        recordingUrl = await telnyxService.findRecordingUrl(id);
+      } catch (err) {
+        console.warn('[Telnyx finalize] findRecordingUrl failed:', err.message);
+      }
+    }
+
+    if (!cloudinaryrecord && recordingUrl) {
+      try {
+        cloudinaryrecord = await telnyxService.archivePublicRecording(recordingUrl);
       } catch (err) {
         console.warn('[Telnyx finalize] archive failed:', err.message);
       }
@@ -1277,7 +1288,7 @@ exports.finalizeTelnyxCall = async (req, res) => {
         duration: duration ?? existing?.duration ?? 0,
         from: from || existing?.from,
         to: to || existing?.to,
-        recordingUrl: existing?.recording_url,
+        recordingUrl: recordingUrl || existing?.recording_url,
         direction: 'outbound',
       },
       cloudinaryrecord,
@@ -2359,6 +2370,33 @@ exports.getLoginToken = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/calls/telnyx/record-start
+ * Start Call Control recording for an active WebRTC/Call Control leg.
+ */
+exports.startTelnyxRecording = async (req, res) => {
+  try {
+    const callControlId = req.body?.callControlId || req.body?.externalId || req.body?.callId;
+    if (!callControlId) {
+      return res.status(400).json({ message: 'callControlId is required' });
+    }
+    const data = await telnyxService.startCallRecording(callControlId);
+    console.log('[Telnyx] record_start ok for', callControlId);
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Telnyx] record_start failed:', error.message);
+    if (error?.response?.data) {
+      console.error('Telnyx response:', JSON.stringify(error.response.data));
+    }
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to start Telnyx recording',
+      error: error.message,
+      details: error?.response?.data || undefined,
+    });
+  }
+};
+
 exports.handleTelnyxCallControlWebhook = async (req, res) => {
   try {
     const event = req.body?.data;
@@ -2373,10 +2411,13 @@ exports.handleTelnyxCallControlWebhook = async (req, res) => {
       return res.status(200).send('No call_control_id');
     }
 
-    let callDoc = await Call.findOne({ call_id: callControlId });
-    if (!callDoc) {
-      callDoc = await Call.findOne({ sid: callControlId });
-    }
+    let callDoc = await Call.findOne({
+      $or: [
+        { call_id: callControlId },
+        { sid: callControlId },
+        { parentCallSid: callControlId },
+      ],
+    });
 
     if (!callDoc) {
       console.warn(`Webhook received for unknown call_control_id: ${callControlId}`);

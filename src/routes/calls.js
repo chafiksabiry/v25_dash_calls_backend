@@ -46,6 +46,7 @@ router.post('/store-call', callController.saveCallToDB);
 // Must be registered before `/:id` so "line-for-lead" is not captured as an id.
 router.get('/line-for-lead/:leadId', callController.getLineForLead);
 router.post('/telnyx/finalize', callController.finalizeTelnyxCall);
+router.post('/telnyx/record-start', callController.startTelnyxRecording);
 
 router.route('/initiate')
   .post(initiateCall);
