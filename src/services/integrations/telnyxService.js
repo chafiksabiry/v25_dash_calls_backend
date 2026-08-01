@@ -201,6 +201,60 @@ exports.generateLoginToken = async () => {
   );
 };
 
+function getApiKey() {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) throw new Error('TELNYX_API_KEY is not configured');
+  return apiKey;
+}
+
+/**
+ * Start dual-channel MP3 recording on an active Call Control leg.
+ */
+exports.startCallRecording = async (callControlId) => {
+  if (!callControlId) throw new Error('callControlId is required');
+  const apiKey = getApiKey();
+  const response = await axios.post(
+    `https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/record_start`,
+    {
+      format: 'mp3',
+      channels: 'dual',
+      play_beep: false,
+    },
+    { headers: telnyxHeaders(apiKey) }
+  );
+  return response.data?.data || response.data || { ok: true };
+};
+
+/**
+ * Look up a public recording URL for a call control id (webhook fallback).
+ */
+exports.findRecordingUrl = async (callControlId) => {
+  if (!callControlId) return null;
+  const apiKey = getApiKey();
+  try {
+    const response = await axios.get('https://api.telnyx.com/v2/recordings', {
+      headers: telnyxHeaders(apiKey),
+      params: {
+        'filter[call_control_id]': callControlId,
+        'page[size]': 5,
+      },
+    });
+    const rows = response.data?.data || [];
+    for (const row of rows) {
+      const url =
+        row.download_urls?.mp3 ||
+        row.public_recording_urls?.mp3 ||
+        row.recording_urls?.mp3 ||
+        row.download_urls?.wav ||
+        null;
+      if (url) return url;
+    }
+  } catch (err) {
+    console.warn('[Telnyx] findRecordingUrl failed:', formatTelnyxError(err));
+  }
+  return null;
+};
+
 /**
  * Download a public recording URL and archive it to Cloudinary.
  */
