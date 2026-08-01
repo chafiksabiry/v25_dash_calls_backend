@@ -179,6 +179,11 @@ function isReservationForToday(rawDate, now) {
   return false;
 }
 
+function isTelephonyTestBypassEnabled() {
+  const v = String(process.env.TELEPHONY_TEST_BYPASS || '').trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
+}
+
 async function validateCopilotCallEligibility({ agentId, gigId }) {
   if (!agentId) return { ok: false, reason: 'Missing agentId' };
   if (!gigId) return { ok: false, reason: 'Lead is not linked to a gig' };
@@ -202,6 +207,15 @@ async function validateCopilotCallEligibility({ agentId, gigId }) {
     }
   } catch (error) {
     return { ok: false, reason: `Enrollment check error: ${error.message}` };
+  }
+
+  // Test bypass: skip training + reservation (enrollment still required).
+  if (isTelephonyTestBypassEnabled()) {
+    console.warn('[TelephonyTest] Bypass enabled — skipping training and reservation checks', {
+      agentId,
+      gigId,
+    });
+    return { ok: true, testBypass: true };
   }
 
   // 2) Trainings completion for this gig
