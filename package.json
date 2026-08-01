@@ -4,7 +4,7 @@
   "description": "Backend for HARX application",
   "main": "src/app.js",
   "scripts": {
-    "start": "node src/app.js",
+    "start": "node scripts/ensure-deps.js && node src/app.js",
     "dev": "nodemon src/app.js",
     "test": "jest",
     "railway-build": "rm -rf node_modules && npm ci --omit=dev"
