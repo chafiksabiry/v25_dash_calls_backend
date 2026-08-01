@@ -54,9 +54,23 @@ function publicWsBase(req) {
 
 async function loadGigVoiceAssistant(gigId) {
   if (!gigId) return null;
-  const gig = await Gig.findById(gigId).lean();
-  if (!gig) return null;
-  return gig.voiceAssistant || null;
+  const gigIdStr = String(gigId);
+  const orId = [{ _id: gigIdStr }];
+  if (mongoose.Types.ObjectId.isValid(gigIdStr)) {
+    orId.push({ _id: new mongoose.Types.ObjectId(gigIdStr) });
+  }
+
+  // Prefer raw collection — dash_calls may only store a stub gig for voice config.
+  const raw = await mongoose.connection.db.collection('gigs').findOne({ $or: orId });
+  if (raw?.voiceAssistant) return raw.voiceAssistant;
+
+  const cfg = await mongoose.connection.db
+    .collection('gig_voice_assistants')
+    .findOne({ gigId: gigIdStr });
+  if (cfg) return cfg;
+
+  const gig = await Gig.findById(gigIdStr).lean();
+  return gig?.voiceAssistant || null;
 }
 
 function buildInstructions(voiceAssistant, lead, gig) {
@@ -89,14 +103,27 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
-  const lead = await Lead.findById(leadId);
+  // Prefer raw leads collection (dashboard / company fields) then mongoose model.
+  let lead = null;
+  if (mongoose.Types.ObjectId.isValid(leadId)) {
+    lead = await mongoose.connection.db.collection('leads').findOne({
+      _id: new mongoose.Types.ObjectId(leadId),
+    });
+  }
+  if (!lead) {
+    lead = await Lead.findById(leadId).lean();
+  }
   if (!lead) {
     const err = new Error('Lead not found');
     err.status = 404;
     throw err;
   }
 
-  const resolvedGigId = gigId || (lead.gigId ? String(lead.gigId) : null);
+  // Lead's gig is source of truth — never let a stale cookie gigId override it.
+  const leadGigId = lead.gigId
+    ? String(lead.gigId?.$oid || lead.gigId)
+    : null;
+  const resolvedGigId = leadGigId || (gigId ? String(gigId) : null);
   if (!resolvedGigId) {
     const err = new Error('Lead has no gigId');
     err.status = 400;
@@ -104,8 +131,17 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   }
 
   const voiceAssistant = await loadGigVoiceAssistant(resolvedGigId);
+  console.log('[AiOutbound] voiceAssistant check', {
+    leadId: String(leadId),
+    leadGigId,
+    bodyGigId: gigId || null,
+    resolvedGigId,
+    enabled: Boolean(voiceAssistant?.enabled),
+  });
   if (!voiceAssistant?.enabled) {
-    const err = new Error('Gig has no enabled voice assistant. Link one on Telephony first.');
+    const err = new Error(
+      `Gig ${resolvedGigId} has no enabled voice assistant. Open Telephony → select this gig → Activer l'assistant.`
+    );
     err.status = 400;
     throw err;
   }
