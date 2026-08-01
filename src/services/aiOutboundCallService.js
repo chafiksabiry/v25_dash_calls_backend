@@ -73,23 +73,154 @@ async function loadGigVoiceAssistant(gigId) {
   return gig?.voiceAssistant || null;
 }
 
-function buildInstructions(voiceAssistant, lead, gig) {
+const KNOWLEDGEBASE_API_URL = (
+  process.env.KNOWLEDGEBASE_API_URL ||
+  'https://v25knowledgebasebackend-production.up.railway.app/api'
+).replace(/\/$/, '');
+
+function flattenLinearScript(scriptArr) {
+  if (!Array.isArray(scriptArr) || !scriptArr.length) return '';
+  return scriptArr
+    .map((s) => `[${s.phase || 'phase'}] ${s.actor || 'agent'}: ${s.replica || ''}`)
+    .join('\n');
+}
+
+function flattenPlaybookStages(stages) {
+  if (!Array.isArray(stages) || !stages.length) return '';
+  return stages
+    .map((st, i) => {
+      const n = st.stepNumber || i + 1;
+      const label = st.label || st.typeLabel || st.type || `Étape ${n}`;
+      const intro = st.introReplica || st.introTitle || '';
+      const reminders = Array.isArray(st.reminders)
+        ? st.reminders.map((r) => `  - ${typeof r === 'string' ? r : r.text || JSON.stringify(r)}`).join('\n')
+        : '';
+      const options = Array.isArray(st.options)
+        ? st.options
+            .map((o) => `  • ${o.label || o.text || JSON.stringify(o)}`)
+            .join('\n')
+        : '';
+      return [`### Étape ${n}: ${label}`, intro, reminders, options].filter(Boolean).join('\n');
+    })
+    .join('\n\n');
+}
+
+/**
+ * Load active gig call script from knowledgebase (same source as AI call scoring).
+ * Returns { text, greeting, language, title } or null.
+ */
+async function loadGigCallScript(gigId) {
+  if (!gigId) return null;
+  try {
+    const url = `${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}?active=true`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn('[AiOutbound] script fetch failed', res.status, url);
+      return null;
+    }
+    const payload = await res.json();
+    const scripts = payload.data || payload.scripts || [];
+    const active =
+      scripts.find((s) => s.isActive) ||
+      scripts[0] ||
+      null;
+    if (!active) return null;
+
+    const linear = flattenLinearScript(active.script);
+    const stages = flattenPlaybookStages(active.playbook?.stages);
+    const dialogue = Array.isArray(active.playbook?.dialogue)
+      ? active.playbook.dialogue
+          .map((d) => `${d.role || 'agent'}: ${d.text || ''}`)
+          .join('\n')
+      : '';
+
+    const text = [
+      active.playbook?.title ? `Titre: ${active.playbook.title}` : '',
+      active.targetClient ? `Cible: ${active.targetClient}` : '',
+      active.details ? `Contexte mission: ${active.details}` : '',
+      linear ? `\n## Script linéaire (à suivre)\n${linear}` : '',
+      stages ? `\n## Playbook interactif (étapes)\n${stages}` : '',
+      dialogue && !linear ? `\n## Dialogue\n${dialogue}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (!text.trim()) return null;
+
+    // Opening line: first agent replica from linear script, else stage intro.
+    const firstAgent =
+      (Array.isArray(active.script) &&
+        active.script.find((s) => String(s.actor || '').toLowerCase() === 'agent')) ||
+      null;
+    const firstStageIntro =
+      (Array.isArray(active.playbook?.stages) &&
+        active.playbook.stages.find((s) => s.introReplica)?.introReplica) ||
+      null;
+
+    console.log('[AiOutbound] script loaded', {
+      gigId: String(gigId),
+      scriptId: String(active._id || ''),
+      linearReplicas: Array.isArray(active.script) ? active.script.length : 0,
+      stages: Array.isArray(active.playbook?.stages) ? active.playbook.stages.length : 0,
+    });
+
+    return {
+      text,
+      greeting: (firstAgent?.replica || firstStageIntro || '').trim() || null,
+      language: active.language || 'fr',
+      title: active.playbook?.title || null,
+    };
+  } catch (err) {
+    console.error('[AiOutbound] script load error', err?.message || err);
+    return null;
+  }
+}
+
+function buildInstructions(voiceAssistant, lead, gig, callScript) {
   const custom = voiceAssistant?.systemPrompt || voiceAssistant?.prompt || '';
-  const scriptHint = gig?.description ? `\nGig context:\n${gig.description}` : '';
+  const gigHint = gig?.description ? `\nGig description:\n${gig.description}` : '';
   const leadHint = lead
     ? `\nLead: ${lead.Deal_Name || `${lead.First_Name || ''} ${lead.Last_Name || ''}`.trim()} | phone ${lead.Phone || lead.phone || ''} | stage ${lead.Stage || 'New'}`
     : '';
+  const scriptBlock = callScript?.text
+    ? `\n## SCRIPT OBLIGATOIRE (cohérence)\n${callScript.text}`
+    : '\n## SCRIPT\nAucun script actif trouvé pour ce gig. Reste générique et prudent; ne promets rien.';
+
   return [
     'You are HARX AI Voice Assistant making an outbound sales call on behalf of a company.',
-    'Speak naturally in French by default. Keep turns short. Listen for barge-in.',
-    'Use tools when you need lead details, notes, callbacks or appointments.',
-    'Never invent compliance claims. If the lead refuses, politely end the call.',
+    'Speak naturally. Default language: French unless the lead uses another language or the script specifies otherwise.',
+    'Keep turns short. Listen for barge-in and stop speaking immediately when the lead talks.',
+    '',
+    '## COHÉRENCE DE SCRIPT (règles strictes)',
+    '1. Follow the SCRIPT below phase by phase. Do not invent a different pitch, product, price, or company story.',
+    '2. Stay on the current phase until the lead answers; then move to the matching next phase / playbook stage.',
+    '3. Use the script wording as your guide — you may rephrase slightly for natural speech, but keep the same meaning, offers, and compliance.',
+    '4. Never invent compliance claims, legal guarantees, or discounts not present in the script.',
+    '5. If the lead refuses or asks to stop, exit politely (script closing if available) and end the call.',
+    '6. Use tools (notes, callback, appointment, stage) when the script or lead intent requires it.',
+    '',
     custom,
-    scriptHint,
+    scriptBlock,
+    gigHint,
     leadHint,
   ]
-    .filter(Boolean)
+    .filter((line) => line !== undefined && line !== null)
     .join('\n');
+}
+
+function resolveOpeningPrompt(voiceAssistant, callScript) {
+  if (callScript?.greeting) {
+    return [
+      'The lead just answered the phone.',
+      'Open EXACTLY with this script opening (natural spoken French, same meaning):',
+      `"${callScript.greeting}"`,
+      'Then continue following the SCRIPT phases. Do not use a generic HARX assistant intro.',
+    ].join(' ');
+  }
+  if (voiceAssistant?.greeting) {
+    return `The lead just answered. Open with: "${voiceAssistant.greeting}" Then follow the SCRIPT.`;
+  }
+  return 'The lead just answered. Open with the first agent line of the SCRIPT. Do not invent a generic intro.';
 }
 
 /**
@@ -176,6 +307,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   }
 
   const gig = await Gig.findById(resolvedGigId).lean();
+  const callScript = await loadGigCallScript(resolvedGigId);
   const base = publicBaseUrl(req);
   const webhookUrl = `${base}/api/calls/webhooks/telnyx/ai-outbound`;
 
@@ -256,6 +388,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     to: toNumber,
     callControlId,
     voiceAssistant,
+    callScript,
     gig,
     lead: lead.toObject ? lead.toObject() : lead,
     realtime: null,
@@ -299,11 +432,12 @@ async function startMediaStream(callControlId) {
 
   if (res.status >= 400) {
     console.error('[AiOutbound] streaming_start failed', res.status, res.data);
-    // Fallback: greet with speak so the call is not silent
+    // Fallback: greet with script opening (or voiceAssistant greeting)
     await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
       payload:
+        ctx.callScript?.greeting ||
         ctx.voiceAssistant?.greeting ||
-        'Bonjour, je suis l assistant vocal HARX. Un instant s il vous plait.',
+        'Bonjour, un instant s il vous plait.',
       voice: 'female',
       language: 'fr-FR',
     }).catch(() => null);
@@ -318,7 +452,12 @@ async function startMediaStream(callControlId) {
   ctx.realtime = realtime;
 
   await realtime.connect({
-    instructions: buildInstructions(ctx.voiceAssistant, ctx.lead, ctx.gig),
+    instructions: buildInstructions(
+      ctx.voiceAssistant,
+      ctx.lead,
+      ctx.gig,
+      ctx.callScript
+    ),
     tools: buildRealtimeTools(),
     voice: ctx.voiceAssistant.voice,
   });
@@ -330,7 +469,7 @@ async function startMediaStream(callControlId) {
     })
   );
 
-  // Kick off the assistant greeting
+  // Kick off with script opening (not a generic HARX intro)
   realtime.send({
     type: 'conversation.item.create',
     item: {
@@ -339,9 +478,7 @@ async function startMediaStream(callControlId) {
       content: [
         {
           type: 'input_text',
-          text:
-            ctx.voiceAssistant.greeting ||
-            'The lead just answered. Greet them briefly and introduce the purpose of the call.',
+          text: resolveOpeningPrompt(ctx.voiceAssistant, ctx.callScript),
         },
       ],
     },
