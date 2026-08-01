@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 // Prefer native fetch (Node 18+); fall back to node-fetch when present in Docker image.
 const fetch =
@@ -14,6 +15,20 @@ const { OpenAIRealtimeService } = require('./integrations/openaiRealtimeService'
 const { buildRealtimeTools, executeVoiceTool } = require('./aiVoiceTools');
 
 const activeSessions = new Map(); // callControlId -> session ctx
+const sessionsByStreamToken = new Map(); // short hex token -> ctx (Telnyx-safe URL)
+
+function createStreamToken() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function resolveStreamToken(token) {
+  const ctx = sessionsByStreamToken.get(token);
+  return ctx?.callControlId || null;
+}
+
+function getSessionByStreamToken(token) {
+  return sessionsByStreamToken.get(token) || null;
+}
 
 function telnyxHeaders() {
   const apiKey = process.env.TELNYX_API_KEY;
@@ -337,6 +352,11 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     },
   });
 
+  // Short token URL — Telnyx often fails WSS handshakes with `:` / long query strings.
+  const streamToken = createStreamToken();
+  const wsBase = publicWsBase(req);
+  const streamUrl = `${wsBase}/ai-voice-stream/${streamToken}`;
+
   const dialBody = {
     connection_id: connectionId,
     to: toNumber,
@@ -344,6 +364,14 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     webhook_url: webhookUrl,
     webhook_url_method: 'POST',
     answering_machine_detection: 'disabled',
+    // Start media stream as soon as the callee answers (backup to streaming_start).
+    stream_url: streamUrl,
+    stream_track: 'inbound_track',
+    stream_codec: 'PCMU',
+    stream_bidirectional_mode: 'rtp',
+    stream_bidirectional_codec: 'PCMU',
+    stream_bidirectional_target_legs: 'self',
+    send_silence_when_idle: true,
   };
 
   console.log('[AiOutbound] dialing', {
@@ -352,6 +380,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     gigId: resolvedGigId,
     leadId: String(lead._id),
     callId: String(callDoc._id),
+    streamUrl,
   });
 
   const response = await telnyxPost('https://api.telnyx.com/v2/calls', dialBody);
@@ -387,15 +416,18 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     from: line.phoneNumber,
     to: toNumber,
     callControlId,
+    streamToken,
+    streamUrl,
     voiceAssistant,
     callScript,
     gig,
     lead: lead.toObject ? lead.toObject() : lead,
     realtime: null,
     streamStarted: false,
-    wsBase: publicWsBase(req),
+    wsBase,
   };
   if (callControlId) activeSessions.set(callControlId, ctx);
+  sessionsByStreamToken.set(streamToken, ctx);
 
   return {
     success: true,
@@ -417,10 +449,12 @@ async function startMediaStream(callControlId) {
   if (!ctx || ctx.streamStarted) return;
   ctx.streamStarted = true;
 
-  const streamUrl = `${ctx.wsBase}/ai-voice-stream?callControlId=${encodeURIComponent(callControlId)}`;
+  const streamUrl =
+    ctx.streamUrl ||
+    `${ctx.wsBase}/ai-voice-stream/${ctx.streamToken || createStreamToken()}`;
   console.log('[AiOutbound] preparing realtime then stream', { callControlId, streamUrl });
 
-  // 1) OpenAI first — so Telnyx WS never arrives into an empty session (race).
+  // 1) OpenAI first — Telnyx may already be connecting from dial stream_url.
   const realtime = new OpenAIRealtimeService({
     voice: ctx.voiceAssistant.voice || process.env.OPENAI_VOICE || 'alloy',
     model: ctx.voiceAssistant.model || process.env.OPENAI_REALTIME_MODEL,
@@ -461,36 +495,44 @@ async function startMediaStream(callControlId) {
     })
   );
 
-  // 2) Start Telnyx bidirectional RTP stream onto THIS outbound leg.
-  const res = await telnyxPost(
-    `https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`,
-    {
-      stream_url: streamUrl,
-      stream_track: 'inbound_track',
-      stream_codec: 'PCMU',
-      stream_bidirectional_mode: 'rtp',
-      stream_bidirectional_codec: 'PCMU',
-      stream_bidirectional_target_legs: 'self',
-      send_silence_when_idle: true,
-    }
-  );
+  // 2) If dial-time stream did not connect, try streaming_start with clean token URL.
+  if (!ctx.telnyxStreamWs) {
+    const res = await telnyxPost(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`,
+      {
+        stream_url: streamUrl,
+        stream_track: 'inbound_track',
+        stream_codec: 'PCMU',
+        stream_bidirectional_mode: 'rtp',
+        stream_bidirectional_codec: 'PCMU',
+        stream_bidirectional_target_legs: 'self',
+        send_silence_when_idle: true,
+      }
+    );
 
-  if (res.status >= 400) {
-    console.error('[AiOutbound] streaming_start failed', res.status, res.data);
-    await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
-      payload:
-        ctx.callScript?.greeting ||
-        ctx.voiceAssistant?.greeting ||
-        'Bonjour, un instant s il vous plait.',
-      voice: 'female',
-      language: 'fr-FR',
-    }).catch(() => null);
-    return;
+    if (res.status >= 400) {
+      console.error('[AiOutbound] streaming_start failed', res.status, res.data);
+      console.error(
+        '[AiOutbound] Telnyx cannot open WSS to',
+        streamUrl,
+        '— check PUBLIC_BASE_URL and that /ai-voice-stream upgrades are accepted'
+      );
+      await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
+        payload:
+          ctx.callScript?.greeting ||
+          ctx.voiceAssistant?.greeting ||
+          'Bonjour, un instant s il vous plait.',
+        voice: 'female',
+        language: 'fr-FR',
+      }).catch(() => null);
+      return;
+    }
+    console.log('[AiOutbound] streaming_start ok', callControlId);
+  } else {
+    console.log('[AiOutbound] Telnyx stream already connected via dial', callControlId);
   }
 
-  console.log('[AiOutbound] streaming_start ok — interactive Realtime active', callControlId);
-
-  // 3) Kick off with script opening once stream can carry audio back.
+  // 3) Kick off with script opening
   realtime.send({
     type: 'conversation.item.create',
     item: {
@@ -535,6 +577,7 @@ async function handleAiOutboundWebhook(event) {
         endTime: new Date(),
       });
     }
+    if (ctx?.streamToken) sessionsByStreamToken.delete(ctx.streamToken);
     activeSessions.delete(callControlId);
   }
 
@@ -549,5 +592,7 @@ module.exports = {
   startAiOutboundCall,
   handleAiOutboundWebhook,
   getActiveSession,
+  getSessionByStreamToken,
+  resolveStreamToken,
   activeSessions,
 };
