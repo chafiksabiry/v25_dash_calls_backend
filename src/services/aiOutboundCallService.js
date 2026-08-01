@@ -418,21 +418,65 @@ async function startMediaStream(callControlId) {
   ctx.streamStarted = true;
 
   const streamUrl = `${ctx.wsBase}/ai-voice-stream?callControlId=${encodeURIComponent(callControlId)}`;
-  console.log('[AiOutbound] streaming_start', { callControlId, streamUrl });
+  console.log('[AiOutbound] preparing realtime then stream', { callControlId, streamUrl });
 
+  // 1) OpenAI first — so Telnyx WS never arrives into an empty session (race).
+  const realtime = new OpenAIRealtimeService({
+    voice: ctx.voiceAssistant.voice || process.env.OPENAI_VOICE || 'alloy',
+    model: ctx.voiceAssistant.model || process.env.OPENAI_REALTIME_MODEL,
+  });
+  ctx.realtime = realtime;
+  if (typeof ctx._attachBridgeWhenReady === 'function') {
+    ctx._attachBridgeWhenReady(realtime);
+    ctx._attachBridgeWhenReady = null;
+  }
+
+  try {
+    await realtime.connect({
+      instructions: buildInstructions(
+        ctx.voiceAssistant,
+        ctx.lead,
+        ctx.gig,
+        ctx.callScript
+      ),
+      tools: buildRealtimeTools(),
+      voice: ctx.voiceAssistant.voice,
+    });
+  } catch (err) {
+    console.error('[AiOutbound] OpenAI Realtime connect failed', err?.message || err);
+    await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
+      payload:
+        ctx.callScript?.greeting ||
+        'Bonjour, nous rencontrons un probleme technique. Nous vous rappelons.',
+      voice: 'female',
+      language: 'fr-FR',
+    }).catch(() => null);
+    return;
+  }
+
+  realtime.on('onToolCall', async ({ name, args }) =>
+    executeVoiceTool(name, args, {
+      defaultLeadId: ctx.leadId,
+      defaultCallId: ctx.callMongoId,
+    })
+  );
+
+  // 2) Start Telnyx bidirectional RTP stream onto THIS outbound leg.
   const res = await telnyxPost(
     `https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`,
     {
       stream_url: streamUrl,
       stream_track: 'inbound_track',
+      stream_codec: 'PCMU',
       stream_bidirectional_mode: 'rtp',
       stream_bidirectional_codec: 'PCMU',
+      stream_bidirectional_target_legs: 'self',
+      send_silence_when_idle: true,
     }
   );
 
   if (res.status >= 400) {
     console.error('[AiOutbound] streaming_start failed', res.status, res.data);
-    // Fallback: greet with script opening (or voiceAssistant greeting)
     await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
       payload:
         ctx.callScript?.greeting ||
@@ -444,32 +488,9 @@ async function startMediaStream(callControlId) {
     return;
   }
 
-  // Prepare OpenAI session (audio bridge attaches when Telnyx WS connects)
-  const realtime = new OpenAIRealtimeService({
-    voice: ctx.voiceAssistant.voice || process.env.OPENAI_VOICE || 'alloy',
-    model: ctx.voiceAssistant.model || process.env.OPENAI_REALTIME_MODEL,
-  });
-  ctx.realtime = realtime;
+  console.log('[AiOutbound] streaming_start ok — interactive Realtime active', callControlId);
 
-  await realtime.connect({
-    instructions: buildInstructions(
-      ctx.voiceAssistant,
-      ctx.lead,
-      ctx.gig,
-      ctx.callScript
-    ),
-    tools: buildRealtimeTools(),
-    voice: ctx.voiceAssistant.voice,
-  });
-
-  realtime.on('onToolCall', async ({ name, args }) =>
-    executeVoiceTool(name, args, {
-      defaultLeadId: ctx.leadId,
-      defaultCallId: ctx.callMongoId,
-    })
-  );
-
-  // Kick off with script opening (not a generic HARX intro)
+  // 3) Kick off with script opening once stream can carry audio back.
   realtime.send({
     type: 'conversation.item.create',
     item: {
