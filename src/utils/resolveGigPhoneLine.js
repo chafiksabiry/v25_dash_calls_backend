@@ -2,8 +2,9 @@ const mongoose = require('mongoose');
 
 /**
  * Resolve an active phone line for a gig.
- * Picks randomly among active voice-capable numbers so Caller ID rotates
- * when a gig has several lines (Twilio and/or Telnyx).
+ * Prefers Telnyx when any voice-capable Telnyx line exists (avoids falling
+ * onto a broken/legacy Twilio line when both providers are active).
+ * Otherwise rotates randomly among remaining voice-capable lines.
  */
 async function resolveActiveLineForGig(gigId) {
   if (!gigId) return null;
@@ -26,7 +27,23 @@ async function resolveActiveLineForGig(gigId) {
 
   const voiceCapable = docs.filter((d) => d.features?.voice !== false);
   const pool = voiceCapable.length ? voiceCapable : docs;
-  const chosen = pool[Math.floor(Math.random() * pool.length)];
+
+  const telnyxPool = pool.filter((d) => d.provider === 'telnyx');
+  const pickFrom = telnyxPool.length ? telnyxPool : pool;
+  const chosen = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+
+  console.log('[resolveActiveLineForGig]', {
+    gigId: gigIdStr,
+    active: docs.length,
+    voiceCapable: voiceCapable.length,
+    telnyx: telnyxPool.length,
+    chosen: {
+      id: String(chosen._id),
+      phoneNumber: chosen.phoneNumber,
+      provider: chosen.provider,
+      voice: chosen.features?.voice,
+    },
+  });
 
   return {
     phoneNumberId: String(chosen._id),
