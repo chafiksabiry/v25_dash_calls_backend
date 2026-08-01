@@ -135,11 +135,12 @@ exports.generateLoginToken = async () => {
   }
 
   const candidates = connectionCandidates();
-  const username = process.env.TELNYX_USERNAME;
-  const password = process.env.TELNYX_PASSWORD;
+  const username = (process.env.TELNYX_USERNAME || '').trim();
+  const password = (process.env.TELNYX_PASSWORD || '').trim();
+  const failures = [];
 
+  // SIP login_token (optional). On failure, keep going — on-demand credential often works.
   if (candidates.length && username && password) {
-    let lastErr;
     for (const { label, id } of candidates) {
       try {
         const response = await axios.post(
@@ -157,27 +158,29 @@ exports.generateLoginToken = async () => {
         }
         return token;
       } catch (err) {
-        lastErr = err;
-        console.error('[Telnyx] login_token failed for', label, formatTelnyxError(err));
+        const detail = formatTelnyxError(err);
+        failures.push(`login_token/${label}: ${detail}`);
+        console.error('[Telnyx] login_token failed for', label, detail);
       }
     }
-    throw new Error(`Telnyx login_token failed: ${formatTelnyxError(lastErr)}`);
   }
 
   if (candidates.length) {
-    const failures = [];
     for (const { label, id } of candidates) {
       try {
         console.log(`[Telnyx] Minting WebRTC token via on-demand credential (${label}=${id})`);
         return await tokenFromConnectionId(apiKey, id);
       } catch (err) {
-        failures.push(`${label}: ${err.message}`);
+        failures.push(`on-demand/${label}: ${err.message}`);
       }
     }
+  }
+
+  if (failures.length) {
     throw new Error(
-      `Telnyx WebRTC on-demand credential failed. ${failures.join(' | ')}. ` +
-        'Use a Credential Connection id (Mission Control → Voice → Credential Connections), ' +
-        'or set TELNYX_TELEPHONY_CREDENTIAL_ID.'
+      `Telnyx WebRTC auth failed. ${failures.join(' | ')}. ` +
+        'Set TELNYX_TELEPHONY_CREDENTIAL_ID, or a valid Credential Connection id in TELNYX_CONNECTION_ID ' +
+        '(Mission Control → Voice → Credential Connections). Remove wrong TELNYX_USERNAME/PASSWORD if unused.'
     );
   }
 
