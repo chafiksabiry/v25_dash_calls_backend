@@ -5,6 +5,7 @@ const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
 const setupSpeechToTextWebSocket = require('./websocket/speechToText');
+const setupAiVoiceBridge = require('./websocket/aiVoiceBridge');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -112,6 +113,8 @@ const server = http.createServer(app);
 //console.log("server",server);
 // Set up WebSocket handler for speech-to-text
 setupSpeechToTextWebSocket(server);
+// Telnyx media stream <-> OpenAI Realtime bridge
+setupAiVoiceBridge(server);
 
 // Listen on server instead of app
 server.listen(PORT, () => {
