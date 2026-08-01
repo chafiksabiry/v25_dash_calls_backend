@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.*
+recordings
+temp
+*.md
+package-lock.json.backup
+check_db.js
+scripts
