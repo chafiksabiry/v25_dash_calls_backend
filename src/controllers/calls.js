@@ -2348,7 +2348,10 @@ exports.getLoginToken = async (req, res) => {
     res.json({ login_token: token });
   } catch (error) {
     console.error('Error in controller:', error);
-    res.status(500).json({ error: 'Failed to get Telnyx login token' });
+    res.status(500).json({
+      error: 'Failed to get Telnyx login token',
+      message: error.message,
+    });
   }
 };
 
