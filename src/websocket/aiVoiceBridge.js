@@ -1,36 +1,82 @@
 const WebSocket = require('ws');
-const { getActiveSession } = require('../services/aiOutboundCallService');
+const {
+  getActiveSession,
+  getSessionByStreamToken,
+  resolveStreamToken,
+} = require('../services/aiOutboundCallService');
 
 /**
- * Telnyx media stream <-> OpenAI Realtime bridge (PCMU passthrough).
- * Path: /ai-voice-stream?callControlId=...
+ * Telnyx media stream <-> OpenAI Realtime (PCMU passthrough).
+ * Uses noServer + explicit upgrade so Telnyx can always handshake on Railway.
  *
- * Audio is g711 µ-law @ 8kHz end-to-end (Telnyx PCMU ↔ OpenAI g711_ulaw)
- * so there is no resampling — required for natural barge-in conversation.
+ * URL: wss://<host>/ai-voice-stream/<streamToken>
  */
 function setupAiVoiceBridge(server) {
   const wss = new WebSocket.Server({
-    server,
-    path: '/ai-voice-stream',
+    noServer: true,
+    perMessageDeflate: false,
+  });
+
+  server.on('upgrade', (request, socket, head) => {
+    let pathname = '';
+    try {
+      pathname = new URL(request.url, 'http://localhost').pathname || '';
+    } catch {
+      return;
+    }
+
+    if (!pathname.startsWith('/ai-voice-stream')) {
+      return;
+    }
+
+    // Health is HTTP-only; ignore accidental upgrade
+    if (pathname === '/ai-voice-stream/health') {
+      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    console.log('[AiVoiceBridge] upgrade accept', {
+      url: request.url,
+      pathname,
+      headers: {
+        upgrade: request.headers.upgrade,
+        connection: request.headers.connection,
+        host: request.headers.host,
+      },
+    });
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
   });
 
   wss.on('connection', (ws, request) => {
+    let streamToken = null;
     let callControlId = null;
     try {
       const url = new URL(request.url, 'http://localhost');
-      callControlId = url.searchParams.get('callControlId');
-    } catch {
-      /* ignore */
+      const parts = url.pathname.split('/').filter(Boolean);
+      // /ai-voice-stream/<token>
+      if (parts[0] === 'ai-voice-stream' && parts[1]) {
+        streamToken = parts[1];
+      }
+      callControlId =
+        url.searchParams.get('callControlId') ||
+        (streamToken ? resolveStreamToken(streamToken) : null);
+    } catch (err) {
+      console.error('[AiVoiceBridge] bad url', err?.message || err);
     }
 
-    const ctx = callControlId ? getActiveSession(callControlId) : null;
+    const ctx =
+      (streamToken && getSessionByStreamToken(streamToken)) ||
+      (callControlId ? getActiveSession(callControlId) : null);
     if (!ctx) {
-      console.error('[AiVoiceBridge] no session ctx for', callControlId);
+      console.error('[AiVoiceBridge] no session', { streamToken, callControlId });
       ws.close(1008, 'no_session');
       return;
     }
 
-    // Telnyx may connect before OpenAI is ready — hold the socket.
     ctx.telnyxStreamWs = ws;
     ctx.telnyxStreamId = null;
     let mediaIn = 0;
@@ -44,12 +90,7 @@ function setupAiVoiceBridge(server) {
         if (ws.readyState !== WebSocket.OPEN) return;
         try {
           mediaOut += 1;
-          ws.send(
-            JSON.stringify({
-              event: 'media',
-              media: { payload: base64Pcmu },
-            })
-          );
+          ws.send(JSON.stringify({ event: 'media', media: { payload: base64Pcmu } }));
           if (mediaOut === 1 || mediaOut % 50 === 0) {
             console.log('[AiVoiceBridge] audio out frames', mediaOut, callControlId);
           }
@@ -59,7 +100,6 @@ function setupAiVoiceBridge(server) {
       });
 
       realtime.on('onSpeechStarted', () => {
-        // Barge-in: clear Telnyx playback queue so the caller can interrupt.
         if (ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(JSON.stringify({ event: 'clear' }));
@@ -75,10 +115,13 @@ function setupAiVoiceBridge(server) {
       attachRealtimeHandlers(ctx.realtime);
     } else {
       ctx._attachBridgeWhenReady = attachRealtimeHandlers;
-      console.log('[AiVoiceBridge] telnyx connected early, waiting for OpenAI', callControlId);
+      console.log('[AiVoiceBridge] waiting for OpenAI', callControlId);
     }
 
-    console.log('[AiVoiceBridge] telnyx stream connected', callControlId);
+    console.log('[AiVoiceBridge] telnyx stream connected', {
+      callControlId,
+      streamToken,
+    });
 
     ws.on('message', (raw) => {
       let msg;
@@ -89,6 +132,11 @@ function setupAiVoiceBridge(server) {
       }
 
       const event = msg.event || msg.type;
+
+      if (event === 'connected') {
+        console.log('[AiVoiceBridge] telnyx connected event', callControlId);
+        return;
+      }
 
       if (event === 'start') {
         ctx.telnyxStreamId = msg.stream_id || null;
@@ -105,7 +153,6 @@ function setupAiVoiceBridge(server) {
       if (event === 'media' && msg.media?.payload) {
         const realtime = ctx.realtime;
         if (!realtime || !realtime.connected) return;
-        // Only forward caller audio (inbound). Ignore echoed outbound if both_tracks.
         const track = msg.media.track || '';
         if (track && track !== 'inbound' && track !== 'inbound_track') return;
         try {
@@ -121,10 +168,7 @@ function setupAiVoiceBridge(server) {
       }
 
       if (event === 'stop' || event === 'ended') {
-        console.log('[AiVoiceBridge] stream stop', callControlId, {
-          mediaIn,
-          mediaOut,
-        });
+        console.log('[AiVoiceBridge] stream stop', callControlId, { mediaIn, mediaOut });
         try {
           ctx.realtime?.close();
         } catch {
@@ -145,7 +189,7 @@ function setupAiVoiceBridge(server) {
     });
   });
 
-  console.log('[AiVoiceBridge] listening on /ai-voice-stream (PCMU passthrough)');
+  console.log('[AiVoiceBridge] listening (noServer) on /ai-voice-stream/<token>');
 }
 
 module.exports = setupAiVoiceBridge;

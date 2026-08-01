@@ -106,6 +106,15 @@ app.use('/api/vertex', vertex);
 // Error handler
 //app.use(errorHandler);
 
+// Probe for Telnyx / ops — confirms the public host reaches this service.
+app.get('/ai-voice-stream/health', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'ai-voice-stream',
+    hint: 'WebSocket endpoint is wss://<host>/ai-voice-stream/<token>',
+  });
+});
+
 const PORT = config.PORT;
 
 // Create HTTP server
