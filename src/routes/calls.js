@@ -112,6 +112,8 @@ router.post('/personality-analysis', callController.getPersonalityAnalysis);
 router.post('/get-login-token', callController.getLoginToken);
 router.get('/get-login-token', callController.getLoginToken);
 
+router.post('/ai-outbound', callController.startAiOutbound);
+router.post('/webhooks/telnyx/ai-outbound', express.json(), callController.handleTelnyxAiOutboundWebhook);
 router.post('/webhooks/telnyx/call-control', express.json(), callController.handleTelnyxCallControlWebhook);
 
 module.exports = router;

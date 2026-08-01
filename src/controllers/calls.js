@@ -2397,6 +2397,48 @@ exports.startTelnyxRecording = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/calls/ai-outbound
+ * Start a per-lead AI voice outbound call (OpenAI Realtime + Telnyx stream).
+ * Body: { leadId, gigId?, companyId? }
+ */
+exports.startAiOutbound = async (req, res) => {
+  try {
+    const { startAiOutboundCall } = require('../services/aiOutboundCallService');
+    const { leadId, gigId, companyId } = req.body || {};
+    const result = await startAiOutboundCall({
+      leadId,
+      gigId,
+      companyId: companyId || req.user?.companyId || req.headers['x-company-id'],
+      req,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || 500;
+    console.error('[AiOutbound] start failed:', error.message);
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Failed to start AI outbound call',
+    });
+  }
+};
+
+/**
+ * POST /api/calls/webhooks/telnyx/ai-outbound
+ * Telnyx Call Control webhook for AI outbound legs (answered → media stream).
+ */
+exports.handleTelnyxAiOutboundWebhook = async (req, res) => {
+  try {
+    const { handleAiOutboundWebhook } = require('../services/aiOutboundCallService');
+    const event = req.body?.data || req.body;
+    await handleAiOutboundWebhook(event);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
 exports.handleTelnyxCallControlWebhook = async (req, res) => {
   try {
     const event = req.body?.data;
