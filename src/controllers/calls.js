@@ -1,41 +1,375 @@
 const { Call } = require('../models/Call');
+const Transaction = require('../models/Transaction');
 const { CallService } = require('../services/CallService');
 const ovhService = require('../services/integrations/ovh');
 const twilioService = require('../services/integrations/twilio');
+const twilio = require('twilio');
+const fetch = require('node-fetch');
+const mongoose = require('mongoose');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
-const OpenAI = require('openai');
-const { VertexAI } = require('@google-cloud/vertexai');
+const { resolveActiveLineForLead } = require('../utils/resolveGigPhoneLine');
+const vertexAIService = require('../services/vertexai.service');
+const {
+  resolveSelfCallFraud,
+  correctTranscriptForSelfCallFraud,
+  applySelfCallFraudToScores,
+  MIN_DURATION_VOICE_AI_SEC,
+  isFraudFromScores,
+  readFraudScore,
+} = require('../utils/selfCallVoice');
+const {
+  buildCompanyFraudStatsFromCalls,
+  buildAgentFraudStatsFromCalls,
+  buildCompanyFraudMatchQuery,
+  buildAgentFraudMatchQuery,
+} = require('../utils/fraudStats');
+const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
+const {
+  applyVoicemailAnalysisShape,
+  applyFraudAnalysisShape,
+  VOICEMAIL_SUMMARY_FR,
+  VOICEMAIL_SUMMARY_EN,
+} = require('../utils/nonEvaluableCall');
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
+const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
+const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 
-// Initialize Vertex AI
-const vertex_ai = new VertexAI({
-  project: process.env.GOOGLE_CLOUD_PROJECT,
-  location: process.env.GOOGLE_CLOUD_LOCATION,
-});
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// Initialize the model
-const model = 'gemini-1.5-flash-002';
+// A call stuck in `processing` longer than this is considered dead (the worker
+// hung or the process restarted mid-analysis). Such locks may be reclaimed so
+// the analysis can be retried instead of spinning forever in the UI.
+const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
+
+// Hard caps for the external Vertex AI calls so a hung request surfaces as an
+// `error` status instead of leaving the call frozen in `processing`.
+const TRANSCRIPTION_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+const SCORING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const VOICE_FRAUD_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+function resolveTransactionValid(validByAI, validByCompany) {
+  if (validByCompany === false) return false;
+  if (validByCompany === true) return true;
+  if (validByAI === false) return false;
+  return null;
+}
+
+async function markLeadContractSigned(leadId, agentId) {
+  if (!leadId || !agentId || !mongoose.Types.ObjectId.isValid(String(leadId))) return;
+  try {
+    await mongoose.connection.db.collection('leads').updateOne(
+      { _id: new mongoose.Types.ObjectId(String(leadId)) },
+      {
+        $set: {
+          signedByAgent: new mongoose.Types.ObjectId(String(agentId)),
+          signedAt: new Date(),
+          assignedTo: new mongoose.Types.ObjectId(String(agentId)),
+          updatedAt: new Date(),
+        },
+      }
+    );
+    console.log(`✅ Lead ${leadId} marked as signed by agent ${agentId}`);
+  } catch (err) {
+    console.error('[markLeadContractSigned] failed:', err.message);
+  }
+}
+
+function triggerCompanyReconcile(companyId) {
+  if (!companyId) return Promise.resolve();
+  const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
+  const id = String(companyId);
+  return fetch(`${orchestratorUrl}/api/escrow/reconcile/${id}`, { method: 'POST' })
+    .then(res => res.json().catch(() => ({})))
+    .then(data => console.log(`✅ Triggered company reconcile for ${id}:`, data))
+    .catch(err => {
+      console.error('❌ Failed to trigger company reconcile:', err.message);
+    });
+}
+
+/** Reject a promise if it does not settle within `ms`. */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label || 'Operation'} timed out after ${ms}ms`));
+    }, ms);
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function parseHHMMToMinutes(raw) {
+  const m = String(raw || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
+}
+
+const SUPPORTED_TIMEZONES = ['Europe/Paris', 'Africa/Casablanca', 'UTC'];
+
+function getTodayInTimezone(date, timeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone: timeZone
+    });
+    const parts = formatter.formatToParts(date);
+    const yyyy = parts.find((p) => p.type === 'year').value;
+    const mm = parts.find((p) => p.type === 'month').value;
+    const dd = parts.find((p) => p.type === 'day').value;
+    const iso = `${yyyy}-${mm}-${dd}`;
+
+    const weekdayFormatter = new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      timeZone: timeZone
+    });
+    const dayName = weekdayFormatter.format(date).toLowerCase();
+
+    return { iso, dayName };
+  } catch (e) {
+    return null;
+  }
+}
+
+function getMinutesInTimezone(date, timeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: timeZone
+    });
+    const parts = formatter.formatToParts(date);
+    const hour = Number(parts.find((p) => p.type === 'hour').value);
+    const minute = Number(parts.find((p) => p.type === 'minute').value);
+    return hour * 60 + minute;
+  } catch (e) {
+    return null;
+  }
+}
+
+function isReservationForToday(rawDate, now) {
+  const v = String(rawDate || '').trim();
+  if (!v) return false;
+
+  for (const tz of SUPPORTED_TIMEZONES) {
+    const info = getTodayInTimezone(now, tz);
+    if (!info) continue;
+    if (ISO_DATE_RE.test(v)) {
+      if (v === info.iso) return true;
+    } else {
+      if (v.toLowerCase() === info.dayName) return true;
+    }
+  }
+  return false;
+}
+
+function isTelephonyTestBypassEnabled() {
+  const v = String(process.env.TELEPHONY_TEST_BYPASS || '').trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
+}
+
+async function validateCopilotCallEligibility({ agentId, gigId }) {
+  if (!agentId) return { ok: false, reason: 'Missing agentId' };
+  if (!gigId) return { ok: false, reason: 'Lead is not linked to a gig' };
+
+  // 1) Enrollment in gig
+  try {
+    const enrolledRes = await fetch(
+      `${MATCHING_API_URL}/gig-agents/agents/${encodeURIComponent(agentId)}/gigs?status=enrolled`
+    );
+    if (!enrolledRes.ok) {
+      return { ok: false, reason: `Enrollment check failed (${enrolledRes.status})` };
+    }
+    const enrolledData = await enrolledRes.json();
+    const gigs = Array.isArray(enrolledData?.gigs) ? enrolledData.gigs : [];
+    const isEnrolled = gigs.some((row) => {
+      const id = row?.gig?._id || row?.gig?.$oid || row?.gigId || '';
+      return String(id) === String(gigId);
+    });
+    if (!isEnrolled) {
+      return { ok: false, reason: 'Rep is not enrolled in this gig' };
+    }
+  } catch (error) {
+    return { ok: false, reason: `Enrollment check error: ${error.message}` };
+  }
+
+  // Test bypass: skip training + reservation (enrollment still required).
+  if (isTelephonyTestBypassEnabled()) {
+    console.warn('[TelephonyTest] Bypass enabled — skipping training and reservation checks', {
+      agentId,
+      gigId,
+    });
+    return { ok: true, testBypass: true };
+  }
+
+  // 2) Trainings completion for this gig
+  try {
+    const gigTrainingsRes = await fetch(
+      `${TRAINING_API_URL}/training_journeys/gig/${encodeURIComponent(gigId)}`
+    );
+    const gigTrainingsPayload = gigTrainingsRes.ok ? await gigTrainingsRes.json() : null;
+    const gigTrainings = Array.isArray(gigTrainingsPayload?.data)
+      ? gigTrainingsPayload.data
+      : Array.isArray(gigTrainingsPayload)
+        ? gigTrainingsPayload
+        : [];
+
+    const trainingRes = await fetch(
+      `${TRAINING_API_URL}/training_journeys/rep/${encodeURIComponent(agentId)}/slide-progress-summary?gigId=${encodeURIComponent(gigId)}`
+    );
+    if (!trainingRes.ok) {
+      return { ok: false, reason: `Training check failed (${trainingRes.status})` };
+    }
+    const summaryResponse = await trainingRes.json();
+    const summary = summaryResponse?.data && typeof summaryResponse.data === 'object'
+      ? summaryResponse.data
+      : summaryResponse;
+    const trainingCount = Number(summary?.trainingCount || 0);
+    const overallPercent = Number(summary?.overallPercent || 0);
+    const trainingComplete =
+      gigTrainings.length > 0 ? overallPercent >= 100 : (trainingCount === 0 ? true : overallPercent >= 100);
+    if (!trainingComplete) {
+      return { ok: false, reason: 'Rep must complete all gig trainings before calling' };
+    }
+  } catch (error) {
+    return { ok: false, reason: `Training check error: ${error.message}` };
+  }
+
+  // 3) Active reservation window now
+  try {
+    const resvRes = await fetch(
+      `${MATCHING_API_URL}/slots/reservations?repId=${encodeURIComponent(agentId)}&gigId=${encodeURIComponent(gigId)}`
+    );
+    if (!resvRes.ok) {
+      return { ok: false, reason: `Reservation check failed (${resvRes.status})` };
+    }
+    const rows = await resvRes.json();
+    const now = new Date();
+    const hasActiveWindow = (Array.isArray(rows) ? rows : []).some((r) => {
+      if (String(r?.status || '').toLowerCase() !== 'reserved') return false;
+      const d = r?.reservationDate || r?.date;
+      if (!isReservationForToday(d, now)) return false;
+      const start = parseHHMMToMinutes(r?.startTime);
+      const end = parseHHMMToMinutes(r?.endTime);
+      if (start == null || end == null || end <= start) return false;
+      
+      // Check if current time in ANY supported timezone matches the active slot (strictly)
+      return SUPPORTED_TIMEZONES.some((tz) => {
+        const mins = getMinutesInTimezone(now, tz);
+        if (mins === null) return false;
+        return mins >= start && mins < end;
+      });
+    });
+    if (!hasActiveWindow) {
+      return { ok: false, reason: 'No active reserved slot for this gig at current time' };
+    }
+  } catch (error) {
+    return { ok: false, reason: `Reservation check error: ${error.message}` };
+  }
+
+  return { ok: true };
+}
 
 // @desc    Get all calls
 // @route   GET /api/calls
 // @access  Private
 exports.getCalls = async (req, res) => {
   try {
-    const calls = await Call.find()
-      .populate('agent')
-      .populate('lead');
+    const { 
+      userId, 
+      agentId, 
+      leadId, 
+      gigId, 
+      companyId, 
+      startDate, 
+      endDate,
+      populate 
+    } = req.query;
+
+    let query = {};
+
+    // Basic filters
+    if (userId) query.userId = userId;
+    if (agentId) query.agent = agentId;
+    if (leadId) query.lead = leadId;
+    if (gigId) query.gigId = gigId;
+    if (companyId) query.companyId = companyId;
+
+    // Date range filter
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    let mongoQuery = Call.find(query);
+
+    // Dynamic population
+    if (populate === 'lead') {
+      mongoQuery = mongoQuery.populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      }).populate('transaction');
+    } else {
+      mongoQuery = mongoQuery.populate('agent').populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      }).populate('transaction');
+    }
+
+    const calls = await mongoQuery.sort({ createdAt: -1 });
+
+    // If filtering by company, negate the commissions to reflect costs
+    let processedCalls = calls;
+    if (companyId) {
+      processedCalls = calls.map(call => {
+        const callObj = call.toObject();
+        if (callObj.repCallCommission) callObj.repCallCommission = -callObj.repCallCommission;
+        if (callObj.platformCallCommission) callObj.platformCallCommission = -callObj.platformCallCommission;
+        if (callObj.transaction) {
+          if (callObj.transaction.repTransactionCommission) callObj.transaction.repTransactionCommission = -callObj.transaction.repTransactionCommission;
+          if (callObj.transaction.platformTransactionCommission) callObj.transaction.platformTransactionCommission = -callObj.transaction.platformTransactionCommission;
+        }
+        return callObj;
+      });
+    }
 
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: calls
+      data: processedCalls,
+      ...(companyId
+        ? {
+            fraudStats: buildCompanyFraudStatsFromCalls(
+              processedCalls.map((call) => (typeof call.toObject === 'function' ? call.toObject() : call))
+            ),
+          }
+        : {}),
     });
   } catch (err) {
+    console.error('Error in getCalls:', err);
     res.status(400).json({
       success: false,
       error: err.message
@@ -43,39 +377,94 @@ exports.getCalls = async (req, res) => {
   }
 };
 
-
 // @desc    Get all calls for a specific agent
 // @route   GET /api/calls/agent/:agentId
 // @access  Private
-// @param   {string} agentId - The ID of the agent to get calls for
 exports.getCallsByAgent = async (req, res) => {
   try {
-    const agentId = req.params.agentId; // Fixed incorrect destructuring
+    const agentId = req.params.agentId;
 
     if (!agentId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Agent ID est requis" 
+        message: "Agent ID est requis"
       });
     }
 
     const calls = await Call.find({ agent: agentId })
       .populate('agent')
-      .populate('lead')
-      .sort({ createdAt: -1 }); // Sort by most recent first
+      .populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      })
+      .populate('transaction')
+      .sort({ createdAt: -1 });
+
+    const callObjects = calls.map((call) => call.toObject());
 
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: calls
+      data: calls,
+      fraudStats: buildAgentFraudStatsFromCalls(callObjects, agentId),
     });
   } catch (error) {
     console.error("Erreur lors de la récupération des appels :", error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       message: "Erreur serveur",
-      error: error.message 
+      error: error.message
     });
+  }
+};
+
+// @desc    Fraud stats for a company (total + per agent + FR/EN warnings)
+// @route   GET /api/calls/company/:companyId/fraud-stats
+exports.getCompanyFraudStats = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'companyId is required' });
+    }
+
+    const calls = await Call.find(buildCompanyFraudMatchQuery(companyId))
+      .populate('agent')
+      .lean()
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: buildCompanyFraudStatsFromCalls(calls),
+    });
+  } catch (error) {
+    console.error('Error in getCompanyFraudStats:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Fraud stats for a rep/agent (count + FR/EN blacklist warning)
+// @route   GET /api/calls/agent/:agentId/fraud-stats
+exports.getAgentFraudStats = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    if (!agentId) {
+      return res.status(400).json({ success: false, message: 'agentId is required' });
+    }
+
+    const calls = await Call.find(buildAgentFraudMatchQuery(agentId))
+      .lean()
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: buildAgentFraudStatsFromCalls(calls, agentId),
+    });
+  } catch (error) {
+    console.error('Error in getAgentFraudStats:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
@@ -86,7 +475,14 @@ exports.getCall = async (req, res) => {
   try {
     const call = await Call.findById(req.params.id)
       .populate('agent')
-      .populate('lead');
+      .populate({
+        path: 'lead',
+        populate: {
+          path: 'gigId',
+          model: 'Gig'
+        }
+      })
+      .populate('transaction');
 
     if (!call) {
       return res.status(404).json({
@@ -112,7 +508,12 @@ exports.getCall = async (req, res) => {
 // @access  Private
 exports.createCall = async (req, res) => {
   try {
-    const call = await Call.create(req.body);
+    let call = await Call.create(req.body);
+    
+    // Populate after create to get full context
+    if (call) {
+      call = await Call.findById(call._id).populate('agent').populate('lead').populate('transaction');
+    }
 
     res.status(201).json({
       success: true,
@@ -131,16 +532,96 @@ exports.createCall = async (req, res) => {
 // @access  Private
 exports.updateCall = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(req.params.id, req.body, {
+    const callId = req.params.id;
+
+    if (req.body.transaction) {
+      const transactionData = req.body.transaction;
+      const callObj = await Call.findById(callId);
+      if (callObj) {
+        const existingTx = await Transaction.findOne({ call: callId });
+        const validByReps = transactionData.validByReps !== undefined ? transactionData.validByReps : (existingTx ? existingTx.validByReps : null);
+        const validByCompany = transactionData.validByCompany !== undefined ? transactionData.validByCompany : (existingTx ? existingTx.validByCompany : null);
+        const validByAI = existingTx ? existingTx.validByAI : null;
+        const valid = resolveTransactionValid(validByAI, validByCompany);
+
+        await Transaction.findOneAndUpdate(
+          { call: callId },
+          {
+            call: callId,
+            agent: callObj.agent,
+            lead: callObj.lead,
+            gigId: callObj.gigId || undefined,
+            companyId: callObj.companyId || undefined,
+            validByReps,
+            validByCompany,
+            valid,
+            updatedAt: new Date()
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+
+        if (validByCompany === true) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await markLeadContractSigned(callObj.lead, callObj.agent);
+          await triggerCompanyReconcile(callObj.companyId);
+        } else if (validByCompany === false) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
+        }
+
+        req.body.validByReps = validByReps;
+        req.body.validByCompany = validByCompany;
+      }
+      delete req.body.transaction;
+    }
+
+    if (req.body['transaction.validByReps'] !== undefined || req.body['transaction.validByCompany'] !== undefined) {
+      const callObj = await Call.findById(callId);
+      if (callObj) {
+        const existingTx = await Transaction.findOne({ call: callId });
+        const validByReps = req.body['transaction.validByReps'] !== undefined ? req.body['transaction.validByReps'] : (existingTx ? existingTx.validByReps : null);
+        const validByCompany = req.body['transaction.validByCompany'] !== undefined ? req.body['transaction.validByCompany'] : (existingTx ? existingTx.validByCompany : null);
+        const validByAI = existingTx ? existingTx.validByAI : null;
+        const valid = resolveTransactionValid(validByAI, validByCompany);
+
+        await Transaction.findOneAndUpdate(
+          { call: callId },
+          {
+            call: callId,
+            agent: callObj.agent,
+            lead: callObj.lead,
+            gigId: callObj.gigId || undefined,
+            companyId: callObj.companyId || undefined,
+            validByReps,
+            validByCompany,
+            valid,
+            updatedAt: new Date()
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+
+        if (validByCompany === true) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await markLeadContractSigned(callObj.lead, callObj.agent);
+          await triggerCompanyReconcile(callObj.companyId);
+        } else if (validByCompany === false) {
+          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'rejected', updatedAt: new Date() } });
+        }
+
+        req.body.validByReps = validByReps;
+        req.body.validByCompany = validByCompany;
+      }
+      delete req.body['transaction.validByReps'];
+      delete req.body['transaction.validByCompany'];
+      delete req.body['transaction.valid'];
+    }
+
+    let call = await Call.findByIdAndUpdate(callId, req.body, {
       new: true,
       runValidators: true
     });
 
-    if (!call) {
-      return res.status(404).json({
-        success: false,
-        error: 'Call not found'
-      });
+    if (call) {
+      call = await Call.findById(call._id).populate('agent').populate('lead').populate('transaction');
     }
 
     res.status(200).json({
@@ -160,7 +641,7 @@ exports.updateCall = async (req, res) => {
 // @access  Private
 exports.endCall = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(
+    let call = await Call.findByIdAndUpdate(
       req.params.id,
       {
         status: 'completed',
@@ -175,6 +656,14 @@ exports.endCall = async (req, res) => {
         success: false,
         error: 'Call not found'
       });
+    }
+
+    // Populate lead data
+    call = await Call.findById(call._id).populate('agent').populate('lead');
+
+    // Trigger automatic background analysis
+    if (call && call._id) {
+      runAnalysisInBackground(call._id);
     }
 
     res.status(200).json({
@@ -194,7 +683,7 @@ exports.endCall = async (req, res) => {
 // @access  Private
 exports.addNote = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(
+    let call = await Call.findByIdAndUpdate(
       req.params.id,
       { notes: req.body.note },
       { new: true }
@@ -206,6 +695,9 @@ exports.addNote = async (req, res) => {
         error: 'Call not found'
       });
     }
+
+    // Populate lead data
+    call = await Call.findById(call._id).populate('agent').populate('lead');
 
     res.status(200).json({
       success: true,
@@ -224,7 +716,7 @@ exports.addNote = async (req, res) => {
 // @access  Private
 exports.updateQualityScore = async (req, res) => {
   try {
-    const call = await Call.findByIdAndUpdate(
+    let call = await Call.findByIdAndUpdate(
       req.params.id,
       { quality_score: req.body.score },
       { new: true }
@@ -236,6 +728,9 @@ exports.updateQualityScore = async (req, res) => {
         error: 'Call not found'
       });
     }
+
+    // Populate lead data
+    call = await Call.findById(call._id).populate('agent').populate('lead');
 
     res.status(200).json({
       success: true,
@@ -249,39 +744,7 @@ exports.updateQualityScore = async (req, res) => {
   }
 };
 
-// @desc    Initiate new call using OVH
-// @route   POST /api/calls/initiate
-// @access  Private
-/* exports.initiateCall = async (req, res) => {
-  console.log("we are in the controller now");
-  try {
-    const { agentId, phoneNumber } = req.body;
-console.log("agentId",agentId);
-console.log("phoneNumber", phoneNumber);
-    if (!agentId || !phoneNumber) {
-      return res.status(400).json({
-        success: false,
-        error: 'Please provide agent ID and phone number'
-      });
-    }
-
-    const call = await callService.initiateCall(agentId, phoneNumber);
-    //console.log("call after service",call);
-
-    res.status(201).json({
-      success: true,
-      data: call
-    });
-  } catch (err) {
-    res.status(400).json({
-      success: false,
-      error: err.message
-    });
-  }
-}; */
-
-
-// Création du Dialplan
+// OVH Dialplan
 exports.createDialplan = async (req, res) => {
   const { callerNumber, calleeNumber } = req.body;
 
@@ -315,81 +778,129 @@ exports.launchOutboundCall = async (req, res) => {
   }
 };
 
-// Suivi de l'état de l'appel
-/* exports.trackCallStatus = async (req, res) => {
-  const { callId } = req.params;
-
-  if (!callId) {
-      return res.status(400).json({ error: 'callId est requis' });
-  }
-
-  try {
-      const status = await ovhService.trackCallStatus(callId);
-      res.status(200).json({ message: 'État de l\'appel récupéré', status });
-  } catch (error) {
-      console.error('Erreur dans trackCallStatus Controller:', error);
-      res.status(500).json({ error: 'Erreur lors du suivi de l\'appel' });
-  }
-}; */
-
-// Controller for handling voice call
-
-/* exports.handleVoice = (req, res) => {
-  const recipientPhoneNumber = req.body.to;
-
-  // Vérification du numéro de téléphone
-  if (!recipientPhoneNumber) {
-      return res.status(400).json({ message: 'Numéro de téléphone requis' });
-  }
-
-  const response = twilioService.generateVoiceResponse(recipientPhoneNumber);
-  res.type('text/xml');
-  res.send(response);
-}; */
-/* exports.handleVoice = (req, res) => {
-  console.log('Request received:', req.body);  // Log request body
-  console.log('Query params:', req.query); // Log query parameters
-
-  // Twilio sends 'To' as part of the query string or form data
-  const recipientPhoneNumber = req.body.to || req.query.To;
-
-  if (!recipientPhoneNumber) {
-      return res.status(400).json({ message: 'Numéro de téléphone requis' });
-  }
-
-  const response = twilioService.generateVoiceResponse(recipientPhoneNumber);
-  res.type('text/xml');
-  res.send(response);
-}; */
+// Handle Twilio Voice
 exports.handleVoice = async (req, res) => {
-  /* console.log('Request received:', req.body);  // Log request body
-  console.log('Form Params - To:', req.body.To); // Log the 'To' parameter
+  const { To, LeadId, AgentId } = req.body;
 
-  // Get the recipient phone number from the form params
-  const recipientPhoneNumber = req.body.To || req.body.to;
+  console.log("📞 [TwilioVoice] Handling call - To:", To, "LeadId:", LeadId, "AgentId:", AgentId);
 
-  if (!recipientPhoneNumber) {
-      return res.status(400).json({ message: 'Numéro de téléphone requis' });
+  let callerId = null;
+  let leadGigId = null;
+  let lineProvider = null;
+
+  if (LeadId && mongoose.Types.ObjectId.isValid(LeadId)) {
+    try {
+      const { lead, line } = await resolveActiveLineForLead(LeadId);
+      if (lead?.gigId) {
+        leadGigId = String(lead.gigId);
+        console.log(`🔍 Found lead for gigId: ${lead.gigId}`);
+      }
+      if (line) {
+        callerId = line.phoneNumber;
+        lineProvider = line.provider;
+        console.log(`🚀 Using dynamic CallerID from Gig: ${callerId} (provider=${lineProvider})`);
+      } else if (lead?.gigId) {
+        console.warn(`⚠️ No active phone number found for gigId: ${lead.gigId}`);
+      } else {
+        console.warn(`⚠️ No lead or gigId found for LeadId: ${LeadId}`);
+      }
+    } catch (err) {
+      console.error("❌ Error resolving gig phone number:", err);
+    }
   }
 
-  const response = await twilioService.generateVoiceResponse(recipientPhoneNumber);
-  console.log("generate voice response",response);
-  res.type('text/xml');
-  res.send(response); */
-  const { To } = req.body;
-  console.log("To", To);
+  // Telnyx numbers must not be used as Twilio caller IDs.
+  if (lineProvider && lineProvider !== 'twilio') {
+    console.warn('[TwilioVoice] Refusing non-Twilio line on Twilio voice webhook:', {
+      leadId: LeadId,
+      gigId: leadGigId,
+      provider: lineProvider,
+      callerId,
+    });
+    const wrongProviderTwiml = new twilio.twiml.VoiceResponse();
+    wrongProviderTwiml.say(
+      { voice: 'alice' },
+      'This gig uses a Telnyx phone line. Please place the call with the Telnyx dialer.'
+    );
+    wrongProviderTwiml.hangup();
+    res.type('text/xml');
+    return res.status(200).send(wrongProviderTwiml.toString());
+  }
+
+  const eligibility = await validateCopilotCallEligibility({
+    agentId: String(AgentId || '').trim(),
+    gigId: leadGigId
+  });
+  if (!eligibility.ok) {
+    console.warn('[TwilioVoice] Call blocked by backend eligibility guard:', {
+      leadId: LeadId,
+      agentId: AgentId,
+      gigId: leadGigId,
+      reason: eligibility.reason
+    });
+    const blockedTwiml = new twilio.twiml.VoiceResponse();
+    blockedTwiml.say(
+      { voice: 'alice' },
+      'Call blocked. You must be enrolled, complete gig trainings, and call only during an active reserved slot.'
+    );
+    blockedTwiml.hangup();
+    res.type("text/xml");
+    return res.status(200).send(blockedTwiml.toString());
+  }
 
   try {
-    const responseXml = await twilioService.generateTwimlResponse(To);
+    const responseXml = await twilioService.generateTwimlResponse(To, callerId);
     res.type("text/xml");
     res.send(responseXml);
   } catch (error) {
     console.error("Error generating TwiML:", error);
-    res.status(500).json({ error: "Erreur interne du serveur" });
+    const twiml = new (require('twilio').twiml.VoiceResponse)();
+    twiml.say("An application error occurred.");
+    res.type("text/xml");
+    res.status(200).send(twiml.toString());
   }
 };
 
+/**
+ * GET /api/calls/line-for-lead/:leadId
+ * Returns the active telephony line for the lead's gig (provider + E.164).
+ */
+exports.getLineForLead = async (req, res) => {
+  try {
+    const leadId = req.params.leadId || req.query.leadId;
+    if (!leadId) {
+      return res.status(400).json({ message: 'leadId is required' });
+    }
 
+    const { lead, line } = await resolveActiveLineForLead(leadId);
+    if (!lead) {
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+    if (!lead.gigId) {
+      return res.status(404).json({ message: 'Lead has no gig', leadId });
+    }
+    if (!line) {
+      return res.status(404).json({
+        message: 'No active phone number for this gig',
+        leadId,
+        gigId: String(lead.gigId),
+      });
+    }
+
+    return res.json({
+      provider: line.provider,
+      phoneNumber: line.phoneNumber,
+      phoneNumberId: line.phoneNumberId,
+      gigId: line.gigId,
+      companyId: line.companyId,
+      status: line.status,
+      features: line.features,
+    });
+  } catch (error) {
+    console.error('Error in getLineForLead:', error);
+    return res.status(500).json({ message: 'Failed to resolve gig phone line', error: error.message });
+  }
+};
 
 exports.initiateCall = async (req, res) => {
   const { to, userId } = req.body;
@@ -406,7 +917,7 @@ exports.initiateCall = async (req, res) => {
     res.status(500).json({ message: 'Failed to initiate call', error: err.message });
   }
 };
-// Contrôleur pour suivre l'état de l'appel
+
 exports.trackCallStatus = async (req, res) => {
   const callSid = req.params.callSid;
   const { userId } = req.body;
@@ -441,67 +952,439 @@ exports.hangUpCall = async (req, res) => {
   }
 };
 
-exports.getTwilioToken1 = async (req, res) => {
-  const { userId } = req.body;
-
-  if (!userId) {
-    return res.status(400).json({ message: 'User ID is required' });
-  }
-
-  try {
-    console.log("userId:", userId);
-    const token = await twilioService.generateTwilioToken('platform-user', userId);
-    console.log("token:", token);
-    res.json({ token });
-  } catch (error) {
-    console.error('Error generating token:', error);
-    res.status(500).json({ error: 'Failed to generate token' });
-  }
-};
-
 exports.getTwilioToken = async (req, res) => {
-  console.log("start generating token");
   try {
-    // Generate Twilio token using the service layer
     const token = await twilioService.generateTwilioToken('platform-user');
-
-    // Send the token back to the client
     res.json({ token });
   } catch (error) {
     console.error('Error generating token:', error);
     res.status(500).json({ error: 'Failed to generate token' });
   }
-};
-
-
-
-
-exports.endCall = async (req, res) => {
-  const callSid = req.body.CallSid;
-  const callStatus = req.body.CallStatus;
-
-  console.log(`Appel ${callSid} terminé avec le statut: ${callStatus}`);
-
-  // Retourne une réponse vide pour indiquer que l'action est bien reçue
-  res.send('');
 };
 
 exports.saveCallToDB = async (req, res) => {
-  const { CallSid, agentId, leadId, call, cloudinaryrecord, userId } = req.body;
+  const {
+    CallSid,
+    callSid,
+    externalId,
+    provider: bodyProvider,
+    agentId,
+    leadId,
+    call,
+    cloudinaryrecord,
+    transcript,
+    gigId,
+    companyId,
+    userId,
+    transactionOccurred,
+    isVoicemail,
+    appointmentAt,
+    callbackAt,
+    ErrorCode,
+    errorCode,
+    from,
+    to,
+    duration,
+    startTime,
+    endTime,
+    status,
+  } = req.body;
 
-  if (!CallSid || !userId) {
-    return res.status(400).json({ message: 'Call SID and User ID are required' });
+  const provider = bodyProvider === 'telnyx' ? 'telnyx' : 'twilio';
+  const actualCallSid = CallSid || callSid || externalId;
+  // Twilio error code (21211 = invalid number, 21214 = unreachable, 13224 = cannot dial)
+  const twilioErrorCode = ErrorCode || errorCode ? Number(ErrorCode || errorCode) : null;
+
+  if (!actualCallSid) {
+    return res.status(400).json({ message: 'Call SID / externalId is required' });
   }
 
   try {
-    const callDetails = await twilioService.saveCallToDB(CallSid, agentId, leadId, call, cloudinaryrecord);
+    let callDetails;
+
+    if (provider === 'telnyx') {
+      callDetails = await saveTelnyxCallDocument({
+        externalId: actualCallSid,
+        agentId,
+        leadId,
+        call: call || {},
+        cloudinaryrecord,
+        transcript,
+        gigId,
+        companyId,
+        userId,
+        transactionOccurred,
+        isVoicemail,
+        appointmentAt,
+        callbackAt,
+        from,
+        to,
+        duration,
+        startTime,
+        endTime,
+        status,
+      });
+    } else {
+      callDetails = await twilioService.saveCallToDB(
+        actualCallSid,
+        agentId,
+        leadId,
+        call,
+        cloudinaryrecord,
+        transcript,
+        gigId,
+        companyId,
+        userId,
+        transactionOccurred,
+        isVoicemail,
+        appointmentAt,
+        callbackAt
+      );
+
+      // Persist Twilio error code if provided (available at call-end from Twilio webhook)
+      if (callDetails?._id && twilioErrorCode) {
+        await Call.updateOne({ _id: callDetails._id }, { $set: { twilioErrorCode } }).catch(() => {});
+      }
+    }
+
+    // Trigger automatic background analysis
+    if (callDetails && callDetails._id) {
+      runAnalysisInBackground(callDetails._id);
+    }
+
     res.json(callDetails);
   } catch (error) {
-    console.error('Error saving call:', error);
-    res.status(500).json({ message: 'Failed to save call details', error: error.message });
+    console.error('Error in saveCallToDB controller:', error);
+    res.status(500).json({
+      message: 'Failed to save call details',
+      error: error.message
+    });
   }
 };
 
+/**
+ * Upsert a Telnyx WebRTC call into the Call collection.
+ * Uses `sid` + `call_id` = Telnyx call id for uniqueness / webhook matching.
+ */
+async function saveTelnyxCallDocument({
+  externalId,
+  agentId,
+  leadId,
+  call,
+  cloudinaryrecord,
+  transcript,
+  gigId,
+  companyId,
+  userId,
+  transactionOccurred,
+  isVoicemail,
+  appointmentAt,
+  callbackAt,
+  from,
+  to,
+  duration,
+  startTime,
+  endTime,
+  status,
+}) {
+  let finalCloudinaryUrl = cloudinaryrecord || null;
+  const recordingUrl = call?.recordingUrl || call?.recording_url || null;
+
+  if (!finalCloudinaryUrl && recordingUrl) {
+    try {
+      finalCloudinaryUrl = await telnyxService.archivePublicRecording(recordingUrl);
+    } catch (err) {
+      console.warn('[Telnyx] recording archive failed:', err.message);
+    }
+  }
+
+  // If webhook already attached a recording, prefer that after a short wait.
+  if (!finalCloudinaryUrl) {
+    const existing = await Call.findOne({
+      $or: [{ sid: externalId }, { call_id: externalId }],
+    }).lean();
+    if (existing?.recording_url_cloudinary) {
+      finalCloudinaryUrl = existing.recording_url_cloudinary;
+    } else if (existing?.recording_url) {
+      try {
+        finalCloudinaryUrl = await telnyxService.archivePublicRecording(existing.recording_url);
+      } catch (err) {
+        console.warn('[Telnyx] existing recording archive failed:', err.message);
+      }
+    }
+  }
+
+  const update = {
+    status: status || call?.status || 'completed',
+    duration: parseInt(duration ?? call?.duration, 10) || 0,
+    recording_url: recordingUrl || undefined,
+    recording_url_cloudinary: finalCloudinaryUrl || undefined,
+    from: from || call?.from || undefined,
+    to: to || call?.to || undefined,
+    transcript: transcript || [],
+    provider: 'telnyx',
+    call_id: externalId,
+    updatedAt: new Date(),
+    endTime: endTime ? new Date(endTime) : new Date(),
+  };
+
+  if (isVoicemail) {
+    update.validByAI = false;
+    update.valid = false;
+    update.ai_call_status = 'auto_refused';
+    update.callOutcome = 'voicemail';
+    update.callOutcomeSource = 'rep';
+    update.ai_refusal_reason = 'Appel sur messagerie vocale (déclaré par le rep)';
+  } else {
+    if (transactionOccurred !== undefined && transactionOccurred !== null) {
+      update.transactionOccurred = transactionOccurred;
+    }
+    if (appointmentAt) {
+      update.appointmentAt = appointmentAt;
+      update.callOutcome = 'appointment';
+      update.callOutcomeSource = 'rep';
+      update.validByAI = true;
+      update.valid = true;
+    } else if (callbackAt) {
+      update.callbackAt = callbackAt;
+      update.callOutcome = 'callback_requested';
+      update.callOutcomeSource = 'rep';
+      update.validByAI = true;
+      update.valid = true;
+    }
+  }
+
+  // Prefer sid lookup (unique). Fall back to call_id for webhook-created docs.
+  let existingDoc = await Call.findOne({ sid: externalId });
+  if (!existingDoc) {
+    existingDoc = await Call.findOne({ call_id: externalId });
+  }
+
+  let result;
+  if (existingDoc) {
+    Object.assign(existingDoc, update);
+    if (!existingDoc.sid) existingDoc.sid = externalId;
+    if (!existingDoc.call_id) existingDoc.call_id = externalId;
+    if (agentId && !existingDoc.agent) existingDoc.agent = agentId;
+    if (leadId && !existingDoc.lead) existingDoc.lead = leadId;
+    if (gigId && !existingDoc.gigId) existingDoc.gigId = gigId;
+    if (companyId && !existingDoc.companyId) existingDoc.companyId = companyId;
+    await existingDoc.save();
+    result = await Call.findById(existingDoc._id).populate('agent').populate('lead');
+  } else {
+    result = await Call.create({
+      ...update,
+      agent: agentId || undefined,
+      lead: leadId || undefined,
+      gigId: gigId || undefined,
+      companyId: companyId || undefined,
+      userId: userId || undefined,
+      sid: externalId,
+      call_id: externalId,
+      direction: call?.direction || 'outbound',
+      provider: 'telnyx',
+      createdAt: startTime ? new Date(startTime) : new Date(),
+      startTime: startTime ? new Date(startTime) : new Date(),
+    });
+    result = await Call.findById(result._id).populate('agent').populate('lead');
+  }
+
+  // Charge minutes (same fire-and-forget pattern as Twilio path).
+  try {
+    const targetCompanyId = result.companyId || companyId;
+    const durationSeconds = parseInt(result.duration, 10) || 0;
+    if (targetCompanyId && durationSeconds > 0) {
+      const orchestratorUrl = (
+        process.env.ORCHESTRATOR_API_URL ||
+        'https://v25comporchestratorback-production.up.railway.app'
+      ).replace(/\/$/, '');
+      fetch(`${orchestratorUrl}/api/minutes-company/charge-call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: targetCompanyId,
+          callSid: externalId,
+          durationSeconds,
+          provider: 'telnyx',
+        }),
+      }).catch((err) => console.warn('[Telnyx] minutes charge failed:', err.message));
+    }
+  } catch (err) {
+    console.warn('[Telnyx] minutes charge error:', err.message);
+  }
+
+  return result;
+}
+
+/**
+ * POST /api/calls/telnyx/finalize
+ * Wait briefly for Telnyx recording webhook, then upsert Call + archive recording.
+ */
+exports.finalizeTelnyxCall = async (req, res) => {
+  try {
+    const {
+      externalId,
+      callId,
+      agentId,
+      leadId,
+      gigId,
+      companyId,
+      userId,
+      transcript,
+      from,
+      to,
+      duration,
+      startTime,
+      endTime,
+      status,
+      transactionOccurred,
+      isVoicemail,
+      appointmentAt,
+      callbackAt,
+      waitForRecordingMs = 8000,
+    } = req.body;
+
+    const id = externalId || callId;
+    if (!id) {
+      return res.status(400).json({ message: 'externalId is required' });
+    }
+
+    const waitMs = Math.min(Math.max(Number(waitForRecordingMs) || 0, 0), 20000);
+    if (waitMs > 0) {
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+
+    // Prefer recording already written by webhook.
+    let existing = await Call.findOne({
+      $or: [{ sid: id }, { call_id: id }, { parentCallSid: id }],
+    }).lean();
+
+    let cloudinaryrecord = existing?.recording_url_cloudinary || null;
+    let recordingUrl = existing?.recording_url || null;
+
+    // Webhook may be late / missing — pull recording from Telnyx API.
+    if (!cloudinaryrecord && !recordingUrl) {
+      try {
+        recordingUrl = await telnyxService.findRecordingUrl(id);
+      } catch (err) {
+        console.warn('[Telnyx finalize] findRecordingUrl failed:', err.message);
+      }
+    }
+
+    if (!cloudinaryrecord && recordingUrl) {
+      try {
+        cloudinaryrecord = await telnyxService.archivePublicRecording(recordingUrl);
+      } catch (err) {
+        console.warn('[Telnyx finalize] archive failed:', err.message);
+      }
+    }
+
+    const callDetails = await saveTelnyxCallDocument({
+      externalId: id,
+      agentId,
+      leadId,
+      call: {
+        status: status || existing?.status || 'completed',
+        duration: duration ?? existing?.duration ?? 0,
+        from: from || existing?.from,
+        to: to || existing?.to,
+        recordingUrl: recordingUrl || existing?.recording_url,
+        direction: 'outbound',
+      },
+      cloudinaryrecord,
+      transcript,
+      gigId,
+      companyId,
+      userId,
+      transactionOccurred,
+      isVoicemail,
+      appointmentAt,
+      callbackAt,
+      from,
+      to,
+      duration,
+      startTime: startTime || existing?.startTime,
+      endTime,
+      status,
+    });
+
+    if (callDetails?._id) {
+      runAnalysisInBackground(callDetails._id);
+    }
+
+    return res.json(callDetails);
+  } catch (error) {
+    console.error('Error in finalizeTelnyxCall:', error);
+    return res.status(500).json({
+      message: 'Failed to finalize Telnyx call',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * POST /api/calls/amd-callback
+ * Twilio Async AMD (Answering Machine Detection) webhook.
+ * Fired automatically when Twilio determines whether the call was answered by
+ * a human or a machine — no rep action required.
+ *
+ * Key fields sent by Twilio:
+ *   CallSid       – parent call SID
+ *   AnsweredBy    – "machine_start" | "machine_end_beep" | "machine_end_silence"
+ *                   | "machine_end_other" | "human" | "fax" | "unknown"
+ *   MachineDetectionDuration – ms taken to detect
+ */
+exports.amdCallback = async (req, res) => {
+  // Always respond 200 immediately so Twilio doesn't retry
+  res.sendStatus(200);
+
+  const { CallSid, AnsweredBy } = req.body || {};
+  if (!CallSid) return;
+
+  const isMachine = AnsweredBy && AnsweredBy.startsWith('machine');
+  const isFax = AnsweredBy === 'fax';
+
+  console.log(`📠 [AMD] CallSid=${CallSid} AnsweredBy=${AnsweredBy} → isMachine=${isMachine}`);
+
+  if (!isMachine && !isFax) {
+    // Human answered — nothing to do, call flows normally
+    return;
+  }
+
+  // Mark the call document as voicemail / auto-refused
+  try {
+    const outcome = isFax ? 'voicemail' : 'voicemail';
+    const reason = isFax
+      ? 'Fax détecté par Twilio AMD'
+      : `Répondeur détecté automatiquement par Twilio AMD (${AnsweredBy})`;
+
+    const updated = await Call.findOneAndUpdate(
+      { sid: CallSid },
+      {
+        $set: {
+          callOutcome: outcome,
+          callOutcomeSource: 'system',
+          validByAI: false,
+          valid: false,
+          ai_call_status: 'auto_refused',
+          ai_refusal_reason: reason,
+          updatedAt: new Date(),
+        }
+      },
+      { new: true }
+    );
+
+    if (updated) {
+      console.log(`✅ [AMD] Call ${CallSid} auto-marked as voicemail (doc _id=${updated._id})`);
+    } else {
+      // Document may not exist yet if store-call hasn't fired — that's fine,
+      // saveCallToDB will pick up isVoicemail from the AMD flag later.
+      console.warn(`⚠️  [AMD] No Call doc found for SID ${CallSid} yet — will be handled at store-call time`);
+    }
+  } catch (err) {
+    console.error(`❌ [AMD] Failed to mark call ${CallSid} as voicemail:`, err.message);
+  }
+};
 
 exports.fetchRecording = async (req, res) => {
   const { recordingUrl, userId } = req.body;
@@ -537,117 +1420,936 @@ exports.getCallDetails = async (req, res) => {
   }
 };
 
-
-//@qalqul logic
-
+// Qalqul logic
 exports.storeCallsInDBatStartingCall = async (req, res) => {
   const { storeCall } = req.body;
-  console.log("storeCall from qalqul:", storeCall);
   try {
     const callDetails = await qalqulService.storeCallsInDBatStartingCall(storeCall);
-
-    // Return a properly formatted response
-    res.status(200).json({
-      success: true,
-      data: callDetails
-    });
+    res.status(200).json({ success: true, data: callDetails });
   } catch (error) {
     console.error('Error storing call:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to store call details',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to store call details', error: error.message });
   }
 };
 
 exports.storeCallsInDBatEndingCall = async (req, res) => {
   const { phoneNumber, callSid } = req.body;
-  console.log("callSid from qalqul:", callSid);
   try {
     const callDetails = await qalqulService.storeCallsInDBatEndingCall(phoneNumber, callSid);
-    res.status(200).json({
-      success: true,
-      data: callDetails
-    });
+
+    // Trigger automatic background analysis
+    if (callDetails && callDetails._id) {
+      runAnalysisInBackground(callDetails._id);
+    }
+
+    res.status(200).json({ success: true, data: callDetails });
   } catch (error) {
     console.error('Error storing call:', error);
+    res.status(500).json({ success: false, message: 'Failed to store call details', error: error.message });
+  }
+};
+
+// AI Assistance and DISC Analysis
+exports.getAIAssistance = async (req, res) => {
+  try {
+    const { transcription, context } = req.body;
+    if (!transcription) {
+      return res.status(400).json({ success: false, message: 'Transcription is required' });
+    }
+    const suggestion = await vertexAIService.getAIAssistance(transcription, context);
+    res.json({ success: true, suggestion: suggestion });
+  } catch (error) {
+    console.error('Error getting AI assistance:', error);
+    res.status(500).json({ success: false, message: 'Failed to get AI assistance', error: error.message });
+  }
+};
+
+exports.getPersonalityAnalysis = async (req, res) => {
+  try {
+    const { transcription, context, callDuration } = req.body;
+    if (!transcription) {
+      return res.status(400).json({ success: false, message: 'Transcription is required' });
+    }
+    const personalityProfile = await vertexAIService.getPersonalityAnalysis(transcription, context, callDuration);
+    res.json({ success: true, personalityProfile: personalityProfile });
+  } catch (error) {
+    console.error('Error getting personality analysis:', error);
+    res.status(500).json({ success: false, message: 'Failed to get personality analysis', error: error.message });
+  }
+};
+
+// ────────────────────────────────────────────────────────────────────────────
+//  Call-outcome classifier — deterministic mapping from analyzer signals to
+//  the `callOutcome` enum on the Call schema. Used by `analyzeCall` (AI path
+//  + auto-refused path). Keep this pure: no DB, no LLM, just inputs → outcome.
+//  That way the same logic can be re-used by the lazy fallback in the
+//  analytics aggregations.
+//
+//  Decision tree:
+//    1. Telephony layer (Twilio status, hangup before connect).
+//    2. If the AI has actually scored the call (`hasAiScoring === true`)
+//       → drive the outcome from `ai_call_score` content EXCLUSIVELY.
+//       We never fall back on duration in this branch — the LLM has more
+//       context than seconds. A 23s call that the AI judged "unproductive"
+//       is `connected_no_sale`, NOT `too_short`.
+//    3. Otherwise (no LLM run yet, or auto-refused) → cheap heuristics
+//       (duration, telephony status) for a best-effort label.
+// ────────────────────────────────────────────────────────────────────────────
+// Twilio error codes that explicitly indicate an invalid/unreachable number.
+const TWILIO_WRONG_NUMBER_CODES = new Set([21211, 21214, 13224]);
+
+function classifyCallOutcome({
+  status,
+  duration,
+  hasRecording,
+  hasAiScoring,
+  validByAI,
+  refusalDetected,
+  transactionDetected,
+  fraudScore,
+  argumentationScore,
+  scriptCoherence,
+  sentimentScore,
+  overallScore,
+  refusalReason,
+  twilioErrorCode,
+}) {
+  const s = String(status || '').toLowerCase();
+  const dur = Number(duration) || 0;
+  const reason = String(refusalReason || '').toLowerCase();
+  const errCode = twilioErrorCode ? Number(twilioErrorCode) : null;
+
+  // 1) Telephony-level outcomes — short-circuit before AI logic.
+  if (s === 'busy') return 'busy';
+  if (['no-answer', 'noanswer', 'canceled', 'cancelled'].includes(s)) return 'no_answer';
+  if (s === 'failed') {
+    // Twilio "failed" = call could not be placed at all (invalid number, no route,
+    // carrier rejected). Always surface as wrong_number — distinct from no-answer
+    // (which means the call rang but was not picked up).
+    // Error codes 21211 (invalid number), 21214 (unreachable), 13224 (cannot dial)
+    // all confirm wrong_number, but we treat all failed calls the same way.
+    return 'wrong_number';
+  }
+  // Explicit Twilio error code for bad number even if status is not "failed"
+  if (errCode && TWILIO_WRONG_NUMBER_CODES.has(errCode)) return 'wrong_number';
+  // Completed with no audio and duration 0 → answering machine pickup.
+  if (s === 'completed' && dur === 0 && !hasRecording) return 'voicemail';
+
+  // 2) AI-content-driven outcomes — applied whenever the LLM ran. We
+  //    intentionally do NOT consult `duration` here: a 12-second call that
+  //    the AI scored with feedback is more reliably classified by content
+  //    than by clock.
+  if (hasAiScoring) {
+    if (typeof fraudScore === 'number' && fraudScore < 50) return 'fraud';
+    if (transactionDetected) return 'transaction';
+
+    if (
+      refusalDetected ||
+      /refus|pas intéress|not interested|déjà équipé|already equipped|déjà engag|déjà assur|already insured|wrong|faux numéro/.test(reason)
+    ) {
+      if (/déjà équipé|already equipped|déjà engag|déjà assur|already insured/.test(reason)) return 'already_equipped';
+      if (/wrong|faux numéro|invalid phone/.test(reason)) return 'wrong_number';
+      if (/pas intéress|not interested/.test(reason)) return 'not_interested';
+      return 'refusal';
+    }
+
+    // Engaged conversation — high argumentation AND the AI validated the call.
+    if (
+      typeof argumentationScore === 'number' &&
+      argumentationScore >= 70 &&
+      validByAI
+    ) {
+      return 'argued_interested';
+    }
+
+    // Customer leaned positive but no transaction nor strong argumentation
+    // (e.g. polite curiosity). We still tag it as "argued" so the rep can
+    // follow up — better than the catch-all bucket.
+    if (
+      typeof sentimentScore === 'number' &&
+      sentimentScore >= 70 &&
+      typeof argumentationScore === 'number' &&
+      argumentationScore >= 50
+    ) {
+      return 'argued_interested';
+    }
+
+    // AI ran but no specific signal → connected without a clear outcome.
+    // (e.g. agent silent, no engagement on either side, dead air, ...)
+    return 'connected_no_sale';
+  }
+
+  // 3) No AI scoring available — fall back on heuristics.
+  if (dur > 0 && dur < 30) return 'too_short';
+  return 'connected_no_sale';
+}
+
+// Helper: have we got real AI scoring output for this call?
+// We rely on the overall score being a real number > 0; the schema default
+// is empty (the rubric is only populated by `vertexAIService.scoreCall`).
+function detectAiScoring(scores) {
+  return !!(scores && scores.overall && typeof scores.overall.score === 'number');
+}
+exports.detectAiScoring = detectAiScoring;
+
+function resolveLeadDisplayName(lead) {
+  if (!lead) return 'Client';
+  if (lead.First_Name) return `${lead.First_Name} ${lead.Last_Name || ''}`.trim();
+  return lead.name || lead.Deal_Name || 'Client';
+}
+
+/** Push a real-time WS event to the rep when call analysis finishes. */
+function notifyRepCallAnalysisComplete(call, overrides = {}) {
+  const repId = call.agent?._id || call.agent;
+  if (!repId) return;
+
+  const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
+  const payload = {
+    callId: String(call._id),
+    repId: String(repId),
+    companyId: call.companyId ? String(call.companyId) : undefined,
+    leadName: resolveLeadDisplayName(call.lead),
+    ai_call_status: overrides.ai_call_status ?? call.ai_call_status,
+    validByAI: overrides.validByAI !== undefined ? overrides.validByAI : call.validByAI,
+    completedAt: new Date().toISOString(),
+  };
+
+  fetch(`${orchestratorUrl}/api/escrow/call-analysis-complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((err) => {
+    console.error('❌ Failed to broadcast call analysis complete:', err.message);
+  });
+}
+
+const runAnalysisInBackground = (callId) => {
+  console.log(`🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in 5 seconds...`);
+  setTimeout(async () => {
+    try {
+      const call = await Call.findById(callId);
+      if (!call) {
+        console.warn(`⚠️ [AutoAnalysis] Call ${callId} not found, aborting analysis.`);
+        return;
+      }
+      const alreadyScored = call.validByAI === true || call.validByAI === false || 
+                           call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused';
+      if (alreadyScored) {
+        console.log(`🤖 [AutoAnalysis] Call ${callId} is already scored or processed. Skipping.`);
+        return;
+      }
+
+      console.log(`🤖 [AutoAnalysis] Running background analysis for call: ${callId}`);
+      const mockReq = { params: { id: callId }, body: {} };
+      const mockRes = {
+        status: function(code) {
+          this.statusCode = code;
+          return this;
+        },
+        json: function(data) {
+          console.log(`🤖 [AutoAnalysis] Background analysis finished for ${callId} with status ${this.statusCode || 200}:`, data.success ? 'Success' : data.message);
+          return this;
+        }
+      };
+      await exports.analyzeCall(mockReq, mockRes);
+    } catch (err) {
+      console.error(`❌ [AutoAnalysis] Background analysis failed for call ${callId}:`, err);
+    }
+  }, 5000);
+};
+
+exports.analyzeCall = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const force =
+      req.body?.force === true ||
+      String(req.query?.force || '').toLowerCase() === 'true';
+    const call = await Call.findById(id).populate({
+      path: 'lead',
+      populate: {
+        path: 'gigId'
+      }
+    });
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+
+    // Idempotent: return existing results when analysis already finished.
+    // `force=true` (company relaunch) bypasses this so legacy analyses can be
+    // re-scored after backend rule changes (e.g. voicemail shape cleanup).
+    if (
+      !force &&
+      (call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused')
+    ) {
+      const hasScores = detectAiScoring(call.ai_call_score);
+      if (hasScores || call.ai_call_status === 'auto_refused') {
+        return res.json({
+          success: true,
+          message: 'Call already analyzed',
+          alreadyAnalyzed: true,
+          data: call.ai_call_score,
+          transcript: call.transcript,
+          validByAI: call.validByAI,
+          callOutcome: call.callOutcome,
+        });
+      }
+    }
+    if (force) {
+      console.log(`♻️ [CallController] Force re-analysis requested for call ${id}.`);
+    }
+
+    // Another worker (usually auto-analysis after store-call) is already
+    // running — but only treat the lock as live if it is recent. A stale
+    // `processing` lock (worker hung / process restarted mid-analysis) is
+    // reclaimable so the call doesn't spin forever in the UI.
+    const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS);
+    const lockIsStale = !call.updatedAt || new Date(call.updatedAt) < staleBefore;
+    if (call.ai_call_status === 'processing' && !lockIsStale) {
+      return res.status(202).json({
+        success: true,
+        inProgress: true,
+        message: 'Analysis already in progress for this call.',
+        ai_call_status: 'processing',
+      });
+    }
+    if (call.ai_call_status === 'processing' && lockIsStale) {
+      console.warn(`♻️ [CallController] Reclaiming stale processing lock for call ${id} (updatedAt=${call.updatedAt}).`);
+    }
+
+    // Atomically claim this call for analysis. Multiple triggers can fire for
+    // the same call within seconds (the in-process background auto-analysis
+    // and the frontend's manual /analyze POST). Running two analyses in
+    // parallel made both load the document at the same version and the second
+    // `save()` threw a Mongoose VersionError. The atomic findOneAndUpdate
+    // below lets exactly one invocation win the lock; any concurrent caller
+    // gets a clean 202 instead of crashing the analyzer. We also bump
+    // `updatedAt` so the lock's freshness can be measured (the `$set` path
+    // bypasses the pre-save hook that normally maintains it).
+    const claimed = await Call.findOneAndUpdate(
+      {
+        _id: id,
+        $or: [
+          { ai_call_status: { $ne: 'processing' } },
+          { updatedAt: { $lt: staleBefore } },
+          { updatedAt: { $exists: false } },
+        ],
+      },
+      { $set: { ai_call_status: 'processing', updatedAt: new Date() } }
+    );
+    if (!claimed) {
+      // Race: status flipped to `processing` between the read above and the claim.
+      return res.status(202).json({
+        success: true,
+        inProgress: true,
+        message: 'Analysis already in progress for this call.',
+        ai_call_status: 'processing',
+      });
+    }
+    call.ai_call_status = 'processing';
+
+    // ☎️  Auto-refuse calls that never reached a human. No transcript, no
+    // audio → nothing for the LLM to score. We tag them as `validByAI=false`
+    // so they stop showing up as "Analyse en cours" forever.
+    const callStatus = (call.status || '').toString().toLowerCase();
+    const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
+    const looksUnanswered =
+      noConnectStatuses.has(callStatus) ||
+      (callStatus === 'completed' && (call.duration || 0) === 0 && !call.recording_url_cloudinary);
+
+    if (looksUnanswered) {
+      const errCode = call.twilioErrorCode ? Number(call.twilioErrorCode) : null;
+      const errSuffix = errCode ? `, ErrorCode: ${errCode}` : '';
+      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix})`;
+      const callOutcome = classifyCallOutcome({
+        status: callStatus,
+        duration: call.duration,
+        hasRecording: !!call.recording_url_cloudinary,
+        hasAiScoring: false, // auto-refused: LLM never ran
+        validByAI: false,
+        refusalDetected: false,
+        transactionDetected: false,
+        fraudScore: null,
+        argumentationScore: 0,
+        scriptCoherence: 0,
+        sentimentScore: 0,
+        overallScore: 0,
+        refusalReason,
+        twilioErrorCode: errCode,
+      });
+      const updated = await Call.findByIdAndUpdate(
+        id,
+        {
+          $set: {
+            validByAI: false,
+            valid: false,
+            ai_refusal_reason: refusalReason,
+            ai_call_status: 'auto_refused',
+            callOutcome,
+            callOutcomeSource: 'system',
+            'flags.fraud': false,
+            'flags.serious': false,
+            'flags.transactionDetected': false,
+            'flags.refusalDetected': false,
+            repCallCommission: 0,
+            platformCallCommission: 0
+          }
+        },
+        { new: true }
+      );
+      console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome}`);
+      notifyRepCallAnalysisComplete(call, {
+        ai_call_status: 'auto_refused',
+        validByAI: false,
+      });
+      return res.status(200).json({
+        success: true,
+        message: refusalReason,
+        validByAI: false,
+        callOutcome,
+        data: updated
+      });
+    }
+
+    // Get Gig Script/Description - First attempt from collection
+    let gigScript = call.lead?.gigId?.description || "";
+    try {
+      const gigId = call.lead?.gigId?._id || call.lead?.gigId;
+      if (gigId) {
+        console.log(`🔍 [CallController] Fetching script from collection for Gig ${gigId}...`);
+        const scriptRes = await fetch(`${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}`);
+        if (scriptRes.ok) {
+          const scriptData = await scriptRes.json();
+          const scripts = scriptData.data || [];
+          // Prioritize active script, fallback to most recent
+          const activeScript = scripts.find(s => s.isActive);
+          
+          if (activeScript && activeScript.script && activeScript.script.length > 0) {
+            gigScript = activeScript.script.map(s => `[${s.phase}] ${s.actor}: ${s.replica}`).join("\n");
+            console.log(`✅ [CallController] Script from collection loaded (${activeScript.script.length} replicas).`);
+          } else {
+            console.log(`⚠️ [CallController] No active script found in collection, using gig description.`);
+          }
+        }
+      }
+    } catch (scriptError) {
+      console.error(`❌ [CallController] Failed to fetch script from KB:`, scriptError.message);
+    }
+
+    // Attempt to get transcript.
+    let transcriptData = call.transcript || [];
+    
+    // Real Audio Transcription if no transcript exists and recording is available
+    const hasRecording = call.recording_url_cloudinary || call.recording_url;
+    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && hasRecording) {
+        console.log(`🎙️ [CallController] Attempting real audio transcription for call ${id}...`);
+        try {
+          const recordingUrl = call.recording_url_cloudinary || call.recording_url;
+          const realTranscript = await withTimeout(
+            vertexAIService.transcribeAudioFromUrl(recordingUrl),
+            TRANSCRIPTION_TIMEOUT_MS,
+            'Audio transcription'
+          );
+          if (realTranscript && realTranscript.length > 0) {
+            transcriptData = realTranscript;
+            console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
+          } else {
+            console.warn(`⚠️ [CallController] Transcription returned empty for call ${id}.`);
+          }
+        } catch (transcriptionError) {
+          console.error(`❌ [CallController] Transcription failed:`, transcriptionError);
+        }
+    }
+
+    // Fallback if transcription failed or no recording. Reset the lock so the
+    // call doesn't stay frozen in `processing` (the UI would spin forever).
+    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && !hasRecording) {
+       await Call.updateOne({ _id: id }, { $set: { ai_call_status: 'error', updatedAt: new Date() } });
+       notifyRepCallAnalysisComplete(call, { ai_call_status: 'error', validByAI: call.validByAI });
+       return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
+    }
+
+    // Convert string transcript to array if it was stored as legacy string
+    if (typeof transcriptData === 'string' && transcriptData.length > 0) {
+      const parts = transcriptData.split(/\[(Agent|Customer|Speaker \d+)\]:/i).filter(Boolean);
+      const structuredTranscript = [];
+      for (let i = 0; i < parts.length; i += 2) {
+        if (parts[i+1]) {
+          structuredTranscript.push({
+            speaker: parts[i].trim(),
+            text: parts[i+1].trim()
+          });
+        }
+      }
+      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
+      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
+    }
+
+    if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
+        await Call.updateOne({ _id: id }, { $set: { ai_call_status: 'error', updatedAt: new Date() } });
+        notifyRepCallAnalysisComplete(call, { ai_call_status: 'error', validByAI: call.validByAI });
+        return res.status(400).json({ success: false, message: 'No transcript or recording available for analysis' });
+    }
+
+    // Prepare transcript string for AI scoring
+    const transcriptText = Array.isArray(transcriptData) 
+      ? transcriptData.map(t => `[${t.speaker}]: ${t.text}`).join("\n")
+      : transcriptData;
+
+    const callDurationSec = call.duration || call._doc?.duration || 0;
+    let voiceAnalysis = null;
+    if (hasRecording && callDurationSec >= MIN_DURATION_VOICE_AI_SEC) {
+      try {
+        const recordingUrl = call.recording_url_cloudinary || call.recording_url;
+        console.log(`🔊 [CallController] Running self-call voice check for call ${id} (${callDurationSec}s)...`);
+        voiceAnalysis = await withTimeout(
+          vertexAIService.detectSelfCallFromUrl(recordingUrl),
+          VOICE_FRAUD_TIMEOUT_MS,
+          'Self-call voice detection'
+        );
+      } catch (voiceErr) {
+        console.warn(`⚠️ [CallController] Self-call voice detection failed for ${id}:`, voiceErr.message);
+      }
+    }
+
+    console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
+    const scores = await withTimeout(
+      vertexAIService.scoreCall(transcriptText, gigScript),
+      SCORING_TIMEOUT_MS,
+      'AI scoring'
+    );
+
+    let selfCallFraud = resolveSelfCallFraud({
+      voiceAnalysis,
+      transcript: Array.isArray(transcriptData) ? transcriptData : [],
+      durationSec: callDurationSec,
+    });
+    if (selfCallFraud.isFraud) {
+      console.warn(
+        `🚨 [CallController] Self-call voice fraud on call ${id}: ${selfCallFraud.reason} (confidence=${selfCallFraud.confidence})`
+      );
+      applySelfCallFraudToScores(scores, selfCallFraud);
+      if (Array.isArray(transcriptData)) {
+        transcriptData = correctTranscriptForSelfCallFraud(transcriptData, selfCallFraud);
+      }
+    }
+
+    // ── Voicemail / non-productive guard ─────────────────────────────────
+    //   On a call that never reached a human (voicemail pickup, dead-air,
+    //   no agent dialogue), the LLM has nothing useful to score and tends
+    //   to hallucinate per-rubric praise ("Agent fluency: 100% — message
+    //   clair et concis") while its own executive summary correctly says
+    //   "appel non productif, messagerie vocale, aucun élément exploitable".
+    //
+    //   We use the overall feedback as the trigger because:
+    //     • The LLM is reliable at *summarising* the call type.
+    //     • Scanning the raw transcript for voicemail boilerplate is
+    //       brittle across languages / TTS variants.
+    //   When the trigger fires we strip all rubric cards later via
+    //   `applyVoicemailAnalysisShape` and force `callOutcome` to 'voicemail'.
+    const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
+    const isNonProductiveCall =
+      isVoicemailFromFeedback(overallFeedback) ||
+      isVoicemailFromFeedback(scores?.overall?.feedback_fr || '') ||
+      isVoicemailFromFeedback(scores?.overall?.feedback_en || '');
+
+    if (isNonProductiveCall) {
+      console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail).`);
+      if (selfCallFraud.isFraud) {
+        selfCallFraud = { isFraud: false, voiceAnalysis: selfCallFraud.voiceAnalysis || voiceAnalysis };
+      }
+    }
+
+    // AI Validation Logic
+    const scriptCoherence = scores["Script coherence"]?.score || 0;
+    const argumentationScore = scores["Argumentation"]?.score || 0;
+    const fraudScore = readFraudScore(scores);
+    const isFraudDetected = isNonProductiveCall
+      ? false
+      : isFraudFromScores(scores, selfCallFraud);
+    let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
+    let refusalDetected = scores.refusal_detected || false;
+
+    // Call is valid if:
+    // 1. No fraud (score >= 50 and no self-call signal)
+    // 2. Script coherence is good (>= 50)
+    // 3. Call duration is greater than 70 seconds
+    const duration = call.duration || call._doc?.duration || 0;
+    const isValidByAI =
+      !isNonProductiveCall &&
+      !isFraudDetected &&
+      fraudScore >= 50 &&
+      scriptCoherence >= 50 &&
+      duration > 70;
+
+    if (isFraudDetected) {
+      transactionDetected = false;
+      scores.transaction_detected = false;
+      if (scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
+        scores['Fraud detection'].passed = false;
+      }
+    }
+    
+    // Calculate Commissions (70% Rep / 30% Platform)
+    const baseCallCommission = call.lead?.gigId?.commission?.commission_per_call || call.lead?.gigId?.rewardPerCall || 4;
+    const baseTransactionCommission = call.lead?.gigId?.commission?.transactionCommission || call.lead?.gigId?.rewardPerSale || 30;
+
+    const repCallCommission = isValidByAI ? baseCallCommission * 0.7 : 0;
+    const platformCallCommission = isValidByAI ? baseCallCommission * 0.3 : 0;
+
+    const repTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.7 : 0;
+    const platformTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.3 : 0;
+
+    // Compute a per-rubric Yes/No verdict next to each numeric score.
+    //   passed = score >= PASS_THRESHOLD (50)
+    // The verdicts are persisted on the Call doc so the rep modal and
+    // dashboards never have to re-threshold on every read.
+    const PASS_THRESHOLD = 50;
+    const RUBRIC_KEYS = [
+      "Agent fluency",
+      "Sentiment analysis",
+      "Fraud detection",
+      "Script coherence",
+      "Argumentation",
+      "Script adherence",
+      "Transaction analysis",
+      "PAS INTÉRESSÉS",
+      "PAS AU COURANT",
+      "DÉJÀ ÉQUIPÉS",
+      "RDV",
+      "A plus tard",
+      "overall"
+    ];
+    for (const k of RUBRIC_KEYS) {
+      if (scores[k] && typeof scores[k] === "object") {
+        const s = typeof scores[k].score === "number" ? scores[k].score : 0;
+        scores[k].passed = s >= PASS_THRESHOLD;
+      }
+    }
+
+    // Fraud rubric: low score = fraud detected → never mark as passed.
+    if (isFraudDetected && scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
+      scores['Fraud detection'].passed = false;
+      scores['Fraud detection'].score = Math.min(readFraudScore(scores), 49);
+    }
+
+    // Discourse rubrics (RDV, déjà équipé, etc.) must not validate when fraud.
+    if (isFraudDetected) {
+      for (const k of ['Transaction analysis', 'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard']) {
+        if (scores[k] && typeof scores[k] === 'object') {
+          scores[k].passed = false;
+        }
+      }
+    }
+
+    // Messagerie / fraude: no analysis cards persisted — overall summary only.
+    if (isNonProductiveCall) {
+      applyVoicemailAnalysisShape(scores);
+    } else if (isFraudDetected) {
+      applyFraudAnalysisShape(scores);
+    }
+
+    // Update the call with the new scores and ensure transcript is saved in structured format
+    call.ai_call_score = scores;
+    call.validByAI = isValidByAI;
+    call.valid = isValidByAI; // Unified valid flag
+    call.argumentation_score = isNonProductiveCall || isFraudDetected ? 0 : argumentationScore;
+    call.repCallCommission = repCallCommission;
+    call.platformCallCommission = platformCallCommission;
+    call.repTransactionCommission = repTransactionCommission;
+    call.platformTransactionCommission = platformTransactionCommission;
+    call.transaction_price = baseTransactionCommission;
+
+    // ── Unified call-analysis layer ───────────────────────────────────────
+    //  Persist denormalised signals so the company dashboard can group/filter
+    //  without re-scanning ai_call_score on every request.
+    //
+    //  Voicemail short-circuit: rubrics were stripped above; force outcome explicitly.
+    const callOutcome = isNonProductiveCall
+      ? 'voicemail'
+      : isFraudDetected
+      ? 'fraud'
+      : classifyCallOutcome({
+          status: callStatus,
+          duration,
+          hasRecording: !!call.recording_url_cloudinary,
+          hasAiScoring: true, // LLM just ran successfully
+          validByAI: isValidByAI,
+          refusalDetected,
+          transactionDetected,
+          fraudScore,
+          argumentationScore,
+          scriptCoherence,
+          sentimentScore: scores["Sentiment analysis"]?.score || 0,
+          overallScore: scores.overall?.score || 0,
+          refusalReason: call.ai_refusal_reason,
+        });
+    call.callOutcome = callOutcome;
+    call.callOutcomeSource = 'ai';
+    call.ai_call_status = 'scored';
+    // Use the LLM's overall feedback as a starter summary. A dedicated
+    // /audio/summarize prompt can replace this later without changing the
+    // schema.
+    if (isNonProductiveCall) {
+      call.ai_summary = VOICEMAIL_SUMMARY_FR;
+      call.ai_summary_fr = VOICEMAIL_SUMMARY_FR;
+      call.ai_summary_en = VOICEMAIL_SUMMARY_EN;
+    } else if (scores && scores.overall) {
+      call.ai_summary = scores.overall.feedback || scores.overall.feedback_fr || '';
+      call.ai_summary_fr = scores.overall.feedback_fr || scores.overall.feedback || '';
+      call.ai_summary_en = scores.overall.feedback_en || '';
+    }
+    call.flags = {
+      fraud:               isNonProductiveCall ? false : isFraudDetected,
+      selfCall:            isNonProductiveCall ? false : selfCallFraud.isFraud === true,
+      serious:             isValidByAI,
+      transactionDetected: isNonProductiveCall ? false : (isFraudDetected ? false : !!transactionDetected),
+      refusalDetected:     !!refusalDetected,
+    };
+
+    if (isValidByAI && call.companyId) {
+      // Trigger reconciliation in orchestrator
+      const orchestratorUrl = process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003';
+      fetch(`${orchestratorUrl}/api/escrow/reconcile/${call.companyId}`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => console.log(`✅ Triggered reconciliation for company ${call.companyId}:`, data))
+        .catch(err => console.error('❌ Failed to trigger reconciliation:', err));
+    }
+
+    if (Array.isArray(transcriptData)) {
+      call.transcript = transcriptData;
+    }
+
+    // Persist atomically via $set instead of `call.save()`. The loaded
+    // document can become stale during the multi-second transcription +
+    // scoring window (store-call upserts and other writers touch the same
+    // call), which made `save()` fail with a Mongoose VersionError. An atomic
+    // update bypasses the optimistic version check while writing the exact
+    // fields we computed here.
+    const analysisUpdate = {
+      ai_call_score: call.ai_call_score,
+      validByAI: call.validByAI,
+      valid: call.valid,
+      argumentation_score: call.argumentation_score,
+      repCallCommission: call.repCallCommission,
+      platformCallCommission: call.platformCallCommission,
+      repTransactionCommission: call.repTransactionCommission,
+      platformTransactionCommission: call.platformTransactionCommission,
+      transaction_price: call.transaction_price,
+      callOutcome: call.callOutcome,
+      callOutcomeSource: call.callOutcomeSource,
+      ai_call_status: call.ai_call_status,
+      flags: call.flags,
+    };
+    if (scores && scores.overall) {
+      analysisUpdate.ai_summary = call.ai_summary;
+      analysisUpdate.ai_summary_fr = call.ai_summary_fr;
+      analysisUpdate.ai_summary_en = call.ai_summary_en;
+    }
+    if (Array.isArray(transcriptData)) {
+      analysisUpdate.transcript = call.transcript;
+    }
+    await Call.findByIdAndUpdate(id, { $set: analysisUpdate });
+
+    notifyRepCallAnalysisComplete(call, {
+      ai_call_status: 'scored',
+      validByAI: isValidByAI,
+    });
+
+    // Update or Create Transaction
+    // Rule: If call is rejected by AI (Fraud or Coherence), transaction is automatically REJECTED.
+    // Otherwise, use detection signals.
+    const transactionStatus = !isValidByAI ? false : (transactionDetected ? true : (refusalDetected ? false : null));
+
+    const transactionUpdate = {
+      call: id,
+      agent: call.agent,
+      lead: call.lead?._id,
+      gigId: call.lead?.gigId?._id,
+      companyId: call.companyId,
+      validByAI: transactionStatus,
+      argumentation_score: argumentationScore,
+      transaction_score: scores.overall?.score || 0,
+      repTransactionCommission: repTransactionCommission,
+      platformTransactionCommission: platformTransactionCommission,
+      updatedAt: new Date()
+    };
+
+    // Rule: If call is rejected by AI, transaction final validation is also automatically REJECTED.
+    if (!isValidByAI) {
+      transactionUpdate.validByCompany = false;
+    } else if (transactionDetected) {
+      // Reset stale company rejection so the company UI can approve the sale.
+      transactionUpdate.validByCompany = null;
+    }
+
+    transactionUpdate.valid = resolveTransactionValid(
+      transactionUpdate.validByAI,
+      transactionUpdate.validByCompany !== undefined ? transactionUpdate.validByCompany : null
+    );
+
+    if (transactionDetected || refusalDetected || !isValidByAI) {
+      await Transaction.findOneAndUpdate(
+        { call: id },
+        transactionUpdate,
+        { upsert: true, new: true }
+      );
+    }
+
+    res.json({ 
+        success: true, 
+        message: 'Call analysis completed', 
+        data: scores,
+        transcript: call.transcript,
+        validByAI: isValidByAI,
+        ...(isFraudDetected
+          ? {
+              fraudStats: {
+                agent: buildAgentFraudStatsFromCalls(
+                  await Call.find(buildAgentFraudMatchQuery(call.agent?._id || call.agent)).lean(),
+                  String(call.agent?._id || call.agent)
+                ),
+                ...(call.companyId
+                  ? {
+                      company: buildCompanyFraudStatsFromCalls(
+                        await Call.find(buildCompanyFraudMatchQuery(call.companyId)).populate('agent').lean()
+                      ),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+    });
+  } catch (error) {
+    console.error('Error in analyzeCall:', error);
+    // Best-effort: mark the call as errored so the UI can surface a retry.
+    try {
+      if (req.params?.id) {
+        await Call.updateOne(
+          { _id: req.params.id },
+          { $set: { ai_call_status: 'error', updatedAt: new Date() } }
+        );
+        const failedCall = await Call.findById(req.params.id).populate('lead');
+        if (failedCall) {
+          notifyRepCallAnalysisComplete(failedCall, { ai_call_status: 'error' });
+        }
+      }
+    } catch (_) { /* swallow */ }
+    res.status(500).json({ success: false, message: 'Failed to analyze call', error: error.message });
+  }
+};
+
+// Re-export classifier so analytics aggregations can use the same logic.
+exports.classifyCallOutcome = classifyCallOutcome;
+
+/**
+ * Rep signale une analyse bloquée — persiste l'alerte sur l'appel et notifie
+ * la company en temps réel via le WebSocket comporchestrator.
+ */
+exports.requestAnalysisHelp = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const agentId = req.body?.agentId || req.headers['x-agent-id'];
+
+    const call = await Call.findById(id).populate('agent').populate('lead');
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+
+    const isFinished =
+      call.ai_call_status === 'scored' ||
+      call.ai_call_status === 'auto_refused' ||
+      (call.ai_call_score?.overall?.score != null && call.ai_call_status !== 'error');
+
+    if (isFinished) {
+      return res.status(400).json({
+        success: false,
+        message: 'Call analysis already completed',
+      });
+    }
+
+    const repName =
+      call.agent?.personalInfo?.name ||
+      call.agent?.name ||
+      'Rep';
+    const leadName = call.lead?.First_Name
+      ? `${call.lead.First_Name} ${call.lead.Last_Name || ''}`.trim()
+      : call.lead?.name || call.lead?.Deal_Name || 'Client';
+
+    const alert = {
+      requestedAt: new Date(),
+      requestedByAgentId: agentId || call.agent?._id || null,
+      repName,
+      message: `Le rep ${repName} signale une analyse bloquée pour l'appel avec ${leadName}.`,
+      acknowledgedAt: call.analysisCompanyAlert?.acknowledgedAt || null,
+      requestCount: (call.analysisCompanyAlert?.requestCount || 0) + 1,
+    };
+
+    await Call.findByIdAndUpdate(id, {
+      $set: { analysisCompanyAlert: alert, updatedAt: new Date() },
+    });
+
+    const companyId = call.companyId;
+    if (companyId) {
+      const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
+      fetch(`${orchestratorUrl}/api/escrow/call-analysis-help`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId: String(companyId),
+          callId: String(id),
+          repName,
+          leadName,
+          message: alert.message,
+          requestedAt: alert.requestedAt.toISOString(),
+          requestCount: alert.requestCount,
+        }),
+      }).catch((err) => {
+        console.error('❌ Failed to broadcast call analysis help:', err.message);
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Company notified',
+      data: { analysisCompanyAlert: alert },
+    });
+  } catch (error) {
+    console.error('Error in requestAnalysisHelp:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to store call details',
-      error: error.message
+      message: 'Failed to notify company',
+      error: error.message,
     });
   }
 };
 
-exports.getAIAssistance = async (req, res) => {
+exports.startRecording = async (req, res) => {
+  const { callSid, userId } = req.body;
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
+  }
+
   try {
-    const { transcription, context } = req.body;
+    const recording = await twilioService.startRecording(callSid, userId);
+    res.status(200).json({ success: true, recording });
+  } catch (err) {
+    console.error('Error starting recording:', err);
+    res.status(500).json({ success: false, message: 'Failed to start recording', error: err.message });
+  }
+};
 
-    if (!transcription) {
-      return res.status(400).json({
-        success: false,
-        message: 'Transcription is required'
-      });
-    }
+exports.stopRecording = async (req, res) => {
+  const { callSid, userId } = req.body;
+  if (!callSid || !userId) {
+    return res.status(400).json({ message: 'Call SID and User ID are required' });
+  }
 
-    // Initialize the generative model
-    const generativeModel = vertex_ai.preview.getGenerativeModel({
-      model: model,
-      generation_config: {
-        max_output_tokens: 256,
-        temperature: 0.7,
-      },
-    });
-
-    // Enhanced prompt with automated message detection
-    let prompt = `You are an AI assistant helping with a phone call.
-    Your primary tasks:
-    1. First, determine if this is an automated message/voicemail system by analyzing these patterns:
-       - Standard voicemail greetings ("please leave a message", "we're not available")
-       - Automated menu options ("press 1 for", "for X, press Y")
-       - Out-of-office or business hours messages
-       - Repetitive or pre-recorded message patterns
-    2. If an automated system is detected:
-       - Alert the agent immediately
-       - Suggest appropriate actions (leave message, press specific numbers, wait for operator)
-       - Recommend whether to continue or end the call
-    3. If it's a real person:
-       - Analyze customer sentiment
-       - Suggest appropriate responses
-       - Provide relevant product/service information
-       - Help maintain professional communication
-
-    Keep responses brief, clear, and actionable. Prioritize automated system detection first.
-
-    Current conversation:
-    ${context && Array.isArray(context) ? context.map(msg => `${msg.role}: ${msg.content}`).join('\n') : ''}
-    Latest transcription: ${transcription}
-
-    Please provide a brief, helpful response, starting with [AUTOMATED] if you detect an automated system or [HUMAN] if you detect a real person:`;
-
-    console.log('Sending prompt to Vertex AI:', prompt);
-
-    // Generate response
-    const result = await generativeModel.generateContent(prompt);
-    const response = await result.response;
-
-    // Access the text content from the response parts
-    const responseText = response.candidates[0].content.parts[0].text;
-
-    console.log('Received response from Vertex AI:', responseText);
-
-    res.json({
-      success: true,
-      suggestion: responseText
-    });
-  } catch (error) {
-    console.error('Error getting AI assistance:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get AI assistance',
-      error: error.message
-    });
+  try {
+    const results = await twilioService.stopRecording(callSid, userId);
+    res.status(200).json({ success: true, results });
+  } catch (err) {
+    console.error('Error stopping recording:', err);
+    res.status(500).json({ success: false, message: 'Failed to stop recording', error: err.message });
   }
 };
 
@@ -656,7 +2358,149 @@ exports.getLoginToken = async (req, res) => {
     const token = await telnyxService.generateLoginToken();
     res.json({ login_token: token });
   } catch (error) {
-    console.error('Error in controller:', error);
-    res.status(500).json({ error: 'Failed to get Telnyx login token' });
+    // Never log full Axios config — it includes Authorization: Bearer ...
+    console.error('Error in getLoginToken:', error.message);
+    if (error?.response?.data) {
+      console.error('Telnyx response:', JSON.stringify(error.response.data));
+    }
+    res.status(500).json({
+      error: 'Failed to get Telnyx login token',
+      message: error.message,
+    });
+  }
+};
+
+/**
+ * POST /api/calls/telnyx/record-start
+ * Start Call Control recording for an active WebRTC/Call Control leg.
+ */
+exports.startTelnyxRecording = async (req, res) => {
+  try {
+    const callControlId = req.body?.callControlId || req.body?.externalId || req.body?.callId;
+    if (!callControlId) {
+      return res.status(400).json({ message: 'callControlId is required' });
+    }
+    const data = await telnyxService.startCallRecording(callControlId);
+    console.log('[Telnyx] record_start ok for', callControlId);
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Telnyx] record_start failed:', error.message);
+    if (error?.response?.data) {
+      console.error('Telnyx response:', JSON.stringify(error.response.data));
+    }
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to start Telnyx recording',
+      error: error.message,
+      details: error?.response?.data || undefined,
+    });
+  }
+};
+
+/**
+ * POST /api/calls/ai-outbound
+ * Start a per-lead AI voice outbound call (OpenAI Realtime + Telnyx stream).
+ * Body: { leadId, gigId?, companyId? }
+ */
+exports.startAiOutbound = async (req, res) => {
+  try {
+    const { startAiOutboundCall } = require('../services/aiOutboundCallService');
+    const { leadId, gigId, companyId } = req.body || {};
+    const result = await startAiOutboundCall({
+      leadId,
+      gigId,
+      companyId: companyId || req.user?.companyId || req.headers['x-company-id'],
+      req,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || 500;
+    console.error('[AiOutbound] start failed:', error.message);
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Failed to start AI outbound call',
+    });
+  }
+};
+
+/**
+ * POST /api/calls/webhooks/telnyx/ai-outbound
+ * Telnyx Call Control webhook for AI outbound legs (answered → media stream).
+ */
+exports.handleTelnyxAiOutboundWebhook = async (req, res) => {
+  try {
+    const { handleAiOutboundWebhook } = require('../services/aiOutboundCallService');
+    const event = req.body?.data || req.body;
+    await handleAiOutboundWebhook(event);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
+exports.handleTelnyxCallControlWebhook = async (req, res) => {
+  try {
+    const event = req.body?.data;
+    if (!event) {
+      return res.status(400).send('No event data');
+    }
+
+    const { event_type, payload } = event;
+    const callControlId = payload.call_control_id || payload.call_session_id;
+
+    if (!callControlId) {
+      return res.status(200).send('No call_control_id');
+    }
+
+    let callDoc = await Call.findOne({
+      $or: [
+        { call_id: callControlId },
+        { sid: callControlId },
+        { parentCallSid: callControlId },
+      ],
+    });
+
+    if (!callDoc) {
+      console.warn(`Webhook received for unknown call_control_id: ${callControlId}`);
+      return res.status(200).send('OK');
+    }
+
+    if (event_type === 'call.answered') {
+      callDoc.status = 'active';
+      await callDoc.save();
+    } else if (event_type === 'call.hangup') {
+      callDoc.status = 'completed';
+      callDoc.endTime = payload.end_time ? new Date(payload.end_time) : new Date();
+      if (payload.sip_hangup_cause) {
+        callDoc.twilioErrorCode = payload.sip_hangup_cause === 'Normal Clearing' ? null : 1000;
+        if (payload.sip_hangup_cause !== 'Normal Clearing') {
+            callDoc.ai_refusal_reason = `Hangup Cause: ${payload.sip_hangup_cause}`;
+        }
+      }
+      await callDoc.save();
+    } else if (event_type === 'call.recording.saved') {
+      const publicMp3 =
+        payload.public_recording_urls?.mp3 ||
+        payload.recording_urls?.mp3 ||
+        null;
+      if (publicMp3) {
+        callDoc.recording_url = publicMp3;
+        try {
+          const cloudUrl = await telnyxService.archivePublicRecording(publicMp3);
+          if (cloudUrl) {
+            callDoc.recording_url_cloudinary = cloudUrl;
+          }
+        } catch (err) {
+          console.warn('[Telnyx webhook] Cloudinary archive failed:', err.message);
+        }
+        await callDoc.save();
+      }
+    }
+
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error handling Telnyx webhook:', error);
+    res.status(500).send('Internal Server Error');
   }
 };

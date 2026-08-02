@@ -20,7 +20,7 @@ class AnalyticsRepository {
   }
 
   async getAgentMetrics() {
-    return Agent.find().populate('user', 'name email');
+    return Agent.find().populate('userId', 'name email');
   }
 
   async getQualityMetrics() {

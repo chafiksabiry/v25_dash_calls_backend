@@ -1,23 +1,24 @@
 const mongoose = require('mongoose');
 
 const leadSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: [true, 'Please add a name']
+  name: String,
+  company: String,
+  email: String,
+  phone: String,
+  
+  // Zoho fields used in dashboard backend
+  First_Name: String,
+  Last_Name: String,
+  Email_1: String,
+  Phone: String,
+  Deal_Name: String,
+  Stage: String,
+  Pipeline: String,
+  companyId: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
   },
-  company: {
-    type: String,
-    required: [true, 'Please add a company name']
-  },
-  email: {
-    type: String,
-    required: [true, 'Please add an email'],
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please add a valid email']
-  },
-  phone: {
-    type: String,
-    required: [true, 'Please add a phone number']
-  },
+  
   status: {
     type: String,
     enum: ['new', 'contacted', 'qualified', 'proposal', 'won', 'lost'],
@@ -37,6 +38,10 @@ const leadSchema = new mongoose.Schema({
   assignedTo: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Agent'
+  },
+  gigId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Gig'
   },
   lastContact: Date,
   nextAction: {
@@ -60,7 +65,7 @@ const leadSchema = new mongoose.Schema({
   }
 });
 
-leadSchema.pre('save', function(next) {
+leadSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });

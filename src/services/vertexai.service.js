@@ -1,73 +1,276 @@
-const { SpeechClient } = require('@google-cloud/speech').v1p1beta1;
+const { SpeechClient } = require('@google-cloud/speech').v1;
+const { Call } = require('../models/Call');
+const { SpeechClient: SpeechClientV2 } = require('@google-cloud/speech').v2;
 const { VertexAI } = require('@google-cloud/vertexai');
+const fs = require('fs');
+const fsPromises = require('fs').promises;
+const path = require('path');
+const { generatePrompt } = require('../VertexPrompt/contactCenterAssessment');
+const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment');
+const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
+const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt');
+const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
+const { generateSelfCallVoicePrompt } = require('../VertexPrompt/selfCallVoicePrompt');
+const { normalizeVoiceAnalysis } = require('../utils/selfCallVoice');
+const { Storage } = require('@google-cloud/storage');
+const axios = require('axios'); // Preferring axios if available or node-fetch
+const fetch = require('node-fetch');
 
-const speechClient = new SpeechClient();
-const vertexAI = new VertexAI({
-  project: process.env.GOOGLE_CLOUD_PROJECT,
-  location: process.env.GOOGLE_CLOUD_LOCATION,
-});
+let speechClient = null;
+let speechClientV2 = null;
+let vertexAI = null;
+let generativeModel = null;
+let jsonGenerativeModel = null;
+let storage = null;
 
-const model = 'gemini-pro';
+const projectID = (process.env.GOOGLE_CLOUD_PROJECT || process.env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
+const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
+const modelName = process.env.VERTEX_AI_MODEL || 'gemini-1.5-flash';
+const bucketName = 'harx-audios-test';
+
+let vertexCredentialsPath = null;
+let speechCredentialsPath = null;
+let storageCredentialsPath = null;
+
+const setupGCPCredentials = async () => {
+  const tempDir = path.join(__dirname, '../../temp');
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+
+  const prepareCredentials = async (creds, fileName, defaultPath) => {
+    let sanitizedCreds = (creds || '').trim();
+
+    // Remove surrounding quotes if present (common in some env setups)
+    if (sanitizedCreds.startsWith('"') && sanitizedCreds.endsWith('"')) {
+      sanitizedCreds = sanitizedCreds.slice(1, -1).trim();
+    }
+
+    if (sanitizedCreds && sanitizedCreds.startsWith('{')) {
+      try {
+        // Parse and re-stringify to ensure valid JSON and handle escaped characters
+        const credsObj = JSON.parse(sanitizedCreds);
+
+        // Fix private_key newlines (very common issue with env vars)
+        if (credsObj.private_key && typeof credsObj.private_key === 'string') {
+          credsObj.private_key = credsObj.private_key.replace(/\\n/g, '\n');
+        }
+
+        const finalCreds = JSON.stringify(credsObj);
+        const credsPath = path.join(tempDir, fileName);
+        await fsPromises.writeFile(credsPath, finalCreds);
+        console.log(`✅ [VertexAIService] Using ${fileName} from JSON env var (fixed newlines)`);
+        return credsPath;
+      } catch (e) {
+        console.error(`❌ [VertexAIService] Error parsing ${fileName} JSON:`, e.message);
+        return sanitizedCreds; // Fallback to raw string (might be a path or broken JSON)
+      }
+    }
+
+    return sanitizedCreds || path.join(__dirname, defaultPath);
+  };
+
+  // Vertex AI Credentials
+  const vCreds = process.env.VERTEX_AI_CREDENTIALS || process.env.GCP_VERTEX_AI_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+  vertexCredentialsPath = await prepareCredentials(vCreds, 'vertex-credentials.json', "../../config/vertex-service-account.json");
+
+  // Speech-to-Text Credentials
+  const sCreds = process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+  speechCredentialsPath = await prepareCredentials(sCreds, 'speech-credentials.json', "../../config/speech-to-text-service-account.json");
+
+  // Storage Credentials
+  const stCreds = process.env.CLOUD_STORAGE_CREDENTIALS || process.env.GCP_STORAGE_CREDENTIALS || process.env.GCP_CLOUD_STORAGE_CREDENTIALS || vCreds;
+  storageCredentialsPath = await prepareCredentials(stCreds, 'storage-credentials.json', "../../config/cloud-storage-service-account.json");
+
+  console.log('📂 [VertexAIService] Credentials paths resolved.');
+};
+
+const initializeServices = async () => {
+  if (vertexAI && speechClient) return;
+
+  try {
+    await setupGCPCredentials();
+
+    const vertexAuthOptions = {
+      keyFilename: vertexCredentialsPath,
+      scopes: ['https://www.googleapis.com/auth/cloud-platform']
+    };
+
+    console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${location}`);
+    vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
+
+    // Standard Model for Text/Chat
+    generativeModel = vertexAI.getGenerativeModel({
+      model: modelName,
+      generation_config: {
+        max_output_tokens: 1024,
+        temperature: 0.7,
+      }
+    });
+
+    // Specialized Model for JSON output tasks
+    jsonGenerativeModel = vertexAI.getGenerativeModel({
+      model: modelName,
+      generation_config: {
+        max_output_tokens: 2048,
+        temperature: 0.1,
+        response_mime_type: 'application/json',
+      }
+    });
+
+    speechClient = new SpeechClient({ keyFilename: speechCredentialsPath });
+    speechClientV2 = new SpeechClientV2({ keyFilename: speechCredentialsPath });
+
+    storage = new Storage({
+      projectId: projectID,
+      keyFilename: storageCredentialsPath
+    });
+
+    console.log(`✅ [VertexAIService] GCS initialized.`);
+
+    console.log(`✅ [VertexAIService] Services initialized (Model: ${modelName}, Project: ${projectID})`);
+  } catch (error) {
+    console.error('❌ [VertexAIService] Initialization failed:', error);
+    // Reset to allow retry
+    vertexAI = null;
+    speechClient = null;
+    throw error;
+  }
+};
+
+const getSpeechClient = async () => {
+  await initializeServices();
+  return speechClient;
+};
+
+const getSpeechClientV2 = async () => {
+  await initializeServices();
+  return speechClientV2;
+};
+
+const getVertexAI = async () => {
+  await initializeServices();
+  return vertexAI;
+};
+
+const getGenerativeModel = async () => {
+  await initializeServices();
+  return generativeModel;
+};
+
+const getJsonGenerativeModel = async () => {
+  await initializeServices();
+  return jsonGenerativeModel;
+};
 
 class VertexAIService {
+  async getSpeechClient() {
+    return await getSpeechClient();
+  }
+
+  async getSpeechClientV2() {
+    return await getSpeechClientV2();
+  }
+
+  async getVertexAI() {
+    return await getVertexAI();
+  }
+
+  async getGenerativeModel() {
+    return await getGenerativeModel();
+  }
+
+  async getJsonGenerativeModel() {
+    return await getJsonGenerativeModel();
+  }
+
   async createSpeechStream(config = {}) {
+    console.log('🎤 [VertexAIService] RECEIVED CONFIG REQUEST:', JSON.stringify(config));
+
+    const allowedFields = [
+      'encoding',
+      'sampleRateHertz',
+      'languageCode',
+      'alternativeLanguageCodes',
+      'maxAlternatives',
+      'profanityFilter',
+      'speechContexts',
+      'enableWordTimeOffsets',
+      'enableWordConfidence',
+      'enableAutomaticPunctuation',
+      'enableSpokenPunctuation',
+      'enableSpokenEmojis',
+      'diarizationConfig',
+      'metadata',
+      'model',
+      'useEnhanced',
+      'audioChannelCount',
+      'enableAutomaticLanguageIdentification',
+      'enableSeparateRecognitionPerChannel'
+    ];
+
+    // Minimal baseline configuration for raw PCM at 16kHz
+    const defaultConfig = {
+      encoding: 'LINEAR16',
+      sampleRateHertz: 16000,
+      languageCode: 'en-US',
+      alternativeLanguageCodes: ['fr-FR', 'ar-MA', 'ar-SA'],
+      enableAutomaticLanguageIdentification: true,
+      model: 'latest_long',
+      useEnhanced: true,
+      enableAutomaticPunctuation: true,
+      enableSeparateRecognitionPerChannel: true, // Required for channelTag
+      audioChannelCount: 2,
+      metadata: {
+        interactionType: 'PHONE_CALL',
+        microphoneDistance: 'NEARFIELD',
+        recordingDeviceType: 'SMARTPHONE',
+      }
+    };
+
+    // Handle both flat config and nested { config: { ... } }
+    const actualConfig = config.config || config;
+    const { interimResults, ...incomingConfig } = actualConfig;
+
+    // Build the clean config
+    const cleanConfig = {};
+    allowedFields.forEach(field => {
+      // Priority: incomingConfig > defaultConfig
+      if (incomingConfig[field] !== undefined) {
+        cleanConfig[field] = incomingConfig[field];
+      } else if (defaultConfig[field] !== undefined) {
+        cleanConfig[field] = defaultConfig[field];
+      }
+    });
+
+    // Special handling for languageCode (ensure it's never empty if required)
+    if (!cleanConfig.languageCode) {
+      cleanConfig.languageCode = defaultConfig.languageCode || 'en-US';
+    }
+
     const request = {
-      config: {
-        encoding: 'LINEAR16',
-        sampleRateHertz: 48000,
-        languageCode: 'en-US',
-        model: 'default',
-        useEnhanced: true,
-        enableAutomaticPunctuation: true,
-        audioChannelCount: 1,
-        enableWordConfidence: true,
-        enableSpeakerDiarization: true
-      },
-      interimResults: true
+      config: cleanConfig,
+      interimResults: config.interimResults !== undefined ? config.interimResults : (interimResults !== undefined ? interimResults : true)
     };
 
     try {
-      console.log('Creating speech recognition stream with config:', JSON.stringify(request.config, null, 2));
-      
-      const recognizeStream = speechClient.streamingRecognize(request)
+      console.log('🎤 [VertexAIService] GOOGLE_CLOUD_REQUEST:', JSON.stringify(request, null, 2));
+      const client = await getSpeechClient();
+      const recognizeStream = client.streamingRecognize(request)
         .on('error', error => {
-          // Check if it's a timeout error
           if (error.code === 11 && error.message.includes('Audio Timeout Error')) {
             console.log('Audio stream timed out - this is normal when call ends');
             recognizeStream.destroy();
             return;
           }
-          console.error('Speech recognition error:', error);
-        })
-        .on('data', (data) => {
-          console.log('Raw recognition data:', JSON.stringify(data, null, 2));
-          
-          if (data.results && data.results[0]) {
-            const result = {
-              transcript: data.results[0].alternatives[0]?.transcript || '',
-              confidence: data.results[0].alternatives[0]?.confidence || 0,
-              isFinal: data.results[0].isFinal,
-              stability: data.results[0].stability,
-              resultEndTime: data.results[0].resultEndTime
-            };
-            console.log('Processed transcript:', result);
-            return result;
-          } else {
-            console.log('No results in recognition data');
-          }
+          console.error('❌ Speech recognition stream error:', {
+            code: error.code,
+            message: error.message,
+            details: error.details
+          });
+          // Important: destroy the stream to avoid leaks and prevent crash
+          recognizeStream.destroy();
         });
-
-      recognizeStream.on('finish', () => {
-        console.log('Recognition stream finished normally');
-      });
-
-      recognizeStream.on('close', () => {
-        console.log('Recognition stream closed');
-      });
-
-      recognizeStream.on('end', () => {
-        console.log('Recognition stream ended');
-      });
 
       return recognizeStream;
     } catch (error) {
@@ -76,42 +279,708 @@ class VertexAIService {
     }
   }
 
-  async getAIAssistance(transcription, context = []) {
+  async analyzeCallPhase(transcript) {
     try {
-      const generativeModel = vertexAI.preview.getGenerativeModel({
-        model: model,
-        generation_config: {
-          max_output_tokens: 256,
-          temperature: 0.7,
-        },
-      });
+      const gModel = await getGenerativeModel();
 
-      const chat = generativeModel.startChat({
-        history: [
-          ...context.map(msg => ({
-            role: msg.role === 'assistant' ? 'model' : msg.role,
-            text: msg.content
-          })),
+      const prompt = `You are an expert multilingual Sales Quality Assurance AI. 
+The live call transcript provided below may be in English, French, Arabic (including Moroccan Darija), or a mix of these.
+The transcript differentiates speakers using labels like [Speaker 1] and [Speaker 2]. Usually, the Rep is the one initiating the call or asking questions.
+
+Goal: Identify which phase of the 'REPS Call Flow' the conversation is currently in, regardless of the language used. Use speaker turns to determine who is talking.
+
+Phases to track:
+- SBAM & Opening: Greeting (e.g., "Hello", "Bonjour", "Salam"), smiling voice, and purpose.
+- Legal & Compliance: Mentioning recording disclosures or privacy terms.
+- Need Discovery: Asking questions to uncover needs or pain points.
+- Value Proposition: Explaining how the product solves the customer's specific needs.
+- Objection Handling: Addressing concerns about price, timing, or trust.
+- Confirmation & Closing: Asking for the sale or scheduling the next step.
+
+Output Format: Return ONLY a JSON object. The "next_step_suggestion" should be provided in the primary language used in the transcript.
+{
+  "current_phase": "Phase Name", 
+  "confidence": 0-100, 
+  "next_step_suggestion": "Short tip for the agent",
+  "strengths": ["string"],
+  "improvements": ["string"]
+}
+
+Transcript:
+${transcript}`;
+
+      console.log('🧠 [VertexAIService] Calling VertexAI for phase analysis...');
+      const result = await gModel.generateContent(prompt);
+      const response = result.response;
+
+      const parsedResponse = this.parseJsonResponse(response.candidates[0].content.parts[0].text);
+      console.log('✅ [VertexAIService] AI Analysis Result:', JSON.stringify(parsedResponse));
+      return parsedResponse;
+    } catch (error) {
+      console.error('❌ [VertexAIService] Error in analyzeCallPhase:', error);
+      return { current_phase: "Unknown", confidence: 0, next_step_suggestion: "Keep the conversation going" };
+    }
+  }
+
+  async scoreCall(transcript, gigScript = "") {
+    try {
+      const gModel = await getJsonGenerativeModel();
+      const promptText = generateCallScoringPrompt(gigScript);
+      const prompt = `${promptText}\n\nTranscript:\n${transcript}`;
+
+      console.log('🧠 [VertexAIService] Sending transcript for surgical scoring using Knowledge Base standardized prompt...');
+      const result = await gModel.generateContent(prompt);
+      const responseText = result.response.candidates[0].content.parts[0].text;
+      const scores = this.parseJsonResponse(responseText);
+      
+      console.log('✅ [VertexAIService] Precision scores generated.');
+      return scores;
+    } catch (error) {
+      console.error('❌ [VertexAIService] Error in surgical scoreCall:', error);
+      return {
+        "Agent fluency": { score: 0, feedback: "Precision analysis failed" },
+        "Sentiment analysis": { score: 0, feedback: "Precision analysis failed" },
+        "Fraud detection": { score: 0, feedback: "Precision analysis failed" },
+        "overall": { score: 0, feedback: "Precision analysis failed" }
+      };
+    }
+  }
+
+  async analyzeDiscovery(segment) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = `Analyze the following transcript segment. Has the agent identified at least three specific pain points?
+If yes, list them. If no, suggest two diagnostic questions the agent should ask right now to uncover the customer's true budget and timeline.
+
+Transcript:
+${segment}`;
+
+      const result = await gModel.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Error in analyzeDiscovery:', error);
+      return null;
+    }
+  }
+
+  async analyzeObjection(objection) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = `The customer just raised an objection regarding [Price/Complexity/Trust]. 
+Using the Feel-Felt-Found technique, provide a 2-sentence script the agent can use immediately to pivot back to the Value Proposition.
+
+Objection:
+${objection}`;
+
+      const result = await gModel.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Error in analyzeObjection:', error);
+      return null;
+    }
+  }
+
+  async generatePostCallSummary(fullTranscript) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = `Summarize this entire transcript into a CRM-ready format:
+- Customer Mood: (Positive/Neutral/Negative)
+- Key Requirements:
+- Agreed Next Steps:
+- Missing Compliance: (Did they miss the legal disclaimer? Yes/No)
+
+Transcript:
+${fullTranscript}`;
+
+      const result = await gModel.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Error in generatePostCallSummary:', error);
+      return "Summary unavailable.";
+    }
+  }
+
+  async evaluateRepLanguage(fileUri, textToCompare) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = generateLanguagePrompt(textToCompare);
+
+      const request = {
+        contents: [{
+          role: 'user', parts: [
+            {
+              "file_data": {
+                "mime_type": "audio/linear16", // Adjusted for our PCM
+                "file_uri": fileUri
+              }
+            },
+            { "text": prompt }
+          ]
+        }],
+      };
+
+      const result = await gModel.generateContent(request);
+      return this.parseJsonResponse(result.response.text());
+    } catch (error) {
+      console.error('Error in evaluateRepLanguage:', error);
+      throw error;
+    }
+  }
+
+  async evaluateRepCCSkills(fileUri, scenarioData) {
+    try {
+      const gModel = await getGenerativeModel();
+      const prompt = generatePrompt(scenarioData);
+
+      const request = {
+        contents: [{
+          role: 'user', parts: [
+            {
+              "file_data": {
+                "mime_type": "audio/linear16",
+                "file_uri": fileUri
+              }
+            },
+            { "text": prompt }
+          ]
+        }],
+      };
+
+      const result = await gModel.generateContent(request);
+      return this.parseJsonResponse(result.response.text());
+    } catch (error) {
+      console.error('Error in evaluateRepCCSkills:', error);
+      throw error;
+    }
+  }
+
+  async transcribeAudio(base64Audio, language = 'en-US') {
+    try {
+      const client = await getSpeechClient();
+      const request = {
+        config: {
+          encoding: "LINEAR16",
+          sampleRateHertz: 16000,
+          languageCode: language,
+          enableAutomaticPunctuation: true,
+        },
+        audio: {
+          content: base64Audio,
+        },
+      };
+
+      const [response] = await client.recognize(request);
+      return response;
+    } catch (error) {
+      console.error("❌ [VertexAIService] Error transcribing audio:", error.message);
+      throw new Error("Short audio transcription failed");
+    }
+  }
+
+  async transcribeAudioBuffer(audioBuffer) {
+    try {
+      await initializeServices();
+      const prompt = generateAudioTranscriptionPrompt();
+
+      // Detect format
+      let mimeType = "audio/wav";
+      let finalBuffer = audioBuffer;
+      const header = audioBuffer.slice(0, 4);
+      const isWav = header.toString() === 'RIFF';
+      const isMp3 = header.toString().startsWith('ID3') || (audioBuffer[0] === 0xFF && (audioBuffer[1] & 0xE0) === 0xE0);
+
+      if (isWav) {
+        mimeType = "audio/wav";
+        console.log('📦 [VertexAIService] Detected WAV format');
+      } else if (isMp3) {
+        mimeType = "audio/mpeg";
+        console.log('📦 [VertexAIService] Detected MP3 format');
+      } else {
+        // If not WAV or MP3, it might be raw PCM if it's a small chunk, but for full files from URL, 
+        // it's likely a compressed format. We'll try WAV if it's raw, but most Cloudinary files are MP3.
+        console.log('📦 [VertexAIService] Unknown format, attempting auto-detection via mime-type');
+        // Defaulting to mpeg as it's common for our recordings if no RIFF header
+        mimeType = "audio/mpeg"; 
+      }
+      
+      const base64Audio = finalBuffer.toString('base64');
+
+      const request = {
+        contents: [{
+          role: 'user', parts: [
+            {
+              "inline_data": {
+                "mime_type": mimeType,
+                "data": base64Audio
+              }
+            },
+            { "text": `${prompt}\nIMPORTANT: Identify speakers as "Agent" (company/rep) and "Customer" (lead) ONLY when you hear two distinct human voices. If a single voice simulates both sides of the dialogue, label ALL turns as "Agent" — never invent a Customer. Return ONLY the JSON array.` }
+          ]
+        }],
+      };
+
+      console.log(`🧠 [VertexAIService] Calling Gemini for transcription (chunk size: ${finalBuffer.length} bytes)`);
+      const result = await jsonGenerativeModel.generateContent(request);
+
+      let responseText = '';
+      if (result.response && typeof result.response.text === 'function') {
+        responseText = result.response.text();
+      } else if (result.response && result.response.candidates && result.response.candidates.length > 0) {
+        const candidate = result.response.candidates[0];
+        if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+          responseText = candidate.content.parts[0].text;
+        }
+      } else {
+        console.error("❌ [VertexAIService] Invalid or empty response from Gemini:", JSON.stringify(result, null, 2));
+        return [];
+      }
+
+      return this.parseJsonResponse(responseText);
+    } catch (error) {
+      console.error("❌ [VertexAIService] Error transcribing buffer with Gemini:", error);
+      return [];
+    }
+  }
+
+  async transcribeAudioFromUrl(audioUrl) {
+    try {
+      console.log(`🎙️ [VertexAIService] Fetching audio for transcription from: ${audioUrl}`);
+      const response = await fetch(audioUrl);
+      if (!response.ok) throw new Error(`Failed to fetch audio: ${response.statusText}`);
+      
+      const audioBuffer = await response.buffer();
+      console.log(`✅ [VertexAIService] Audio fetched (${audioBuffer.length} bytes). Starting transcription...`);
+      
+      return await this.transcribeAudioBuffer(audioBuffer);
+    } catch (error) {
+      console.error('❌ [VertexAIService] Error in transcribeAudioFromUrl:', error);
+      return [];
+    }
+  }
+
+  detectAudioMimeType(audioBuffer) {
+    const header = audioBuffer.slice(0, 4);
+    const isWav = header.toString() === 'RIFF';
+    const isMp3 =
+      header.toString().startsWith('ID3') ||
+      (audioBuffer[0] === 0xff && (audioBuffer[1] & 0xe0) === 0xe0);
+    if (isWav) return 'audio/wav';
+    if (isMp3) return 'audio/mpeg';
+    return 'audio/mpeg';
+  }
+
+  /**
+   * Listen to a call recording and detect if Agent and Customer are the same voice.
+   * Returns normalised voiceAnalysis or null when the check could not run.
+   */
+  async detectSelfCallFromBuffer(audioBuffer) {
+    try {
+      await initializeServices();
+      const mimeType = this.detectAudioMimeType(audioBuffer);
+      const base64Audio = audioBuffer.toString('base64');
+      const prompt = generateSelfCallVoicePrompt();
+
+      const request = {
+        contents: [
           {
             role: 'user',
-            text: `You are an AI assistant helping a call center agent during a live call. 
-            Your role is to:
-            1. Analyze customer sentiment and needs
-            2. Suggest appropriate responses
-            3. Provide relevant product/service information
-            4. Help maintain professional communication
-            Keep responses brief and actionable.
-            
-            Current conversation context: ${transcription}`
-          }
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Audio,
+                },
+              },
+              {
+                text: `${prompt}\nReturn ONLY the JSON object.`,
+              },
+            ],
+          },
         ],
+      };
+
+      console.log('🔊 [VertexAIService] Running self-call voice fraud detection...');
+      const result = await jsonGenerativeModel.generateContent(request);
+
+      let responseText = '';
+      if (result.response && typeof result.response.text === 'function') {
+        responseText = result.response.text();
+      } else if (
+        result.response?.candidates?.[0]?.content?.parts?.[0]?.text
+      ) {
+        responseText = result.response.candidates[0].content.parts[0].text;
+      }
+
+      const parsed = normalizeVoiceAnalysis(this.parseJsonResponse(responseText));
+      if (parsed) {
+        console.log('🔊 [VertexAIService] Self-call voice analysis:', JSON.stringify(parsed));
+      }
+      return parsed;
+    } catch (error) {
+      console.error('❌ [VertexAIService] Self-call voice detection failed:', error.message);
+      return null;
+    }
+  }
+
+  async detectSelfCallFromUrl(audioUrl) {
+    try {
+      const response = await fetch(audioUrl);
+      if (!response.ok) throw new Error(`Failed to fetch audio: ${response.statusText}`);
+      const audioBuffer = await response.buffer();
+      return await this.detectSelfCallFromBuffer(audioBuffer);
+    } catch (error) {
+      console.error('❌ [VertexAIService] detectSelfCallFromUrl failed:', error.message);
+      return null;
+    }
+  }
+
+  // Helper to add WAV header to raw PCM
+  pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitDepth = 16) {
+    const header = Buffer.alloc(44);
+    const dataSize = pcmBuffer.length;
+    const fileSize = dataSize + 36;
+    const byteRate = sampleRate * numChannels * (bitDepth / 8);
+    const blockAlign = numChannels * (bitDepth / 8);
+
+    // RIFF chunk descriptor
+    header.write('RIFF', 0);
+    header.writeUInt32LE(fileSize, 4);
+    header.write('WAVE', 8);
+
+    // fmt sub-chunk
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+    header.writeUInt16LE(1, 20); // AudioFormat (1 for PCM)
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitDepth, 34);
+
+    // data sub-chunk
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+
+    return Buffer.concat([header, pcmBuffer]);
+  }
+
+  async transcribeLongAudio(languageCode, fileUri) {
+    try {
+      const client = await getSpeechClient();
+      const config = {
+        encoding: "LINEAR16", // Standard for our PCM
+        sampleRateHertz: 16000,
+        languageCode: languageCode,
+        enableAutomaticPunctuation: true,
+      };
+
+      const audio = {
+        uri: fileUri, // gs:// format
+      };
+
+      const request = { config, audio };
+      console.log("🚀 [VertexAIService] Starting long audio transcription for:", fileUri);
+
+      const [operation] = await client.longRunningRecognize(request);
+      const [response] = await operation.promise();
+
+      const transcription = response.results
+        .map(result => result.alternatives[0].transcript)
+        .join("\n");
+
+      console.log(`✅ [VertexAIService] Long transcription completed`);
+      return transcription;
+    } catch (error) {
+      console.error("❌ [VertexAIService] Error transcribing long audio:", error);
+      throw new Error("Long audio transcription failed");
+    }
+  }
+
+  async audioUpload(filePath, destinationName) {
+    try {
+      await initializeServices();
+      const options = { destination: destinationName };
+
+      await storage.bucket(bucketName).upload(filePath, options);
+      console.log(`✅ [VertexAIService] ${filePath} uploaded to ${bucketName} as ${destinationName}`);
+
+      return {
+        message: `${filePath} successfully uploaded to ${bucketName} as ${destinationName}`,
+        bucketName,
+        fileUri: `gs://${bucketName}/${destinationName}`,
+      };
+    } catch (error) {
+      console.error(`❌ [VertexAIService] Storage upload failed:`, error);
+      throw error;
+    }
+  }
+
+  async audioUploadBuffer(fileBuffer, destinationName) {
+    try {
+      await initializeServices();
+      const bucket = storage.bucket(bucketName);
+      const file = bucket.file(destinationName);
+
+      const stream = file.createWriteStream({ resumable: false });
+
+      return new Promise((resolve, reject) => {
+        stream.on('error', (error) => {
+          console.error(`❌ [VertexAIService] Stream error during upload:`, error);
+          reject(error);
+        });
+
+        stream.on('finish', () => {
+          console.log(`✅ [VertexAIService] ${destinationName} uploaded to ${bucketName}`);
+          resolve({
+            message: `${destinationName} successfully uploaded to ${bucketName}`,
+            bucketName,
+            fileUri: `gs://${bucketName}/${destinationName}`,
+          });
+        });
+
+        stream.end(fileBuffer);
+      });
+    } catch (error) {
+      console.error(`❌ [VertexAIService] audioUploadBuffer failed:`, error);
+      throw error;
+    }
+  }
+
+  async getAIAssistance(transcription, context = []) {
+    try {
+      console.log('🧠 [VertexAIService] getAIAssistance - Transcription:', transcription);
+      await initializeServices();
+
+      const sanitizedHistory = this.sanitizeHistory(context);
+      console.log('🧠 [VertexAIService] getAIAssistance - History length:', sanitizedHistory.length);
+
+      const chat = generativeModel.startChat({
+        history: sanitizedHistory,
       });
 
       const result = await chat.sendMessage(transcription);
-      return result.response.text();
+      const responseText = result.response.text();
+      console.log('✅ [VertexAIService] AI Assistance Response:', responseText.substring(0, 50) + '...');
+      return responseText;
     } catch (error) {
-      console.error('Error getting AI assistance:', error);
+      console.error('❌ [VertexAIService] Error getting AI assistance:', error);
+      // Detailed error for debugging
+      if (error.response) console.error('Full Error Response:', JSON.stringify(error.response, null, 2));
       throw error;
+    }
+  }
+
+  async getPersonalityAnalysis(transcription, context = [], callDuration = 'Unknown') {
+    try {
+      await initializeServices();
+
+      const prompt = `Analyze the customer's communication patterns and provide DISC personality insights.
+      
+      Transcript: ${transcription}
+      Duration: ${callDuration}
+
+      Respond ONLY in JSON format:
+      {
+        "primaryType": "D|I|S|C",
+        "secondaryType": "D|I|S|C|null",
+        "confidence": 0-100,
+        "recommendations": ["string"],
+        "approachStrategy": "string",
+        "communicationStyle": "string"
+      }`;
+
+      const result = await jsonGenerativeModel.generateContent(prompt);
+      const responseText = result.response.candidates[0].content.parts[0].text;
+
+      return this.parseJsonResponse(responseText);
+    } catch (error) {
+      console.error('❌ [VertexAIService] Error in getPersonalityAnalysis:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Gemini expects a strictly alternating pattern of 'user' and 'model' roles.
+   * This helper merges adjacent messages with the same role and filters out invalid ones.
+   */
+  sanitizeHistory(history) {
+    if (!history || history.length === 0) return [];
+
+    // Convert AgentContext/TranscriptEntry format to Gemini format if needed
+    const geminiHistory = history.map(msg => {
+      // Handle different input formats (raw strings, objects with role/parts, or TranscriptEntry)
+      if (typeof msg === 'string') return { role: 'user', parts: [{ text: msg }] };
+
+      // Handle both 'role' property and 'participantId' (from AgentContext)
+      // Standardize roles: agent-1 -> model, customer-1 -> user
+      const speakerId = (msg.participantId || msg.role || '').toLowerCase();
+      const role = (speakerId.includes('assistant') || speakerId.includes('model') || speakerId.includes('agent'))
+        ? 'model'
+        : 'user';
+
+      const text = msg.content || msg.text || '';
+      return { role, parts: [{ text }] };
+    }).filter(msg => msg.parts && msg.parts[0] && msg.parts[0].text.trim() !== '');
+
+    if (geminiHistory.length === 0) return [];
+
+    // Combine consecutive messages from the same role (Gemini requirement)
+    const sanitized = [];
+    geminiHistory.forEach(msg => {
+      if (sanitized.length === 0) {
+        sanitized.push(msg);
+      } else {
+        const last = sanitized[sanitized.length - 1];
+        if (last.role === msg.role) {
+          last.parts[0].text += " " + msg.parts[0].text;
+        } else {
+          sanitized.push(msg);
+        }
+      }
+    });
+
+    // Ensure first message is 'user' if it's 'model' (Gemini requirement for some models)
+    if (sanitized.length > 0 && sanitized[0].role === 'model') {
+      sanitized.unshift({ role: 'user', parts: [{ text: "Hello, I am ready to assist." }] });
+    }
+
+    return sanitized;
+  }
+
+  // Alias for Gemini-based transcription (Knowledge Base logic)
+  async getTranscription(audioBuffer) {
+    return await this.transcribeAudioBuffer(audioBuffer);
+  }
+
+  async getCallTranscription(targetUri) {
+    try {
+      if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        return await this.transcribeAudioFromUrl(targetUri);
+      }
+      const call = require('../models/Call').Call;
+      const callDoc = await call.findById(targetUri);
+      if (!callDoc) throw new Error('Call not found');
+
+      if (callDoc.recording_url || callDoc.recording_url_cloudinary) {
+        if (callDoc.transcript && callDoc.transcript.length > 0) {
+           return callDoc.transcript;
+        }
+        const urlToTranscribe = callDoc.recording_url_cloudinary || callDoc.recording_url;
+        const transcript = await this.transcribeAudioFromUrl(urlToTranscribe);
+        callDoc.transcript = transcript;
+        await callDoc.save();
+        return transcript;
+      }
+      return [];
+    } catch (error) {
+      console.error('Error in getCallTranscription:', error);
+      throw error;
+    }
+  }
+
+  async getCallSummary(targetUri) {
+    try {
+      let transcript = [];
+      if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        transcript = await this.transcribeAudioFromUrl(targetUri);
+      } else {
+        const call = require('../models/Call').Call;
+        const callDoc = await call.findById(targetUri);
+        if (callDoc) transcript = callDoc.transcript || [];
+      }
+      
+      const transcriptText = Array.isArray(transcript) ? transcript.map(t => `[${t.speaker}]: ${t.text}`).join("\n") : transcript;
+      if (!transcriptText || transcriptText.trim() === '') {
+         return { "key-ideas": [ { "No meaningful content": "No transcription available." } ] };
+      }
+      
+      const gModel = await getGenerativeModel();
+      const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
+      const promptText = generateAudioSummaryPrompt();
+      const prompt = `${promptText}\n\nTranscript:\n${transcriptText}`;
+      
+      const result = await gModel.generateContent(prompt);
+      const responseText = result.response.candidates[0].content.parts[0].text;
+      return this.parseJsonResponse(responseText);
+    } catch (error) {
+      console.error('Error in getCallSummary:', error);
+      return { "key-ideas": [ { "Error": "Failed to generate summary." } ] };
+    }
+  }
+
+  async getCallScoring(targetUri) {
+    try {
+      let transcript = [];
+      let gigScript = "";
+      
+      const Call = require('../models/Call').Call;
+      require('../models/Gig'); // Ensure Gig model is loaded for populate
+      
+      let callDoc = null;
+      if (typeof targetUri === 'string' && targetUri.startsWith('http')) {
+        callDoc = await Call.findOne({ 
+           $or: [ { recording_url_cloudinary: targetUri }, { recording_url: targetUri } ] 
+        }).populate({ path: 'lead', populate: { path: 'gigId', model: 'Gig' } });
+        
+        transcript = await this.transcribeAudioFromUrl(targetUri);
+      } else {
+        callDoc = await Call.findById(targetUri).populate({ path: 'lead', populate: { path: 'gigId', model: 'Gig' } });
+        if (callDoc) transcript = callDoc.transcript || [];
+      }
+      
+      if (callDoc && callDoc.lead && callDoc.lead.gigId) {
+         gigScript = callDoc.lead.gigId.script || callDoc.lead.gigId.description || "";
+      }
+      
+      const transcriptText = Array.isArray(transcript) ? transcript.map(t => `[${t.speaker}]: ${t.text}`).join("\n") : transcript;
+      if (!transcriptText || transcriptText.trim() === '') {
+         return {
+          "Agent fluency": { score: 0, feedback: "No transcript." },
+          "Sentiment analysis": { score: 0, feedback: "No transcript." },
+          "Fraud detection": { score: 0, feedback: "No transcript." },
+          "Script adherence": { score: 0, feedback: "No transcript." },
+          "overall": { score: 0, feedback: "No transcript." }
+        };
+      }
+      return await this.scoreCall(transcriptText, gigScript);
+    } catch (error) {
+      console.error('Error in getCallScoring:', error);
+      throw error;
+    }
+  }
+
+  async getCallPostActions(targetUri) {
+    return {
+      plan_actions: [
+        "Review key objections highlighted in the call summary",
+        "Send follow up email with requested information",
+        "Schedule next touchpoint in CRM"
+      ]
+    };
+  }
+
+  // --- Helper Methods ---
+
+  parseJsonResponse(responseText) {
+    try {
+      // Direct parse attempt
+      if (responseText.trim().startsWith('{')) {
+        return JSON.parse(responseText);
+      }
+
+      // Extraction from markdown code blocks
+      const match = responseText.match(/```json\s*([\s\S]*?)\s*```/) ||
+        responseText.match(/\{[\s\S]*\}/);
+
+      if (match) {
+        const jsonStr = match[1] || match[0];
+        return JSON.parse(jsonStr.trim());
+      }
+
+      throw new Error("No JSON structure found in response");
+    } catch (e) {
+      console.error('⚠️ [VertexAIService] JSON Parse failed, returning raw text wrap:', e.message);
+      return { raw_response: responseText };
     }
   }
 }

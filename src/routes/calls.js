@@ -23,9 +23,11 @@ router.route('/')
   .get(getCalls)
   .post(createCall);
 
+router.get('/company/:companyId/fraud-stats', callController.getCompanyFraudStats);
+router.get('/agent/:agentId/fraud-stats', callController.getAgentFraudStats);
 router.get('/agent/:agentId', callController.getCallsByAgent);
 
-  
+
 router.post('/token', (req, res, next) => {
   console.log('Requête reçue sur la route');
   next();
@@ -40,6 +42,11 @@ router.get('/token', (req, res, next) => {
 
 router.post('/store-call', callController.saveCallToDB);
 
+// Resolve active gig phone line (provider + E.164) before Workspace dial.
+// Must be registered before `/:id` so "line-for-lead" is not captured as an id.
+router.get('/line-for-lead/:leadId', callController.getLineForLead);
+router.post('/telnyx/finalize', callController.finalizeTelnyxCall);
+router.post('/telnyx/record-start', callController.startTelnyxRecording);
 
 router.route('/initiate')
   .post(initiateCall);
@@ -57,6 +64,9 @@ router.route('/:id/notes')
 router.route('/:id/quality-score')
   .put(updateQualityScore);
 
+router.post('/:id/analyze', callController.analyzeCall);
+router.post('/:id/request-analysis-help', callController.requestAnalysisHelp);
+
 // Route pour créer un Dialplan
 router.post('/dialplan', callController.createDialplan);
 
@@ -65,7 +75,13 @@ router.post('/call', callController.launchOutboundCall);
 // Route pour suivre l'état de l'appel
 //router.get('/call/status/:callId', callController.trackCallStatus);
 //twilio
-router.post('/twilio-voice', callController.handleVoice);
+//twilio
+router.all('/twilio-voice', (req, res, next) => {
+  console.log(`[Twilio Route] ${req.method} request to /twilio-voice`);
+  console.log('Body:', req.body);
+  console.log('Query:', req.query);
+  next();
+}, callController.handleVoice);
 router.post('/outgoing', callController.initiateCall);
 //router.get('/status/:callSid', callController.trackCallStatus);
 // routes/callRoutes.js
@@ -78,6 +94,11 @@ router.post('/hangup/:callSid', callController.hangUpCall);
 router.post('/end', callController.endCall);
 router.post('/fetch-recording', callController.fetchRecording);
 router.post('/call-details', callController.getCallDetails);
+router.post('/recording/start', callController.startRecording);
+router.post('/recording/stop', callController.stopRecording);
+
+// Twilio Async AMD (Answering Machine Detection) webhook — no auth, called by Twilio directly
+router.post('/amd-callback', callController.amdCallback);
 
 //@qalqul logic
 
@@ -85,6 +106,14 @@ router.post('/store-call-in-db-at-start-call', callController.storeCallsInDBatSt
 router.post('/store-call-in-db-at-end-call', callController.storeCallsInDBatEndingCall);
 router.post('/ai-assist', callController.getAIAssistance);
 
+// Route pour l'analyse de personnalité DISC
+router.post('/personality-analysis', callController.getPersonalityAnalysis);
+
 router.post('/get-login-token', callController.getLoginToken);
+router.get('/get-login-token', callController.getLoginToken);
+
+router.post('/ai-outbound', callController.startAiOutbound);
+router.post('/webhooks/telnyx/ai-outbound', express.json(), callController.handleTelnyxAiOutboundWebhook);
+router.post('/webhooks/telnyx/call-control', express.json(), callController.handleTelnyxCallControlWebhook);
 
 module.exports = router;

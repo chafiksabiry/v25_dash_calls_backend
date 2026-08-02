@@ -5,7 +5,7 @@ const { Lead } = require('../models/Lead');
 // @access  Private
 exports.getLeads = async (req, res) => {
   try {
-    const leads = await Lead.find().populate('assignedTo');
+    const leads = await Lead.find().populate('assignedTo').populate('gigId');
 
     res.status(200).json({
       success: true,
@@ -25,7 +25,7 @@ exports.getLeads = async (req, res) => {
 // @access  Private
 exports.getLead = async (req, res) => {
   try {
-    const lead = await Lead.findById(req.params.id).populate('assignedTo');
+    const lead = await Lead.findById(req.params.id).populate('assignedTo').populate('gigId');
 
     if (!lead) {
       return res.status(404).json({
