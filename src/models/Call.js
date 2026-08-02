@@ -28,7 +28,8 @@ const callSchema = new mongoose.Schema({
     required: function () {
       return this.provider === 'twilio';
     },
-    unique: true, // Identifiant Twilio de l'appel
+    unique: true,
+    sparse: true, // Identifiant Twilio / Telnyx call_control_id
   },
   parentCallSid: {
     type: String,
@@ -50,7 +51,7 @@ const callSchema = new mongoose.Schema({
   },
   provider: {
     type: String,
-    enum: ["twilio", "qalqul"],
+    enum: ["twilio", "qalqul", "telnyx"],
     //required: true,
   },
   startTime: {
@@ -281,6 +282,16 @@ const callSchema = new mongoose.Schema({
   callbackAt: { type: Date, default: null, index: true },
   /** Confirmed appointment (RDV fixé). Drives the "RDV confirmés" KPI. */
   appointmentAt: { type: Date, default: null, index: true },
+
+  /** Free-form notes (human or AI voice tools). */
+  notes: { type: String, default: null },
+
+  /** OpenAI Realtime outbound voice session metadata. */
+  aiVoice: {
+    enabled: { type: Boolean, default: false },
+    voice: { type: String, default: null },
+    model: { type: String, default: null },
+  },
 
   /** Lifecycle of the AI analyzer for this call. Lets the UI show a real
    *  "Analyse en cours" state instead of inferring from validByAI == null. */

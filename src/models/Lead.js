@@ -12,6 +12,12 @@ const leadSchema = new mongoose.Schema({
   Email_1: String,
   Phone: String,
   Deal_Name: String,
+  Stage: String,
+  Pipeline: String,
+  companyId: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
+  },
   
   status: {
     type: String,
