@@ -5,6 +5,7 @@ const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
 const setupSpeechToTextWebSocket = require('./websocket/speechToText');
+const setupAiVoiceBridge = require('./websocket/aiVoiceBridge');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -12,48 +13,114 @@ const integrations = require('./routes/integrations');
 const leads = require('./routes/leads');
 const agents = require('./routes/agents');
 const calls = require('./routes/calls');
+const callsAnalytics = require('./routes/callsAnalytics');
+const repTransactions = require('./routes/repTransactions');
+const gigs = require('./routes/gigs');
 const settings = require('./routes/settings');
 const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
+const vertex = require('./routes/vertex');
+
+// Ensure models are registered
+require('./models/Call');
+require('./models/Agent');
+require('./models/Lead');
+require('./models/Gig');
 
 // Connect to database
 connectDB();
 
 const app = express();
 
+app.set('trust proxy', 1);
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// CORS configuration
+const allowedOrigins = [
+  'http://localhost:5180',
+  'http://localhost:5183',
+  'https://v25-preprod.harx.ai',
+  'https://preprod-api-dash-calls.harx.ai',
+  'https://v25.harx.ai',
+  'https://copilot.harx.ai',
+  'http://38.242.208.242:5186',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://localhost:8100',
+  'https://harx.ai',
+  'https://harxv25dashboardfrontend.netlify.app',
+  'https://harxv25comporchestratorfront.netlify.app',
+  'capacitor://localhost',
+  'ionic://localhost',
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin
+    if (!origin) return callback(null, true);
+    
+    const isAllowed = allowedOrigins.indexOf(origin) !== -1 ||
+                     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+                     origin.endsWith('.harx.ai') || 
+                     origin.endsWith('.netlify.app');
+                     
+    if (!isAllowed) {
+      console.log('CORS blocked origin:', origin);
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-agent-id', 'x-channel', 'Accept', 'Origin', 'X-Requested-With'],
+  credentials: true
+}));
+
 app.use(express.urlencoded({ extended: true }));
 
 // Body parser
 app.use(express.json());
-
-//app.use(cors());
-// Enable CORS with specific configuration
-app.use(cors({
-  origin: ['http://localhost:5180','http://localhost:5183','https://v25-preprod.harx.ai', 'https://preprod-api-dash-calls.harx.ai','https://v25.harx.ai'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
 
 // Mount routers
 app.use('/api/auth', auth);
 app.use('/api/integrations', integrations);
 app.use('/api/leads', leads);
 app.use('/api/agents', agents);
+// Analytics routes are mounted FIRST so /company/:companyId/analytics/...
+// is matched before the legacy /:id pattern inside the calls router.
+app.use('/api/calls', callsAnalytics);
 app.use('/api/calls', calls);
+app.use('/api/rep-transactions', repTransactions);
+app.use('/api/gigs', gigs);
 app.use('/api/settings', settings);
 app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
+app.use('/api/vertex', vertex);
 
 // Error handler
 //app.use(errorHandler);
+
+// Probe for Telnyx / ops — confirms the public host reaches this service.
+app.get('/ai-voice-stream/health', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'ai-voice-stream',
+    hint: 'WebSocket endpoint is wss://<host>/ai-voice-stream/<token>',
+  });
+});
 
 const PORT = config.PORT;
 
 // Create HTTP server
 const server = http.createServer(app);
-console.log("server",server);
-// Set up WebSocket handler for speech-to-text
+// AI voice upgrade MUST register before STT so /ai-voice-stream is claimed first.
+setupAiVoiceBridge(server);
 setupSpeechToTextWebSocket(server);
 
 // Listen on server instead of app

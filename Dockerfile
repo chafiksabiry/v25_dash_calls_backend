@@ -1,57 +1,16 @@
-FROM node:18
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-COPY package*.json ./
-
-RUN npm install
+# Install deps from lockfile only — never reuse a host/copied node_modules tree
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev \
+  && (test -f node_modules/mongoose/node_modules/mongodb/lib/cursor/explainable_cursor.js \
+      || test -f node_modules/mongodb/lib/cursor/explainable_cursor.js)
 
 COPY . .
 
-ENV MONGODB_URI=mongodb://harx:ix5S3vU6BjKn4MHp@207.180.226.2:27017/V25_HarxProd
-ENV PORT=5006
-ENV OVH_APPLICATION_KEY=951ed23a2d85dc98
-ENV OVH_APPLICATION_SECRET=f084e28c889418c3093aed237a8b7198
-ENV OVH_DEFAULT_NUMBER=+33183643948
-ENV OVH_CONSUMER_KEY1=10b0ff940492f37a012605512e54cc85
-
-ENV OVH_APP_KEY=951ed23a2d85dc98
-ENV OVH_APP_SECRET=f084e28c889418c3093aed237a8b7198
-ENV OVH_CONSUMER_KEY=f0571ddbe535f8b38c02274b577165cf
-ENV OVH_SERVICE_NAME=sc899836-ovh-1
-ENV OVH_BILLING_ACCOUNT=sc899836-ovh
-
-
-#twilio calls
-ENV TWILIO_APP_SID=AP19e09bae9f403a65fc515a281a7cee51
-ENV TWILIO_ACCOUNT_SID=AC8a453959a6cb01cbbd1c819b00c5782f
-ENV TWILIO_AUTH_TOKEN=7ade91a170bff98bc625543287ee62c8
-ENV TWILIO_API_KEY=SK908469d0b7edc841c8782bf0b53627a1
-ENV TWILIO_API_SECRET=JHobczfW647YMOJqA2BBxcQqylu5FLYA
-ENV TWILIO_PHONE_NUMBER=+16185185941
-
-#cloudinary
-ENV CLOUDINARY_CLOUD_NAME=dyqg8x26j
-ENV CLOUDINARY_API_KEY=981166483223979
-ENV CLOUDINARY_API_SECRET=i3nxRvfOF1jjfLzMHKE8mP4aXVM
-
-#integration twilio
-ENV INTEGRATIONS_SERVICE_URL=https://preprod-api-dash-integrations.harx.ai
-
-#qalqul
-ENV QALQUL_API=https://digital-works.qalqul.io/discovery/v1/calls
-ENV QALQUL_KEY=k0HDn140xJM6WGoAMmX2U.17084ed7cc245f6d9f707538ebd90d60
-
-#openai
-ENV OPENAI_API_KEY=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
-
-#vertex
-ENV GOOGLE_CLOUD_PROJECT=harx-technologies-inc
-ENV GOOGLE_CLOUD_LOCATION=us-central1
-ENV GOOGLE_APPLICATION_CREDENTIALS=./config/vertex-service-account.json
-
-
-EXPOSE 5006
+ENV NODE_ENV=production
+EXPOSE 3000
 
 CMD ["npm", "start"]
-

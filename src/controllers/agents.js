@@ -180,13 +180,35 @@ exports.getAgents = async (req, res) => {
 // @route   GET /api/agents/:id
 // @access  Private
 exports.getAgent = async (req, res) => {
+  const { id } = req.params;
+  console.log(`[AgentController] Request to fetch agent for ID: ${id}`);
+
   try {
-    const agent = await agentService.getAgentById(req.params.id);
+    // 1. Try finding by Agent Profile _id
+    let agent = null;
+    try {
+      agent = await agentService.getAgentById(id);
+    } catch (e) {
+      console.log(`[AgentController] ID ${id} is not a valid Profile _id format, will try as User ID.`);
+    }
+
+    if (agent) {
+      console.log(`[AgentController] Found agent by Profile _id: ${agent._id}`);
+    } else {
+      // 2. Try finding by User ID
+      console.log(`[AgentController] Agent not found by Profile _id, trying as User ID...`);
+      agent = await agentService.getAgentByUserId(id);
+
+      if (agent) {
+        console.log(`[AgentController] Found agent by User ID field: ${agent._id}`);
+      }
+    }
 
     if (!agent) {
+      console.warn(`[AgentController] No agent profile found for ID: ${id}`);
       return res.status(404).json({
         success: false,
-        error: 'Agent not found'
+        error: 'Agent profile not found'
       });
     }
 
@@ -195,9 +217,10 @@ exports.getAgent = async (req, res) => {
       data: agent
     });
   } catch (err) {
+    console.error(`[AgentController] FATAL ERROR in getAgent for ID ${id}:`, err);
     res.status(400).json({
       success: false,
-      error: err.message
+      error: `Backend error: ${err.message}`
     });
   }
 };

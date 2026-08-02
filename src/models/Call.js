@@ -2,6 +2,7 @@
 
 
 const mongoose = require("mongoose");
+require('./Transaction');
 
 const callSchema = new mongoose.Schema({
   call_id: {
@@ -9,7 +10,7 @@ const callSchema = new mongoose.Schema({
     sparse: true, // Permet d'avoir des documents sans ce champ tout en gardant l'index
     index: true, // Index pour des recherches efficaces
     description: "Identifiant unique de l'appel fourni par Qalqul",
-    required: function() {
+    required: function () {
       return this.provider === 'qalqul';
     }
   },
@@ -24,10 +25,11 @@ const callSchema = new mongoose.Schema({
   },
   sid: {
     type: String,
-    required: function() {
+    required: function () {
       return this.provider === 'twilio';
     },
-    unique: true, // Identifiant Twilio de l'appel
+    unique: true,
+    sparse: true, // Identifiant Twilio / Telnyx call_control_id
   },
   parentCallSid: {
     type: String,
@@ -35,12 +37,21 @@ const callSchema = new mongoose.Schema({
   },
   direction: {
     type: String,
-    enum: ["inbound", "outbound-dial"],
+    enum: ["inbound", "outbound", "outbound-dial", "outbound-api", "Inbound", "Outbound"],
+    default: "outbound",
     required: true,
+  },
+  from: {
+    type: String,
+    default: null,
+  },
+  to: {
+    type: String,
+    default: null,
   },
   provider: {
     type: String,
-    enum: ["twilio", "qalqul"],
+    enum: ["twilio", "qalqul", "telnyx"],
     //required: true,
   },
   startTime: {
@@ -67,25 +78,269 @@ const callSchema = new mongoose.Schema({
     min: 0,
     max: 100,
   },
+  // ai_call_score rubric — each metric carries:
+  //   • score    (0-100, raw quality)
+  //   • feedback (LLM rationale)
+  //   • passed   (boolean verdict — true when score ≥ 50; written by analyzer)
+  //
+  // `passed` is the canonical Yes/No used by dashboards and the rep modal.
+  // Keeping it on the document avoids re-thresholding on every read.
   ai_call_score: {
     "Agent fluency": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Sentiment analysis": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "Fraud detection": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "Script coherence": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "Argumentation": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "Script adherence": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "Transaction analysis": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "PAS INTÉRESSÉS": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "PAS AU COURANT": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "DÉJÀ ÉQUIPÉS": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "RDV": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "A plus tard": {
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
     },
     "overall": {
-      score: { type: Number, min: 0, max: 100 },
-      feedback: { type: String }
-    }
+      score:    { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed:   { type: Boolean, default: false }
+    },
+    "transaction_detected": { type: Boolean, default: false },
+    "refusal_detected":     { type: Boolean, default: false }
   },
+  transcript: [{
+    speaker: String,
+    text: String,
+    timestamp: String
+  }],
   childCalls: [String], // Liste des appels enfants (SID)
+  gigId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Gig",
+  },
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+  transactionOccurred: {
+    type: Boolean,
+    default: null,
+  },
+  validByAI: {
+    type: Boolean,
+    default: null,
+  },
+  valid: {
+    type: Boolean,
+    default: null,
+  },
+  /** Why the AI (or the auto-refusal rule) rejected the call. Used to display
+   *  a meaningful badge in the frontend instead of just "Refusé AI". */
+  ai_refusal_reason: {
+    type: String,
+    default: null,
+  },
+  argumentation_score: {
+    type: Number,
+    default: 0,
+  },
+
+  price: {
+    type: Number,
+    default: 0,
+  },
+  repCallCommission: {
+    type: Number,
+    default: 0,
+  },
+  platformCallCommission: {
+    type: Number,
+    default: 0,
+  },
+
+  // ──────────────────────────────────────────────────────────────────────────
+  //  Unified call-analysis layer (powers the company OperationsDashboard:
+  //  Vue globale / Appels / Résultats / Équipe + the Leads "Rappels"
+  //  block). All fields below are denormalised at analyze-time so dashboards
+  //  can group/filter without re-scanning transcripts or nested AI rubrics.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** Operational disposition of the call. Written by the AI analyzer; can
+   *  optionally be overridden by the rep (see callOutcomeSource). Used for
+   *  the Résultats donut, the per-rep matrix, and recent-call tags. */
+  callOutcome: {
+    type: String,
+    enum: [
+      'transaction',         // vente conclue
+      'appointment',         // RDV fixé
+      'callback_requested',  // rappel demandé (callbackAt set)
+      'argued_interested',   // argumenté, intéressé mais pas signé
+      'refusal',             // refus catégorique
+      'not_interested',      // pas intéressé
+      'already_equipped',    // déjà équipé (B2C/B2B concurrent)
+      'voicemail',           // messagerie vocale
+      'no_answer',           // pas de réponse
+      'busy',                // occupé
+      'wrong_number',        // numéro invalide
+      'fraud',               // fraude détectée
+      'too_short',           // <X sec, indécidable
+      'connected_no_sale',   // connecté sans issue claire (fallback)
+    ],
+    default: null,
+    index: true,
+  },
+  /** Who set callOutcome. "ai" by default, "rep" if a rep overrode it from
+   *  the rep frontend, "system" for deterministic non-AI paths (auto-refus,
+   *  voicemail detection, wrong-number from Twilio status, ...). */
+  callOutcomeSource: {
+    type: String,
+    enum: ['ai', 'rep', 'system'],
+    default: null,
+  },
+  /** Twilio error code returned when status is "failed" (e.g. 21211 = invalid
+   *  number, 21214 = unreachable, 13224 = cannot dial). Used alongside
+   *  status="failed" to classify the call as wrong_number. */
+  twilioErrorCode: { type: Number, default: null, index: true },
+
+  /** Scheduled callback if the lead asked to be re-called. Drives the
+   *  Leads view "À rappeler aujourd'hui / Cette semaine" KPI. */
+  callbackAt: { type: Date, default: null, index: true },
+  /** Confirmed appointment (RDV fixé). Drives the "RDV confirmés" KPI. */
+  appointmentAt: { type: Date, default: null, index: true },
+
+  /** Free-form notes (human or AI voice tools). */
+  notes: { type: String, default: null },
+
+  /** OpenAI Realtime outbound voice session metadata. */
+  aiVoice: {
+    enabled: { type: Boolean, default: false },
+    voice: { type: String, default: null },
+    model: { type: String, default: null },
+  },
+
+  /** Lifecycle of the AI analyzer for this call. Lets the UI show a real
+   *  "Analyse en cours" state instead of inferring from validByAI == null. */
+  ai_call_status: {
+    type: String,
+    enum: ['pending', 'processing', 'scored', 'auto_refused', 'error'],
+    default: 'pending',
+    index: true,
+  },
+  /** Rep signale une analyse bloquée — alerte la company en temps réel. */
+  analysisCompanyAlert: {
+    requestedAt: { type: Date, default: null },
+    requestedByAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
+    repName: { type: String, default: null },
+    message: { type: String, default: null },
+    acknowledgedAt: { type: Date, default: null },
+    requestCount: { type: Number, default: 0 },
+  },
+  /** Short natural-language summary generated by the LLM (audioSummaryPrompt).
+   *  Persisted so dashboards / search can use it without re-running the prompt. */
+  ai_summary: { type: String, default: null },
+  ai_summary_fr: { type: String, default: null },
+  ai_summary_en: { type: String, default: null },
+
+  /** Denormalised boolean flags for fast aggregation. Single source of truth
+   *  for "fraude" / "sérieux" KPIs across the company dashboard — replaces
+   *  the broken `ai_call_score.fraud_detected` lookup that lived in the
+   *  frontend. */
+  flags: {
+    fraud:               { type: Boolean, default: false, index: true },
+    selfCall:            { type: Boolean, default: false, index: true },
+    serious:             { type: Boolean, default: false, index: true },
+    transactionDetected: { type: Boolean, default: false },
+    refusalDetected:     { type: Boolean, default: false },
+  },
+
+  /** Workflow validations — harmonised with v25_dashboard_backend so both
+   *  services read/write the same fields and we stop drifting. */
+  companyValidation: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending',
+  },
+  agentValidation: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending',
+  },
+
   createdAt: {
     type: Date,
     default: Date.now,
@@ -94,6 +349,16 @@ const callSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+}, {
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+callSchema.virtual('transaction', {
+  ref: 'Transaction',
+  localField: '_id',
+  foreignField: 'call',
+  justOne: true
 });
 
 callSchema.pre("save", function (next) {

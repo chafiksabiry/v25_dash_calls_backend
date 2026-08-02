@@ -73,9 +73,11 @@ exports.storeCallsInDBatEndingCall = async (phoneNumber, callSid) => {
         endTime: new Date(),
         status: callDetails.callStatus,
         duration: callDetails.callDuration,
-        recordingUrl: callDetails.audioFileURL
+        recordingUrl: callDetails.audioFileURL,
+        recording_url: callDetails.audioFileURL, // standard Mongoose field
+        price: callDetails.price || callDetails.cost || 0
       },
-    });
+    }, { new: true });
     return updatedCall;
   } catch (error) {
     console.error('Error storing call:', error);
