@@ -593,8 +593,79 @@ function getActiveSession(callControlId) {
   return activeSessions.get(callControlId) || null;
 }
 
+/**
+ * Hang up an active AI outbound Telnyx Call Control leg and clean local session.
+ * Body key: callControlId (Telnyx call_control_id returned by startAiOutboundCall).
+ */
+async function hangupAiOutboundCall({ callControlId, callId }) {
+  let resolvedControlId = callControlId ? String(callControlId) : null;
+
+  if (!resolvedControlId && callId && mongoose.Types.ObjectId.isValid(callId)) {
+    const callDoc = await Call.findById(callId).lean();
+    if (callDoc?.sid && String(callDoc.sid).startsWith('pending-ai-') === false) {
+      resolvedControlId = String(callDoc.sid);
+    }
+  }
+
+  if (!resolvedControlId) {
+    const err = new Error('callControlId is required');
+    err.status = 400;
+    throw err;
+  }
+
+  const ctx = activeSessions.get(resolvedControlId);
+  console.log('[AiOutbound] hangup requested', {
+    callControlId: resolvedControlId,
+    hasSession: Boolean(ctx),
+  });
+
+  const response = await telnyxPost(
+    `https://api.telnyx.com/v2/calls/${resolvedControlId}/actions/hangup`,
+    {}
+  );
+
+  // 422 / not found can mean already hung up — still clean local state.
+  if (response.status >= 400 && response.status !== 404 && response.status !== 422) {
+    const detail =
+      response.data?.errors?.[0]?.detail ||
+      JSON.stringify(response.data?.errors || response.data) ||
+      'Telnyx hangup failed';
+    const err = new Error(detail);
+    err.status = 502;
+    throw err;
+  }
+
+  if (ctx?.realtime) {
+    try {
+      ctx.realtime.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (ctx?.callMongoId) {
+    await Call.findByIdAndUpdate(ctx.callMongoId, {
+      status: 'completed',
+      endTime: new Date(),
+    });
+  } else if (callId && mongoose.Types.ObjectId.isValid(callId)) {
+    await Call.findByIdAndUpdate(callId, {
+      status: 'completed',
+      endTime: new Date(),
+    });
+  }
+  if (ctx?.streamToken) sessionsByStreamToken.delete(ctx.streamToken);
+  activeSessions.delete(resolvedControlId);
+
+  return {
+    success: true,
+    callControlId: resolvedControlId,
+    alreadyEnded: response.status === 404 || response.status === 422,
+  };
+}
+
 module.exports = {
   startAiOutboundCall,
+  hangupAiOutboundCall,
   handleAiOutboundWebhook,
   getActiveSession,
   getSessionByStreamToken,

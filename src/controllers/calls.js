@@ -2424,6 +2424,27 @@ exports.startAiOutbound = async (req, res) => {
 };
 
 /**
+ * POST /api/calls/ai-outbound/hangup
+ * Hang up an active AI outbound Telnyx leg.
+ * Body: { callControlId } or { callId }
+ */
+exports.hangupAiOutbound = async (req, res) => {
+  try {
+    const { hangupAiOutboundCall } = require('../services/aiOutboundCallService');
+    const { callControlId, callId } = req.body || {};
+    const result = await hangupAiOutboundCall({ callControlId, callId });
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || 500;
+    console.error('[AiOutbound] hangup failed:', error.message);
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Failed to hang up AI outbound call',
+    });
+  }
+};
+
+/**
  * POST /api/calls/webhooks/telnyx/ai-outbound
  * Telnyx Call Control webhook for AI outbound legs (answered → media stream).
  */
