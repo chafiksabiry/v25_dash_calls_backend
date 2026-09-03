@@ -6,7 +6,9 @@ const {
 } = require('../services/aiOutboundCallService');
 
 /**
- * Telnyx media stream <-> OpenAI Realtime (PCMU passthrough).
+ * Telnyx media stream <-> Live voice model (PCMU).
+ * Gemini Live: PCMU↔PCM16 conversion inside GeminiLiveService.
+ * OpenAI Realtime: PCMU passthrough when AI_VOICE_PROVIDER=openai.
  * URL: wss://<host>/ai-voice-stream/<streamToken>
  *
  * Uses noServer; app.js must call attachAiVoiceUpgrade(server) OR
@@ -101,7 +103,12 @@ function setupAiVoiceBridge(server) {
         if (ws.readyState !== WebSocket.OPEN) return;
         try {
           mediaOut += 1;
-          ws.send(JSON.stringify({ event: 'media', media: { payload: base64Pcmu } }));
+          const frame = {
+            event: 'media',
+            media: { payload: base64Pcmu },
+          };
+          if (ctx.telnyxStreamId) frame.stream_id = ctx.telnyxStreamId;
+          ws.send(JSON.stringify(frame));
           if (mediaOut === 1 || mediaOut % 50 === 0) {
             console.log('[AiVoiceBridge] audio out frames', mediaOut, callControlId);
           }
@@ -126,7 +133,7 @@ function setupAiVoiceBridge(server) {
       attachRealtimeHandlers(ctx.realtime);
     } else {
       ctx._attachBridgeWhenReady = attachRealtimeHandlers;
-      console.log('[AiVoiceBridge] waiting for OpenAI', callControlId || streamToken);
+      console.log('[AiVoiceBridge] waiting for live model', callControlId || streamToken);
     }
 
     console.log('[AiVoiceBridge] telnyx stream connected', {
@@ -151,7 +158,7 @@ function setupAiVoiceBridge(server) {
       }
 
       if (event === 'start') {
-        ctx.telnyxStreamId = msg.stream_id || null;
+        ctx.telnyxStreamId = msg.stream_id || msg.start?.stream_id || null;
         const fmt = msg.start?.media_format;
         console.log('[AiVoiceBridge] stream start', {
           callControlId,
