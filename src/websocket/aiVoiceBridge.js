@@ -6,7 +6,7 @@ const {
 } = require('../services/aiOutboundCallService');
 
 /**
- * Telnyx media stream <-> Live voice model (PCMU).
+ * Telnyx / Twilio media stream <-> Live voice model (PCMU / mulaw 8 kHz).
  * Gemini Live: PCMU↔PCM16 conversion inside GeminiLiveService.
  * OpenAI Realtime: PCMU passthrough when AI_VOICE_PROVIDER=openai.
  * URL: wss://<host>/ai-voice-stream/<streamToken>
@@ -90,25 +90,51 @@ function setupAiVoiceBridge(server) {
 
     // Prefer resolved callControlId from ctx
     callControlId = ctx.callControlId || callControlId;
-    ctx.telnyxStreamWs = ws;
+    ctx.mediaStreamWs = ws;
+    ctx.telnyxStreamWs = ws; // backward-compat with Telnyx path checks
+    ctx.mediaStreamId = null;
     ctx.telnyxStreamId = null;
     let mediaIn = 0;
     let mediaOut = 0;
+
+    const sendOutboundMedia = (base64Pcmu) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const streamId = ctx.mediaStreamId || ctx.telnyxStreamId;
+      const frame = {
+        event: 'media',
+        media: { payload: base64Pcmu },
+      };
+      // Twilio expects streamSid; Telnyx accepts stream_id.
+      if (streamId) {
+        if (ctx.telephonyProvider === 'twilio') {
+          frame.streamSid = streamId;
+        } else {
+          frame.stream_id = streamId;
+        }
+      }
+      ws.send(JSON.stringify(frame));
+    };
+
+    const sendClear = () => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const streamId = ctx.mediaStreamId || ctx.telnyxStreamId;
+      if (ctx.telephonyProvider === 'twilio' && streamId) {
+        ws.send(JSON.stringify({ event: 'clear', streamSid: streamId }));
+      } else {
+        const frame = { event: 'clear' };
+        if (streamId) frame.stream_id = streamId;
+        ws.send(JSON.stringify(frame));
+      }
+    };
 
     const attachRealtimeHandlers = (realtime) => {
       if (!realtime || realtime.__bridgeAttached) return;
       realtime.__bridgeAttached = true;
 
       realtime.on('onAudioDelta', (base64Pcmu) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
         try {
           mediaOut += 1;
-          const frame = {
-            event: 'media',
-            media: { payload: base64Pcmu },
-          };
-          if (ctx.telnyxStreamId) frame.stream_id = ctx.telnyxStreamId;
-          ws.send(JSON.stringify(frame));
+          sendOutboundMedia(base64Pcmu);
           if (mediaOut === 1 || mediaOut % 50 === 0) {
             console.log('[AiVoiceBridge] audio out frames', mediaOut, callControlId);
           }
@@ -118,12 +144,10 @@ function setupAiVoiceBridge(server) {
       });
 
       realtime.on('onSpeechStarted', () => {
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ event: 'clear' }));
-          } catch {
-            /* ignore */
-          }
+        try {
+          sendClear();
+        } catch {
+          /* ignore */
         }
         console.log('[AiVoiceBridge] barge-in clear', callControlId);
       });
@@ -136,9 +160,10 @@ function setupAiVoiceBridge(server) {
       console.log('[AiVoiceBridge] waiting for live model', callControlId || streamToken);
     }
 
-    console.log('[AiVoiceBridge] telnyx stream connected', {
+    console.log('[AiVoiceBridge] media stream connected', {
       callControlId,
       streamToken,
+      telephony: ctx.telephonyProvider || 'telnyx',
       hasRealtime: Boolean(ctx.realtime),
     });
 
@@ -153,18 +178,29 @@ function setupAiVoiceBridge(server) {
       const event = msg.event || msg.type;
 
       if (event === 'connected') {
-        console.log('[AiVoiceBridge] telnyx connected frame', callControlId);
+        console.log('[AiVoiceBridge] carrier connected frame', callControlId);
         return;
       }
 
       if (event === 'start') {
-        ctx.telnyxStreamId = msg.stream_id || msg.start?.stream_id || null;
-        const fmt = msg.start?.media_format;
+        const streamId =
+          msg.streamSid ||
+          msg.stream_id ||
+          msg.start?.streamSid ||
+          msg.start?.stream_id ||
+          null;
+        ctx.mediaStreamId = streamId;
+        ctx.telnyxStreamId = streamId;
+        if (msg.start?.accountSid || msg.start?.callSid) {
+          ctx.telephonyProvider = ctx.telephonyProvider || 'twilio';
+        }
+        const fmt = msg.start?.mediaFormat || msg.start?.media_format;
         console.log('[AiVoiceBridge] stream start', {
           callControlId,
-          streamId: ctx.telnyxStreamId,
+          streamId,
+          telephony: ctx.telephonyProvider,
           encoding: fmt?.encoding,
-          sampleRate: fmt?.sample_rate,
+          sampleRate: fmt?.sampleRate || fmt?.sample_rate,
         });
         return;
       }
@@ -173,6 +209,7 @@ function setupAiVoiceBridge(server) {
         const realtime = ctx.realtime;
         if (!realtime || !realtime.connected) return;
         const track = msg.media.track || '';
+        // Telnyx may label inbound; Twilio often omits track or uses inbound.
         if (track && track !== 'inbound' && track !== 'inbound_track') return;
         try {
           mediaIn += 1;
@@ -197,13 +234,14 @@ function setupAiVoiceBridge(server) {
     });
 
     ws.on('close', (code, reason) => {
-      console.log('[AiVoiceBridge] telnyx stream closed', {
+      console.log('[AiVoiceBridge] media stream closed', {
         callControlId,
         code,
         reason: reason?.toString?.() || '',
         mediaIn,
         mediaOut,
       });
+      if (ctx.mediaStreamWs === ws) ctx.mediaStreamWs = null;
       if (ctx.telnyxStreamWs === ws) ctx.telnyxStreamWs = null;
     });
 
