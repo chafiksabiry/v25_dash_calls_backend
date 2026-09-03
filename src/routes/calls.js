@@ -116,5 +116,9 @@ router.post('/ai-outbound', callController.startAiOutbound);
 router.post('/ai-outbound/hangup', callController.hangupAiOutbound);
 router.post('/webhooks/telnyx/ai-outbound', express.json(), callController.handleTelnyxAiOutboundWebhook);
 router.post('/webhooks/telnyx/call-control', express.json(), callController.handleTelnyxCallControlWebhook);
+// Twilio AI outbound (form-urlencoded by default from Twilio — express.urlencoded already applied upstream)
+router.post('/webhooks/twilio/ai-outbound/voice', callController.handleTwilioAiOutboundVoice);
+router.post('/webhooks/twilio/ai-outbound/status', callController.handleTwilioAiOutboundStatus);
+router.post('/webhooks/twilio/ai-outbound/recording', callController.handleTwilioAiOutboundRecording);
 
 module.exports = router;
