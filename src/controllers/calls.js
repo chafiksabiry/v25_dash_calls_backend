@@ -1658,6 +1658,8 @@ const runAnalysisInBackground = (callId) => {
   }, 5000);
 };
 
+exports.runAnalysisInBackground = runAnalysisInBackground;
+
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;

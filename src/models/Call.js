@@ -289,6 +289,8 @@ const callSchema = new mongoose.Schema({
   /** OpenAI Realtime outbound voice session metadata. */
   aiVoice: {
     enabled: { type: Boolean, default: false },
+    /** Discriminator for UI badges (`voicebot`). */
+    source: { type: String, default: null },
     voice: { type: String, default: null },
     model: { type: String, default: null },
   },

@@ -3,7 +3,8 @@ const { Lead } = require('../models/Lead');
 const { Call } = require('../models/Call');
 
 /**
- * Tool definitions exposed to OpenAI Realtime for company AI outbound calls.
+ * Tool definitions for the company AI outbound voice worker
+ * (OpenAI Realtime or Gemini Live functionDeclarations).
  * Business logic reuses existing Mongo models (no duplicated CRM services).
  */
 function buildRealtimeTools() {

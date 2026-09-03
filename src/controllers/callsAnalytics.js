@@ -637,6 +637,7 @@ exports.recent = async (req, res) => {
           validByAI: 1,
           summary: { $ifNull: ["$ai_summary", null] },
           ai_call_status: 1,
+          aiVoiceEnabled: { $ifNull: ["$aiVoice.enabled", false] },
           repName: {
             $ifNull: [
               "$user.name",
