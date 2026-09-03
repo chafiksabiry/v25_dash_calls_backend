@@ -2401,7 +2401,7 @@ exports.startTelnyxRecording = async (req, res) => {
 
 /**
  * POST /api/calls/ai-outbound
- * Start a per-lead AI voice outbound call (OpenAI Realtime + Telnyx stream).
+ * Start a per-lead AI voice outbound call (Gemini/OpenAI Live + Telnyx or Twilio stream).
  * Body: { leadId, gigId?, companyId? }
  */
 exports.startAiOutbound = async (req, res) => {
@@ -2427,7 +2427,7 @@ exports.startAiOutbound = async (req, res) => {
 
 /**
  * POST /api/calls/ai-outbound/hangup
- * Hang up an active AI outbound Telnyx leg.
+ * Hang up an active AI outbound Telnyx or Twilio leg.
  * Body: { callControlId } or { callId }
  */
 exports.hangupAiOutbound = async (req, res) => {
@@ -2458,6 +2458,49 @@ exports.handleTelnyxAiOutboundWebhook = async (req, res) => {
     return res.status(200).send('OK');
   } catch (error) {
     console.error('[AiOutbound] webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
+/**
+ * POST /api/calls/webhooks/twilio/ai-outbound/voice
+ * Twilio answers → TwiML <Connect><Stream> to our WSS bridge.
+ */
+exports.handleTwilioAiOutboundVoice = async (req, res) => {
+  try {
+    const { handleTwilioAiOutboundVoice } = require('../services/aiOutboundCallService');
+    const twiml = await handleTwilioAiOutboundVoice(req);
+    res.type('text/xml');
+    return res.status(200).send(twiml);
+  } catch (error) {
+    console.error('[AiOutbound] Twilio voice webhook error:', error.message);
+    res.type('text/xml');
+    return res
+      .status(200)
+      .send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say language="fr-FR">Erreur technique.</Say></Response>'
+      );
+  }
+};
+
+exports.handleTwilioAiOutboundStatus = async (req, res) => {
+  try {
+    const { handleTwilioAiOutboundStatus } = require('../services/aiOutboundCallService');
+    await handleTwilioAiOutboundStatus(req);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] Twilio status webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
+exports.handleTwilioAiOutboundRecording = async (req, res) => {
+  try {
+    const { handleTwilioAiOutboundRecording } = require('../services/aiOutboundCallService');
+    await handleTwilioAiOutboundRecording(req);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] Twilio recording webhook error:', error.message);
     return res.status(200).send('OK');
   }
 };

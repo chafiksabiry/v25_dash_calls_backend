@@ -318,8 +318,8 @@ function resolveOpeningPrompt(voiceAssistant, callScript) {
 }
 
 /**
- * Start an AI outbound Telnyx Call Control call for one lead.
- * Media bridge attaches after call.answered via streaming_start.
+ * Start an AI outbound call for one lead (Telnyx Call Control or Twilio Media Streams).
+ * Uses any active gig voice line (Twilio or Telnyx).
  */
 async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   if (!leadId || !mongoose.Types.ObjectId.isValid(leadId)) {
@@ -371,10 +371,12 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
-  // AI outbound requires Telnyx Call Control + media stream (not Twilio Client).
-  const line = await resolveActiveLineForGig(resolvedGigId, { preferProvider: 'telnyx' });
-  if (!line || line.provider !== 'telnyx' || !line.phoneNumber) {
-    const err = new Error('No active Telnyx phone number for this gig');
+  // Any active voice line (Twilio or Telnyx) — no provider lock-in.
+  const line = await resolveActiveLineForGig(resolvedGigId);
+  if (!line || !line.phoneNumber) {
+    const err = new Error(
+      'No active Telnyx or Twilio phone number for this gig. Assign a voice line in Telephony.'
+    );
     err.status = 400;
     throw err;
   }
@@ -386,31 +388,16 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
-  // Call Control App ID (Mission Control → Call Control Applications).
-  // Do NOT reuse the WebRTC Credential Connection id here — Telnyx rejects it.
-  const connectionId =
-    process.env.TELNYX_CALL_CONTROL_APP_ID ||
-    process.env.TELNYX_APPLICATION_ID ||
-    process.env.TELNYX_CONNECTION_ID;
-  if (!connectionId) {
-    const err = new Error(
-      'TELNYX_CALL_CONTROL_APP_ID is not configured (Call Control Application with webhook URL)'
-    );
-    err.status = 500;
-    throw err;
-  }
-
   const gig = await Gig.findById(resolvedGigId).lean();
   const callScript = await loadGigCallScript(resolvedGigId);
   const base = publicBaseUrl(req);
-  const webhookUrl = `${base}/api/calls/webhooks/telnyx/ai-outbound`;
 
-  // Placeholder agent: AI system caller (Call.agent is required in schema).
-  // Prefer company-scoped sentinel ObjectId from env, else zeros-padded companyId hash.
   const aiAgentId =
     process.env.AI_VOICE_AGENT_ID && mongoose.Types.ObjectId.isValid(process.env.AI_VOICE_AGENT_ID)
       ? process.env.AI_VOICE_AGENT_ID
       : new mongoose.Types.ObjectId();
+
+  const telephonyProvider = line.provider === 'twilio' ? 'twilio' : 'telnyx';
 
   const callDoc = await Call.create({
     agent: aiAgentId,
@@ -421,7 +408,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     direction: 'outbound-api',
     from: line.phoneNumber,
     to: toNumber,
-    provider: 'telnyx',
+    provider: telephonyProvider,
     startTime: new Date(),
     status: 'initiated',
     aiVoice: {
@@ -433,9 +420,6 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     },
   });
 
-  // Register stream session BEFORE dial so early Telnyx WSS upgrades find a ctx.
-  // Do NOT attach stream_url on dial — Telnyx was connecting before answer and
-  // burning the stream (90046) when the handshake raced our session setup.
   const streamToken = createStreamToken();
   const wsBase = publicWsBase(req);
   const streamUrl = `${wsBase}/ai-voice-stream/${streamToken}`;
@@ -457,9 +441,43 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     realtime: null,
     streamStarted: false,
     wsBase,
+    telephonyProvider,
   };
   sessionsByStreamToken.set(streamToken, ctx);
 
+  console.log('[AiOutbound] dialing', {
+    telephonyProvider,
+    from: line.phoneNumber,
+    to: toNumber,
+    gigId: resolvedGigId,
+    leadId: String(lead._id),
+    callId: String(callDoc._id),
+    streamUrl,
+  });
+
+  if (telephonyProvider === 'twilio') {
+    return startTwilioDial({ ctx, callDoc, line, toNumber, base, streamToken });
+  }
+  return startTelnyxDial({ ctx, callDoc, line, toNumber, base });
+}
+
+async function startTelnyxDial({ ctx, callDoc, line, toNumber, base }) {
+  const connectionId =
+    process.env.TELNYX_CALL_CONTROL_APP_ID ||
+    process.env.TELNYX_APPLICATION_ID ||
+    process.env.TELNYX_CONNECTION_ID;
+  if (!connectionId) {
+    sessionsByStreamToken.delete(ctx.streamToken);
+    callDoc.status = 'failed';
+    await callDoc.save();
+    const err = new Error(
+      'TELNYX_CALL_CONTROL_APP_ID is not configured (Call Control Application with webhook URL)'
+    );
+    err.status = 500;
+    throw err;
+  }
+
+  const webhookUrl = `${base}/api/calls/webhooks/telnyx/ai-outbound`;
   const dialBody = {
     connection_id: connectionId,
     to: toNumber,
@@ -469,19 +487,10 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     answering_machine_detection: 'disabled',
   };
 
-  console.log('[AiOutbound] dialing', {
-    from: line.phoneNumber,
-    to: toNumber,
-    gigId: resolvedGigId,
-    leadId: String(lead._id),
-    callId: String(callDoc._id),
-    streamUrl,
-  });
-
   const response = await telnyxPost('https://api.telnyx.com/v2/calls', dialBody);
 
   if (response.status >= 400) {
-    sessionsByStreamToken.delete(streamToken);
+    sessionsByStreamToken.delete(ctx.streamToken);
     callDoc.status = 'failed';
     await callDoc.save();
     const detail =
@@ -522,6 +531,72 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   };
 }
 
+async function startTwilioDial({ ctx, callDoc, line, toNumber, base, streamToken }) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authToken) {
+    sessionsByStreamToken.delete(ctx.streamToken);
+    callDoc.status = 'failed';
+    await callDoc.save();
+    const err = new Error('TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are not configured');
+    err.status = 500;
+    throw err;
+  }
+
+  // eslint-disable-next-line global-require
+  const twilio = require('twilio');
+  const client = twilio(accountSid, authToken);
+
+  const voiceUrl = `${base}/api/calls/webhooks/twilio/ai-outbound/voice?streamToken=${encodeURIComponent(streamToken)}`;
+  const statusUrl = `${base}/api/calls/webhooks/twilio/ai-outbound/status?streamToken=${encodeURIComponent(streamToken)}`;
+  const recordingUrl = `${base}/api/calls/webhooks/twilio/ai-outbound/recording?streamToken=${encodeURIComponent(streamToken)}`;
+
+  let call;
+  try {
+    call = await client.calls.create({
+      to: toNumber,
+      from: line.phoneNumber,
+      url: voiceUrl,
+      method: 'POST',
+      statusCallback: statusUrl,
+      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      statusCallbackMethod: 'POST',
+      record: true,
+      recordingStatusCallback: recordingUrl,
+      recordingStatusCallbackMethod: 'POST',
+      recordingChannels: 'dual',
+    });
+  } catch (dialErr) {
+    sessionsByStreamToken.delete(ctx.streamToken);
+    callDoc.status = 'failed';
+    await callDoc.save();
+    const err = new Error(dialErr?.message || 'Twilio dial failed');
+    err.status = 502;
+    throw err;
+  }
+
+  callDoc.sid = call.sid;
+  callDoc.status = 'ringing';
+  await callDoc.save();
+
+  ctx.callControlId = call.sid;
+  activeSessions.set(call.sid, ctx);
+
+  return {
+    success: true,
+    callId: String(callDoc._id),
+    callControlId: call.sid,
+    from: line.phoneNumber,
+    to: toNumber,
+    provider: 'twilio',
+    voiceAssistant: {
+      enabled: true,
+      voice: ctx.voiceAssistant.voice,
+      name: ctx.voiceAssistant.name || 'HARX AI Voice',
+    },
+  };
+}
+
 async function startMediaStream(callControlId) {
   const ctx = activeSessions.get(callControlId);
   if (!ctx || ctx.streamStarted) return;
@@ -531,14 +606,16 @@ async function startMediaStream(callControlId) {
     ctx.streamUrl ||
     `${ctx.wsBase}/ai-voice-stream/${ctx.streamToken || createStreamToken()}`;
   const provider = resolveVoiceProvider();
+  const telephony = ctx.telephonyProvider || 'telnyx';
   console.log('[AiOutbound] preparing realtime then stream', {
     callControlId,
     streamUrl,
     provider,
+    telephony,
     model: resolveVoiceModel(ctx.voiceAssistant),
   });
 
-  // 1) Live model first — Telnyx may already be connecting from dial stream_url.
+  // 1) Live model first — carrier stream may already be connecting.
   const realtime = createRealtimeService(ctx.voiceAssistant);
   ctx.realtime = realtime;
   ctx.voiceProvider = provider;
@@ -560,14 +637,18 @@ async function startMediaStream(callControlId) {
     });
   } catch (err) {
     console.error('[AiOutbound] Live voice connect failed', provider, err?.message || err);
-    await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
-      payload:
-        ctx.callScript?.greeting ||
-        'Bonjour, nous rencontrons un probleme technique. Nous vous rappelons.',
-      voice: 'female',
-      language: 'fr-FR',
-    }).catch(() => null);
-    return;
+    ctx.streamStarted = false;
+    ctx.realtime = null;
+    if (telephony === 'telnyx') {
+      await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
+        payload:
+          ctx.callScript?.greeting ||
+          'Bonjour, nous rencontrons un probleme technique. Nous vous rappelons.',
+        voice: 'female',
+        language: 'fr-FR',
+      }).catch(() => null);
+    }
+    throw err;
   }
 
   realtime.on('onToolCall', async ({ name, args }) =>
@@ -630,8 +711,9 @@ async function startMediaStream(callControlId) {
     if (chunk) pushTranscript('agent', chunk);
   });
 
-  // 2) Fresh token for streaming_start (avoids a burned URL from an earlier attempt).
-  if (!ctx.telnyxStreamWs) {
+  // 2) Telnyx: start bidirectional media stream. Twilio: TwiML <Connect><Stream> already opens WSS.
+  const streamAlreadyUp = Boolean(ctx.telnyxStreamWs || ctx.mediaStreamWs);
+  if (telephony === 'telnyx' && !streamAlreadyUp) {
     const freshToken = createStreamToken();
     if (ctx.streamToken) sessionsByStreamToken.delete(ctx.streamToken);
     ctx.streamToken = freshToken;
@@ -654,9 +736,8 @@ async function startMediaStream(callControlId) {
     if (res.status >= 400) {
       console.error('[AiOutbound] streaming_start failed', res.status, res.data);
       console.error('[AiOutbound] Telnyx cannot open WSS to', ctx.streamUrl);
-      // Wait briefly — upgrade may still land after 422 in some edge cases.
       await new Promise((r) => setTimeout(r, 1500));
-      if (!ctx.telnyxStreamWs) {
+      if (!ctx.telnyxStreamWs && !ctx.mediaStreamWs) {
         await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
           payload:
             ctx.callScript?.greeting ||
@@ -671,8 +752,10 @@ async function startMediaStream(callControlId) {
     } else {
       console.log('[AiOutbound] streaming_start ok', callControlId, ctx.streamUrl);
     }
+  } else if (streamAlreadyUp) {
+    console.log('[AiOutbound] media stream already connected', callControlId, telephony);
   } else {
-    console.log('[AiOutbound] Telnyx stream already connected', callControlId);
+    console.log('[AiOutbound] Twilio stream will connect via TwiML', callControlId, ctx.streamUrl);
   }
 
   // 3) Kick off with script opening
@@ -693,12 +776,14 @@ async function startMediaStream(callControlId) {
 
   await Call.findByIdAndUpdate(ctx.callMongoId, { status: 'in-progress' });
 
-  // Same recording path as human Telnyx legs → call.recording.saved → Cloudinary → AI analysis.
-  try {
-    await telnyxService.startCallRecording(callControlId);
-    console.log('[AiOutbound] record_start ok', callControlId);
-  } catch (err) {
-    console.warn('[AiOutbound] record_start failed:', err?.message || err);
+  // Recording: Telnyx explicit start; Twilio uses record:true on dial.
+  if (telephony === 'telnyx') {
+    try {
+      await telnyxService.startCallRecording(callControlId);
+      console.log('[AiOutbound] record_start ok', callControlId);
+    } catch (err) {
+      console.warn('[AiOutbound] record_start failed:', err?.message || err);
+    }
   }
 }
 
@@ -780,18 +865,41 @@ function scheduleAiOutboundFinalize(callMongoId, callControlId) {
 
       if (!callDoc.recording_url_cloudinary) {
         let url = callDoc.recording_url || null;
-        if (!url && callControlId) {
+        if (!url && callControlId && !String(callControlId).startsWith('CA')) {
           try {
             url = await telnyxService.findRecordingUrl(callControlId);
           } catch (err) {
             console.warn('[AiOutbound] findRecordingUrl failed:', err?.message || err);
           }
         }
+        if (!url && callControlId && String(callControlId).startsWith('CA')) {
+          try {
+            // eslint-disable-next-line global-require
+            const twilio = require('twilio');
+            const client = twilio(
+              process.env.TWILIO_ACCOUNT_SID,
+              process.env.TWILIO_AUTH_TOKEN
+            );
+            const recordings = await client.calls(callControlId).recordings.list({ limit: 1 });
+            if (recordings[0]?.sid) {
+              url = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Recordings/${recordings[0].sid}.mp3`;
+            }
+          } catch (err) {
+            console.warn('[AiOutbound] Twilio recordings list failed:', err?.message || err);
+          }
+        }
         if (url) {
           callDoc.recording_url = url;
           try {
-            const cloudUrl = await telnyxService.archivePublicRecording(url);
-            if (cloudUrl) callDoc.recording_url_cloudinary = cloudUrl;
+            if (String(callControlId || '').startsWith('CA') || callDoc.provider === 'twilio') {
+              // eslint-disable-next-line global-require
+              const twilioService = require('./integrations/twilio');
+              const cloudUrl = await twilioService.fetchTwilioRecording(url, null);
+              if (cloudUrl) callDoc.recording_url_cloudinary = cloudUrl;
+            } else {
+              const cloudUrl = await telnyxService.archivePublicRecording(url);
+              if (cloudUrl) callDoc.recording_url_cloudinary = cloudUrl;
+            }
           } catch (err) {
             console.warn('[AiOutbound] finalize Cloudinary failed:', err?.message || err);
           }
@@ -883,14 +991,15 @@ function getActiveSession(callControlId) {
 }
 
 /**
- * Hang up an active AI outbound Telnyx Call Control leg and clean local session.
- * Body key: callControlId (Telnyx call_control_id returned by startAiOutboundCall).
+ * Hang up an active AI outbound leg (Telnyx Call Control id or Twilio Call SID).
+ * Body key: callControlId (returned by startAiOutboundCall) or callId.
  */
 async function hangupAiOutboundCall({ callControlId, callId }) {
   let resolvedControlId = callControlId ? String(callControlId) : null;
+  let callDoc = null;
 
   if (!resolvedControlId && callId && mongoose.Types.ObjectId.isValid(callId)) {
-    const callDoc = await Call.findById(callId).lean();
+    callDoc = await Call.findById(callId).lean();
     if (callDoc?.sid && String(callDoc.sid).startsWith('pending-ai-') === false) {
       resolvedControlId = String(callDoc.sid);
     }
@@ -903,25 +1012,59 @@ async function hangupAiOutboundCall({ callControlId, callId }) {
   }
 
   const ctx = activeSessions.get(resolvedControlId);
+  const telephony =
+    ctx?.telephonyProvider ||
+    callDoc?.provider ||
+    (resolvedControlId.startsWith('CA') ? 'twilio' : 'telnyx');
+
   console.log('[AiOutbound] hangup requested', {
     callControlId: resolvedControlId,
+    telephony,
     hasSession: Boolean(ctx),
   });
 
-  const response = await telnyxPost(
-    `https://api.telnyx.com/v2/calls/${resolvedControlId}/actions/hangup`,
-    {}
-  );
+  let alreadyEnded = false;
 
-  // 422 / not found can mean already hung up — still clean local state.
-  if (response.status >= 400 && response.status !== 404 && response.status !== 422) {
-    const detail =
-      response.data?.errors?.[0]?.detail ||
-      JSON.stringify(response.data?.errors || response.data) ||
-      'Telnyx hangup failed';
-    const err = new Error(detail);
-    err.status = 502;
-    throw err;
+  if (telephony === 'twilio') {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    if (!accountSid || !authToken) {
+      const err = new Error('TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are not configured');
+      err.status = 500;
+      throw err;
+    }
+    // eslint-disable-next-line global-require
+    const twilio = require('twilio');
+    const client = twilio(accountSid, authToken);
+    try {
+      await client.calls(resolvedControlId).update({ status: 'completed' });
+    } catch (err) {
+      const msg = String(err?.message || '');
+      alreadyEnded =
+        msg.includes('not in-progress') ||
+        msg.includes('completed') ||
+        err?.status === 404;
+      if (!alreadyEnded) {
+        const e = new Error(msg || 'Twilio hangup failed');
+        e.status = 502;
+        throw e;
+      }
+    }
+  } else {
+    const response = await telnyxPost(
+      `https://api.telnyx.com/v2/calls/${resolvedControlId}/actions/hangup`,
+      {}
+    );
+    alreadyEnded = response.status === 404 || response.status === 422;
+    if (response.status >= 400 && !alreadyEnded) {
+      const detail =
+        response.data?.errors?.[0]?.detail ||
+        JSON.stringify(response.data?.errors || response.data) ||
+        'Telnyx hangup failed';
+      const err = new Error(detail);
+      err.status = 502;
+      throw err;
+    }
   }
 
   const cleaned = cleanupAiOutboundSession(resolvedControlId);
@@ -934,14 +1077,130 @@ async function hangupAiOutboundCall({ callControlId, callId }) {
   return {
     success: true,
     callControlId: resolvedControlId,
-    alreadyEnded: response.status === 404 || response.status === 422,
+    provider: telephony,
+    alreadyEnded,
   };
+}
+
+/**
+ * Twilio voice webhook — return <Connect><Stream> TwiML and prepare Gemini/OpenAI.
+ */
+async function handleTwilioAiOutboundVoice(req) {
+  // eslint-disable-next-line global-require
+  const twilio = require('twilio');
+  const vr = new twilio.twiml.VoiceResponse();
+
+  const streamToken =
+    req.query?.streamToken || req.body?.streamToken || req.body?.StreamToken;
+  const callSid = req.body?.CallSid;
+  const ctx = streamToken ? getSessionByStreamToken(String(streamToken)) : null;
+
+  if (!ctx) {
+    console.error('[AiOutbound] Twilio voice: no session', { streamToken, callSid });
+    vr.say(
+      { language: 'fr-FR', voice: 'Polly.Lea' },
+      'Bonjour, nous rencontrons un probleme technique. Au revoir.'
+    );
+    return vr.toString();
+  }
+
+  if (callSid) {
+    ctx.callControlId = callSid;
+    ctx.telephonyProvider = 'twilio';
+    activeSessions.set(callSid, ctx);
+    if (ctx.callMongoId) {
+      await Call.findByIdAndUpdate(ctx.callMongoId, {
+        sid: callSid,
+        status: 'in-progress',
+      }).catch(() => null);
+    }
+  }
+
+  try {
+    await startMediaStream(callSid || ctx.callControlId);
+  } catch (err) {
+    console.error('[AiOutbound] Twilio realtime prepare failed', err?.message || err);
+    vr.say(
+      { language: 'fr-FR', voice: 'Polly.Lea' },
+      ctx.callScript?.greeting ||
+        'Bonjour, nous rencontrons un probleme technique. Nous vous rappelons.'
+    );
+    return vr.toString();
+  }
+
+  const connect = vr.connect();
+  connect.stream({
+    url: ctx.streamUrl,
+  });
+  console.log('[AiOutbound] Twilio TwiML stream', {
+    callSid,
+    streamUrl: ctx.streamUrl,
+  });
+  return vr.toString();
+}
+
+async function handleTwilioAiOutboundStatus(req) {
+  const callSid = req.body?.CallSid;
+  const status = String(req.body?.CallStatus || '').toLowerCase();
+  const streamToken = req.query?.streamToken || req.body?.streamToken;
+  console.log('[AiOutbound] Twilio status', { callSid, status });
+
+  const ctx =
+    (callSid && activeSessions.get(callSid)) ||
+    (streamToken ? getSessionByStreamToken(String(streamToken)) : null);
+
+  if (callSid && ctx && !ctx.callControlId) {
+    ctx.callControlId = callSid;
+    activeSessions.set(callSid, ctx);
+  }
+
+  if (['completed', 'busy', 'failed', 'no-answer', 'canceled'].includes(status)) {
+    const cleaned = cleanupAiOutboundSession(callSid || ctx?.callControlId);
+    const callMongoId = cleaned?.callMongoId || ctx?.callMongoId || null;
+    await markAiOutboundCompleted(callMongoId, callSid);
+    scheduleAiOutboundFinalize(callMongoId, callSid);
+  }
+  return { ok: true };
+}
+
+async function handleTwilioAiOutboundRecording(req) {
+  const callSid = req.body?.CallSid;
+  let recordingUrl = req.body?.RecordingUrl || null;
+  if (recordingUrl && !recordingUrl.endsWith('.mp3')) {
+    recordingUrl = `${recordingUrl}.mp3`;
+  }
+  console.log('[AiOutbound] Twilio recording', { callSid, recordingUrl });
+
+  const ctx = callSid ? activeSessions.get(callSid) : null;
+  const callDoc = await findAiOutboundCallDoc(callSid, ctx?.callMongoId);
+  if (!callDoc || !recordingUrl) return { ok: true };
+
+  callDoc.recording_url = recordingUrl;
+  try {
+    // eslint-disable-next-line global-require
+    const twilioService = require('./integrations/twilio');
+    const cloudUrl = await twilioService.fetchTwilioRecording(recordingUrl, null);
+    if (cloudUrl) callDoc.recording_url_cloudinary = cloudUrl;
+  } catch (err) {
+    console.warn('[AiOutbound] Twilio Cloudinary archive failed:', err?.message || err);
+    try {
+      const cloudUrl = await telnyxService.archivePublicRecording(recordingUrl);
+      if (cloudUrl) callDoc.recording_url_cloudinary = cloudUrl;
+    } catch {
+      /* ignore */
+    }
+  }
+  await callDoc.save();
+  return { ok: true };
 }
 
 module.exports = {
   startAiOutboundCall,
   hangupAiOutboundCall,
   handleAiOutboundWebhook,
+  handleTwilioAiOutboundVoice,
+  handleTwilioAiOutboundStatus,
+  handleTwilioAiOutboundRecording,
   getActiveSession,
   getSessionByStreamToken,
   resolveStreamToken,
