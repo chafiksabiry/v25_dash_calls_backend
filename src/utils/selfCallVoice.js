@@ -94,17 +94,34 @@ function transcriptSuggestsRealTwoPartyDialogue(transcript) {
   const turns = sanitizeTranscriptForReanalysis(transcript).filter(
     (t) => t && String(t.text || '').trim()
   );
-  if (turns.length < 16) return false;
+  if (turns.length < 12) return false;
 
   const customerTurns = turns.filter((t) => isCustomerSpeaker(t.speaker));
   const agentTurns = turns.filter((t) => isAgentSpeaker(t.speaker));
-  if (customerTurns.length < 8 || agentTurns.length < 8) return false;
 
-  const customerWords = customerTurns.reduce(
-    (sum, t) => sum + String(t.text || '').trim().split(/\s+/).filter(Boolean).length,
-    0
-  );
-  return customerWords >= 80;
+  const wordCount = (rows) =>
+    rows.reduce(
+      (sum, t) => sum + String(t.text || '').trim().split(/\s+/).filter(Boolean).length,
+      0
+    );
+
+  const customerWords = wordCount(customerTurns);
+  const agentWords = wordCount(agentTurns);
+
+  // Strong signal: many turns on both sides with real customer content.
+  if (customerTurns.length >= 6 && agentTurns.length >= 6 && customerWords >= 60) {
+    return true;
+  }
+
+  // Fallback: speaker labels may be messy, but total dialogue is long and
+  // non-agent speech (Customer / Voix simulée / unknown) is substantial.
+  const nonAgentTurns = turns.filter((t) => !isAgentSpeaker(t.speaker));
+  const nonAgentWords = wordCount(nonAgentTurns);
+  if (turns.length >= 20 && nonAgentWords >= 100 && agentWords >= 80) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -233,21 +250,20 @@ function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores }
 
   const fromVoice = isSelfCallFraudFromVoice(voiceAnalysis, durationSec);
   if (fromVoice) {
-    // Audio "1 voice" on mono/compressed recordings often false-positives when
-    // the transcript already shows a long real Agent↔Customer exchange.
-    if (
-      fromVoice.reason === 'single_speaker_ai' &&
-      twoPartyContent &&
-      voiceAnalysis?.sameSpeakerSuspected !== true
-    ) {
+    // Twilio/Cloudinary mono mixes often make Gemini report "1 voice" even on
+    // real Agent↔Customer calls. If the transcript already shows a long
+    // two-party dialogue, never convict on audio alone.
+    if (twoPartyContent) {
       console.warn(
-        '⚠️ [selfCallVoice] Suppressing single_speaker_ai — transcript looks like real two-party dialogue'
+        `⚠️ [selfCallVoice] Suppressing ${fromVoice.reason} — transcript looks like real two-party dialogue (confidence=${fromVoice.confidence})`
       );
       return {
         isFraud: false,
         voiceAnalysis: {
           ...(voiceAnalysis || {}),
           suppressedReason: 'transcript_two_party_override',
+          suppressedFraudReason: fromVoice.reason,
+          suppressedConfidence: fromVoice.confidence,
         },
       };
     }
