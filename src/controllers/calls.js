@@ -15,6 +15,7 @@ const {
   resolveSelfCallFraud,
   correctTranscriptForSelfCallFraud,
   applySelfCallFraudToScores,
+  sanitizeTranscriptForReanalysis,
   MIN_DURATION_VOICE_AI_SEC,
   isFraudFromScores,
   readFraudScore,
@@ -1839,11 +1840,28 @@ exports.analyzeCall = async (req, res) => {
 
     // Attempt to get transcript.
     let transcriptData = call.transcript || [];
-    
-    // Real Audio Transcription if no transcript exists and recording is available
+
+    const transcriptLooksPoisonedBySelfCall =
+      Array.isArray(transcriptData) &&
+      transcriptData.some(
+        (t) =>
+          t?.simulated === true ||
+          /voix simul|simulated/i.test(String(t?.speaker || ''))
+      );
+
+    // Real Audio Transcription when missing, OR on force re-analysis when the
+    // stored transcript was rewritten by a prior self-call pass ("Voix simulée"),
+    // OR when the call was previously flagged selfCall (labels are untrusted).
     const hasRecording = call.recording_url_cloudinary || call.recording_url;
-    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && hasRecording) {
-        console.log(`🎙️ [CallController] Attempting real audio transcription for call ${id}...`);
+    const shouldRefreshTranscript =
+      hasRecording &&
+      ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) ||
+        (force && (transcriptLooksPoisonedBySelfCall || call.flags?.selfCall === true)));
+
+    if (shouldRefreshTranscript) {
+        console.log(
+          `🎙️ [CallController] ${force ? 'Force-refreshing' : 'Attempting'} audio transcription for call ${id}...`
+        );
         try {
           const recordingUrl = call.recording_url_cloudinary || call.recording_url;
           const realTranscript = await withTimeout(
@@ -1856,10 +1874,19 @@ exports.analyzeCall = async (req, res) => {
             console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
           } else {
             console.warn(`⚠️ [CallController] Transcription returned empty for call ${id}.`);
+            // Fall back to restoring Customer labels from a poisoned transcript.
+            if (transcriptLooksPoisonedBySelfCall) {
+              transcriptData = sanitizeTranscriptForReanalysis(transcriptData);
+            }
           }
         } catch (transcriptionError) {
           console.error(`❌ [CallController] Transcription failed:`, transcriptionError);
+          if (transcriptLooksPoisonedBySelfCall) {
+            transcriptData = sanitizeTranscriptForReanalysis(transcriptData);
+          }
         }
+    } else if (transcriptLooksPoisonedBySelfCall) {
+      transcriptData = sanitizeTranscriptForReanalysis(transcriptData);
     }
 
     // Fallback if transcription failed or no recording. Reset the lock so the

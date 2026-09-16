@@ -51,11 +51,60 @@ function normalizeVoiceAnalysis(raw) {
 }
 
 function isCustomerSpeaker(label) {
-  return /customer|client|prospect|lead|appel[ée]|destinataire/i.test(String(label || ''));
+  return /customer|client|prospect|lead|appel[ée]|destinataire|voix simul/i.test(
+    String(label || '')
+  );
 }
 
 function isAgentSpeaker(label) {
   return /agent|rep|commercial|vendeur|conseiller|seller|harx/i.test(String(label || ''));
+}
+
+function isSimulatedSpeakerLabel(label) {
+  return /voix simul|simulated/i.test(String(label || ''));
+}
+
+/**
+ * Restore Customer labels before re-analysis when a prior self-call pass
+ * rewrote them to "Voix simulée" (otherwise re-runs stay poisoned).
+ */
+function sanitizeTranscriptForReanalysis(transcript) {
+  if (!Array.isArray(transcript)) return [];
+  return transcript.map((turn) => {
+    if (!turn || typeof turn !== 'object') return turn;
+    const speaker = String(turn.speaker || '');
+    if (turn.originalSpeaker && (turn.simulated || isSimulatedSpeakerLabel(speaker))) {
+      const { simulated, ...rest } = turn;
+      return { ...rest, speaker: turn.originalSpeaker };
+    }
+    if (isSimulatedSpeakerLabel(speaker)) {
+      const { simulated, ...rest } = turn;
+      return { ...rest, speaker: 'Customer' };
+    }
+    return turn;
+  });
+}
+
+/**
+ * True when transcript content looks like a real two-party sales dialogue
+ * (lots of back-and-forth with substantial "customer" speech), even if audio
+ * mono/diarization is unreliable.
+ */
+function transcriptSuggestsRealTwoPartyDialogue(transcript) {
+  const turns = sanitizeTranscriptForReanalysis(transcript).filter(
+    (t) => t && String(t.text || '').trim()
+  );
+  if (turns.length < 16) return false;
+
+  const customerTurns = turns.filter((t) => isCustomerSpeaker(t.speaker));
+  const agentTurns = turns.filter((t) => isAgentSpeaker(t.speaker));
+  if (customerTurns.length < 8 || agentTurns.length < 8) return false;
+
+  const customerWords = customerTurns.reduce(
+    (sum, t) => sum + String(t.text || '').trim().split(/\s+/).filter(Boolean).length,
+    0
+  );
+  return customerWords >= 80;
 }
 
 /**
@@ -74,8 +123,13 @@ function scoringSuggestsTwoPartyDialogue(scores) {
 function assessSelfCallFromTranscript(transcript, durationSec) {
   if (!Array.isArray(transcript) || durationSec < MIN_DURATION_TRANSCRIPT_FRAUD_SEC) return null;
 
-  const turns = transcript.filter((t) => t && String(t.text || '').trim());
+  const turns = sanitizeTranscriptForReanalysis(transcript).filter(
+    (t) => t && String(t.text || '').trim()
+  );
   if (turns.length === 0) return null;
+
+  // Rich two-party dialogue → never convict from transcript heuristics alone.
+  if (transcriptSuggestsRealTwoPartyDialogue(turns)) return null;
 
   const customerTurns = turns.filter((t) => isCustomerSpeaker(t.speaker));
   const agentTurns = turns.filter((t) => isAgentSpeaker(t.speaker));
@@ -174,8 +228,31 @@ function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores }
     return { isFraud: false, voiceAnalysis };
   }
 
+  const cleanTranscript = sanitizeTranscriptForReanalysis(transcript);
+  const twoPartyContent = transcriptSuggestsRealTwoPartyDialogue(cleanTranscript);
+
   const fromVoice = isSelfCallFraudFromVoice(voiceAnalysis, durationSec);
-  if (fromVoice) return fromVoice;
+  if (fromVoice) {
+    // Audio "1 voice" on mono/compressed recordings often false-positives when
+    // the transcript already shows a long real Agent↔Customer exchange.
+    if (
+      fromVoice.reason === 'single_speaker_ai' &&
+      twoPartyContent &&
+      voiceAnalysis?.sameSpeakerSuspected !== true
+    ) {
+      console.warn(
+        '⚠️ [selfCallVoice] Suppressing single_speaker_ai — transcript looks like real two-party dialogue'
+      );
+      return {
+        isFraud: false,
+        voiceAnalysis: {
+          ...(voiceAnalysis || {}),
+          suppressedReason: 'transcript_two_party_override',
+        },
+      };
+    }
+    return fromVoice;
+  }
 
   // Audio heard two distinct voices → trust that over STT speaker labels.
   if (typeof voiceAnalysis?.distinctVoices === 'number' && voiceAnalysis.distinctVoices >= 2) {
@@ -183,11 +260,11 @@ function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores }
   }
 
   // Scoring LLM already modeled a two-party outcome → do not convict on transcript alone.
-  if (scoringSuggestsTwoPartyDialogue(scores)) {
+  if (scoringSuggestsTwoPartyDialogue(scores) || twoPartyContent) {
     return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
   }
 
-  const fromTranscript = assessSelfCallFromTranscript(transcript, durationSec);
+  const fromTranscript = assessSelfCallFromTranscript(cleanTranscript, durationSec);
   if (fromTranscript) return fromTranscript;
 
   return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
@@ -271,6 +348,8 @@ module.exports = {
   SELF_CALL_CONFIDENCE_THRESHOLD,
   MIN_DURATION_TRANSCRIPT_FRAUD_SEC,
   normalizeVoiceAnalysis,
+  sanitizeTranscriptForReanalysis,
+  transcriptSuggestsRealTwoPartyDialogue,
   resolveSelfCallFraud,
   correctTranscriptForSelfCallFraud,
   applySelfCallFraudToScores,
