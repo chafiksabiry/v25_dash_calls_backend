@@ -44,11 +44,15 @@ function applyVoicemailAnalysisShape(scores) {
   return scores;
 }
 
-/** Fraud: no per-rubric payload — preserve fraud overall text when present. */
+/** Fraud: keep overall + voiceAnalysis for audit; strip other rubrics. */
 function applyFraudAnalysisShape(scores) {
   if (!scores || typeof scores !== 'object') return scores;
   const existing =
     scores.overall && typeof scores.overall === 'object' ? { ...scores.overall } : {};
+  const fraudRubric =
+    scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object'
+      ? { ...scores['Fraud detection'] }
+      : null;
   stripAnalysisRubrics(scores);
   scores.overall = {
     ...existing,
@@ -58,6 +62,17 @@ function applyFraudAnalysisShape(scores) {
     feedback_fr: existing.feedback_fr || existing.feedback || '',
     feedback_en: existing.feedback_en || '',
   };
+  // Preserve voice analysis so re-runs / support can audit confidence + reason.
+  if (fraudRubric?.voiceAnalysis) {
+    scores['Fraud detection'] = {
+      score: 0,
+      passed: false,
+      feedback: fraudRubric.feedback_fr || fraudRubric.feedback || '',
+      feedback_fr: fraudRubric.feedback_fr || fraudRubric.feedback || '',
+      feedback_en: fraudRubric.feedback_en || '',
+      voiceAnalysis: fraudRubric.voiceAnalysis,
+    };
+  }
   return scores;
 }
 
