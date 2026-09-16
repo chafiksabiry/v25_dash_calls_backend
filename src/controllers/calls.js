@@ -2266,16 +2266,16 @@ exports.analyzeCall = async (req, res) => {
     };
 
     if (!isValidByAI) {
-      // AI rejected the call → also reject the transaction for the company UI.
-      transactionUpdate.validByCompany = false;
+      // AI rejected the call → mark transaction invalid for AI only.
+      // Never set validByCompany here: that flag is the company decision
+      // (Validate / Not signed). Auto-setting it caused sticky "Call refused".
+      transactionUpdate.validByCompany = null;
     } else {
       // Call is AI-valid again (e.g. after force re-run cleared a false fraud).
-      // Clear auto-rejection so the UI no longer shows "Call refused".
-      // Keep an explicit company approval (true); only wipe false/null stale state.
+      // Re-open company decision so a prior auto-reject cannot stick.
+      // Keep an explicit company approval (true).
       const existingTx = await Transaction.findOne({ call: id }).select('validByCompany').lean();
-      if (transactionDetected) {
-        transactionUpdate.validByCompany = null;
-      } else if (!existingTx || existingTx.validByCompany !== true) {
+      if (!existingTx || existingTx.validByCompany !== true) {
         transactionUpdate.validByCompany = null;
       }
     }
