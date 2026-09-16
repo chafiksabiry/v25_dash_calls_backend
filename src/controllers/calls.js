@@ -1924,6 +1924,7 @@ exports.analyzeCall = async (req, res) => {
       voiceAnalysis,
       transcript: Array.isArray(transcriptData) ? transcriptData : [],
       durationSec: callDurationSec,
+      scores,
     });
     if (selfCallFraud.isFraud) {
       console.warn(
