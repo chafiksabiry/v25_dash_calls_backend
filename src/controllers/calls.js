@@ -2241,7 +2241,15 @@ exports.analyzeCall = async (req, res) => {
     // Update or Create Transaction
     // Rule: If call is rejected by AI (Fraud or Coherence), transaction is automatically REJECTED.
     // Otherwise, use detection signals.
-    const transactionStatus = !isValidByAI ? false : (transactionDetected ? true : (refusalDetected ? false : null));
+    // Always upsert on force (and whenever we score) so a prior fraud run cannot
+    // leave stale validByCompany=false → UI "Call refused" forever.
+    const transactionStatus = !isValidByAI
+      ? false
+      : transactionDetected
+        ? true
+        : refusalDetected
+          ? false
+          : null;
 
     const transactionUpdate = {
       call: id,
@@ -2254,15 +2262,22 @@ exports.analyzeCall = async (req, res) => {
       transaction_score: scores.overall?.score || 0,
       repTransactionCommission: repTransactionCommission,
       platformTransactionCommission: platformTransactionCommission,
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
-    // Rule: If call is rejected by AI, transaction final validation is also automatically REJECTED.
     if (!isValidByAI) {
+      // AI rejected the call → also reject the transaction for the company UI.
       transactionUpdate.validByCompany = false;
-    } else if (transactionDetected) {
-      // Reset stale company rejection so the company UI can approve the sale.
-      transactionUpdate.validByCompany = null;
+    } else {
+      // Call is AI-valid again (e.g. after force re-run cleared a false fraud).
+      // Clear auto-rejection so the UI no longer shows "Call refused".
+      // Keep an explicit company approval (true); only wipe false/null stale state.
+      const existingTx = await Transaction.findOne({ call: id }).select('validByCompany').lean();
+      if (transactionDetected) {
+        transactionUpdate.validByCompany = null;
+      } else if (!existingTx || existingTx.validByCompany !== true) {
+        transactionUpdate.validByCompany = null;
+      }
     }
 
     transactionUpdate.valid = resolveTransactionValid(
@@ -2270,13 +2285,11 @@ exports.analyzeCall = async (req, res) => {
       transactionUpdate.validByCompany !== undefined ? transactionUpdate.validByCompany : null
     );
 
-    if (transactionDetected || refusalDetected || !isValidByAI) {
-      await Transaction.findOneAndUpdate(
-        { call: id },
-        transactionUpdate,
-        { upsert: true, new: true }
-      );
-    }
+    await Transaction.findOneAndUpdate(
+      { call: id },
+      transactionUpdate,
+      { upsert: true, new: true }
+    );
 
     res.json({ 
         success: true, 
