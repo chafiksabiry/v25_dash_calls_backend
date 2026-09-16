@@ -1698,7 +1698,53 @@ exports.analyzeCall = async (req, res) => {
       }
     }
     if (force) {
-      console.log(`♻️ [CallController] Force re-analysis requested for call ${id}.`);
+      console.log(`♻️ [CallController] Force re-analysis requested for call ${id} — resetting all AI fields.`);
+      // Wipe previous AI decisions so a re-run never mixes old + new results.
+      await Call.findByIdAndUpdate(id, {
+        $set: {
+          ai_call_score: {},
+          ai_summary: null,
+          ai_summary_fr: null,
+          ai_summary_en: null,
+          ai_refusal_reason: null,
+          callOutcome: null,
+          callOutcomeSource: null,
+          validByAI: false,
+          valid: false,
+          argumentation_score: 0,
+          repCallCommission: 0,
+          platformCallCommission: 0,
+          repTransactionCommission: 0,
+          platformTransactionCommission: 0,
+          flags: {
+            fraud: false,
+            selfCall: false,
+            serious: false,
+            transactionDetected: false,
+            refusalDetected: false,
+          },
+          agentValidation: 'pending',
+          companyValidation: 'pending',
+          analysisCompanyAlert: {
+            acknowledgedAt: null,
+            message: null,
+            repName: null,
+            requestCount: 0,
+            requestedAt: null,
+          },
+          updatedAt: new Date(),
+        },
+      });
+      // Keep in-memory flags clean for the rest of this run.
+      call.flags = {
+        fraud: false,
+        selfCall: false,
+        serious: false,
+        transactionDetected: false,
+        refusalDetected: false,
+      };
+      call.ai_call_score = {};
+      call.ai_refusal_reason = null;
     }
 
     // Another worker (usually auto-analysis after store-call) is already
@@ -1849,14 +1895,17 @@ exports.analyzeCall = async (req, res) => {
           /voix simul|simulated/i.test(String(t?.speaker || ''))
       );
 
-    // Real Audio Transcription when missing, OR on force re-analysis when the
-    // stored transcript was rewritten by a prior self-call pass ("Voix simulée"),
-    // OR when the call was previously flagged selfCall (labels are untrusted).
+    // Real Audio Transcription when missing, OR always on force re-analysis
+    // (full recompute of transcript + decisions), OR when prior self-call
+    // rewritten labels ("Voix simulée") make the stored transcript untrusted.
     const hasRecording = call.recording_url_cloudinary || call.recording_url;
     const shouldRefreshTranscript =
       hasRecording &&
-      ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) ||
-        (force && (transcriptLooksPoisonedBySelfCall || call.flags?.selfCall === true)));
+      (force ||
+        !transcriptData ||
+        (Array.isArray(transcriptData) && transcriptData.length === 0) ||
+        transcriptLooksPoisonedBySelfCall ||
+        call.flags?.selfCall === true);
 
     if (shouldRefreshTranscript) {
         console.log(
@@ -2169,14 +2218,18 @@ exports.analyzeCall = async (req, res) => {
       callOutcomeSource: call.callOutcomeSource,
       ai_call_status: call.ai_call_status,
       flags: call.flags,
+      ai_refusal_reason: null,
+      ai_summary: call.ai_summary || null,
+      ai_summary_fr: call.ai_summary_fr || null,
+      ai_summary_en: call.ai_summary_en || null,
     };
-    if (scores && scores.overall) {
-      analysisUpdate.ai_summary = call.ai_summary;
-      analysisUpdate.ai_summary_fr = call.ai_summary_fr;
-      analysisUpdate.ai_summary_en = call.ai_summary_en;
-    }
     if (Array.isArray(transcriptData)) {
       analysisUpdate.transcript = call.transcript;
+    }
+    if (force) {
+      // Ensure validations are re-opened after a full re-analysis.
+      analysisUpdate.agentValidation = 'pending';
+      analysisUpdate.companyValidation = 'pending';
     }
     await Call.findByIdAndUpdate(id, { $set: analysisUpdate });
 
