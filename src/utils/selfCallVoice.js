@@ -1,8 +1,17 @@
 /** Minimum call length before Gemini voice fraud check runs. */
 const MIN_DURATION_VOICE_AI_SEC = 45;
 
-/** Confidence threshold when sameSpeakerSuspected is true. */
+/** Confidence threshold for audio-based self-call fraud. */
 const SELF_CALL_CONFIDENCE_THRESHOLD = 75;
+
+/**
+ * Transcript-only heuristics are a weak signal (STT often labels everyone as Agent).
+ * Require a long call + strong imbalance, and never override a clear 2-voice audio result.
+ */
+const MIN_DURATION_TRANSCRIPT_FRAUD_SEC = 180;
+const MIN_AGENT_TURNS_TRANSCRIPT_FRAUD = 5;
+const MIN_TOTAL_WORDS_TRANSCRIPT_FRAUD = 50;
+const CUSTOMER_WORD_RATIO_MAX = 0.05;
 
 const FRAUD_FEEDBACK = {
   same_voice_ai: {
@@ -18,8 +27,8 @@ const FRAUD_FEEDBACK = {
     feedback_en: 'Suspected fraud: no Customer turns in the transcript on a long call.',
   },
   transcript_customer_absent: {
-    feedback_fr: 'Fraude suspectée : le Client est quasi absent du dialogue (< 8 % des mots).',
-    feedback_en: 'Suspected fraud: the Customer is nearly absent from the dialogue (< 8% of words).',
+    feedback_fr: 'Fraude suspectée : le Client est quasi absent du dialogue (< 5 % des mots).',
+    feedback_en: 'Suspected fraud: the Customer is nearly absent from the dialogue (< 5% of words).',
   },
 };
 
@@ -49,8 +58,21 @@ function isAgentSpeaker(label) {
   return /agent|rep|commercial|vendeur|conseiller|seller|harx/i.test(String(label || ''));
 }
 
+/**
+ * True when the scoring LLM already saw a two-party interaction
+ * (refusal / transaction / clean fraud rubric) — do not convict on transcript alone.
+ */
+function scoringSuggestsTwoPartyDialogue(scores) {
+  if (!scores || typeof scores !== 'object') return false;
+  if (scores.refusal_detected === true) return true;
+  if (scores.transaction_detected === true) return true;
+  const fraudScore = scores['Fraud detection']?.score;
+  if (typeof fraudScore === 'number' && fraudScore >= 60) return true;
+  return false;
+}
+
 function assessSelfCallFromTranscript(transcript, durationSec) {
-  if (!Array.isArray(transcript) || durationSec < MIN_DURATION_VOICE_AI_SEC) return null;
+  if (!Array.isArray(transcript) || durationSec < MIN_DURATION_TRANSCRIPT_FRAUD_SEC) return null;
 
   const turns = transcript.filter((t) => t && String(t.text || '').trim());
   if (turns.length === 0) return null;
@@ -64,16 +86,27 @@ function assessSelfCallFromTranscript(transcript, durationSec) {
   const totalWords = wordCount(turns);
   const customerWords = wordCount(customerTurns);
 
-  if (customerTurns.length === 0 && agentTurns.length >= 2 && durationSec >= 60) {
-    return buildFraudResult('transcript_no_customer', 72, {
+  // Weak STT diarization often marks every turn as Agent — do not treat that as fraud lightly.
+  if (
+    customerTurns.length === 0 &&
+    agentTurns.length >= MIN_AGENT_TURNS_TRANSCRIPT_FRAUD &&
+    totalWords >= MIN_TOTAL_WORDS_TRANSCRIPT_FRAUD &&
+    durationSec >= MIN_DURATION_TRANSCRIPT_FRAUD_SEC
+  ) {
+    return buildFraudResult('transcript_no_customer', 68, {
       distinctVoices: 1,
       sameSpeakerSuspected: true,
       source: 'transcript',
     });
   }
 
-  if (totalWords > 20 && customerWords / totalWords < 0.08 && durationSec >= 60) {
-    return buildFraudResult('transcript_customer_absent', 70, {
+  if (
+    totalWords >= MIN_TOTAL_WORDS_TRANSCRIPT_FRAUD &&
+    customerWords / totalWords < CUSTOMER_WORD_RATIO_MAX &&
+    durationSec >= MIN_DURATION_TRANSCRIPT_FRAUD_SEC &&
+    agentTurns.length >= MIN_AGENT_TURNS_TRANSCRIPT_FRAUD
+  ) {
+    return buildFraudResult('transcript_customer_absent', 68, {
       distinctVoices: 1,
       sameSpeakerSuspected: true,
       source: 'transcript',
@@ -103,8 +136,15 @@ function isSelfCallFraudFromVoice(voiceAnalysis, durationSec) {
   if (!voiceAnalysis || voiceAnalysis.isVoicemail) return null;
   if (durationSec < MIN_DURATION_VOICE_AI_SEC) return null;
 
-  if (voiceAnalysis.distinctVoices === 1) {
-    return buildFraudResult('single_speaker_ai', Math.max(voiceAnalysis.confidence, 80), {
+  const confidence =
+    typeof voiceAnalysis.confidence === 'number' ? voiceAnalysis.confidence : 0;
+
+  // Require high confidence — low-confidence "1 voice" is often quiet/far customer or mono mix.
+  if (
+    voiceAnalysis.distinctVoices === 1 &&
+    confidence >= SELF_CALL_CONFIDENCE_THRESHOLD
+  ) {
+    return buildFraudResult('single_speaker_ai', confidence, {
       ...voiceAnalysis,
       source: 'audio',
     });
@@ -112,9 +152,9 @@ function isSelfCallFraudFromVoice(voiceAnalysis, durationSec) {
 
   if (
     voiceAnalysis.sameSpeakerSuspected &&
-    voiceAnalysis.confidence >= SELF_CALL_CONFIDENCE_THRESHOLD
+    confidence >= SELF_CALL_CONFIDENCE_THRESHOLD
   ) {
-    return buildFraudResult('same_voice_ai', voiceAnalysis.confidence, {
+    return buildFraudResult('same_voice_ai', confidence, {
       ...voiceAnalysis,
       source: 'audio',
     });
@@ -123,13 +163,29 @@ function isSelfCallFraudFromVoice(voiceAnalysis, durationSec) {
   return null;
 }
 
-function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec }) {
+/**
+ * Resolve self-call fraud.
+ * Priority: clear audio signal > transcript heuristics (conservative).
+ * Never override a clear 2-voice audio result with transcript.
+ * Never use transcript alone when scoring already saw a real refusal/transaction.
+ */
+function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores } = {}) {
   if (voiceAnalysis?.isVoicemail) {
     return { isFraud: false, voiceAnalysis };
   }
 
   const fromVoice = isSelfCallFraudFromVoice(voiceAnalysis, durationSec);
   if (fromVoice) return fromVoice;
+
+  // Audio heard two distinct voices → trust that over STT speaker labels.
+  if (typeof voiceAnalysis?.distinctVoices === 'number' && voiceAnalysis.distinctVoices >= 2) {
+    return { isFraud: false, voiceAnalysis };
+  }
+
+  // Scoring LLM already modeled a two-party outcome → do not convict on transcript alone.
+  if (scoringSuggestsTwoPartyDialogue(scores)) {
+    return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
+  }
 
   const fromTranscript = assessSelfCallFromTranscript(transcript, durationSec);
   if (fromTranscript) return fromTranscript;
@@ -213,6 +269,7 @@ function isFraudFromScores(scores, selfCallFraud) {
 module.exports = {
   MIN_DURATION_VOICE_AI_SEC,
   SELF_CALL_CONFIDENCE_THRESHOLD,
+  MIN_DURATION_TRANSCRIPT_FRAUD_SEC,
   normalizeVoiceAnalysis,
   resolveSelfCallFraud,
   correctTranscriptForSelfCallFraud,
