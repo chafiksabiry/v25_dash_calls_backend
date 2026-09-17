@@ -265,11 +265,11 @@ const callSchema = new mongoose.Schema({
     index: true,
   },
   /** Who set callOutcome. "ai" by default, "rep" if a rep overrode it from
-   *  the rep frontend, "system" for deterministic non-AI paths (auto-refus,
-   *  voicemail detection, wrong-number from Twilio status, ...). */
+   *  the rep frontend, "company" when the company signs a sale, "system" for
+   *  deterministic non-AI paths (auto-refus, voicemail, wrong-number, ...). */
   callOutcomeSource: {
     type: String,
-    enum: ['ai', 'rep', 'system'],
+    enum: ['ai', 'rep', 'company', 'system'],
     default: null,
   },
   /** Twilio error code returned when status is "failed" (e.g. 21211 = invalid

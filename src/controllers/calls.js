@@ -562,7 +562,16 @@ exports.updateCall = async (req, res) => {
         );
 
         if (validByCompany === true) {
-          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          // Align dashboard KPIs with Calls "Signée": company signature = sale.
+          await Call.findByIdAndUpdate(callId, {
+            $set: {
+              companyValidation: 'approved',
+              callOutcome: 'transaction',
+              callOutcomeSource: 'company',
+              'flags.transactionDetected': true,
+              updatedAt: new Date(),
+            },
+          });
           await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
@@ -601,7 +610,15 @@ exports.updateCall = async (req, res) => {
         );
 
         if (validByCompany === true) {
-          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await Call.findByIdAndUpdate(callId, {
+            $set: {
+              companyValidation: 'approved',
+              callOutcome: 'transaction',
+              callOutcomeSource: 'company',
+              'flags.transactionDetected': true,
+              updatedAt: new Date(),
+            },
+          });
           await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
