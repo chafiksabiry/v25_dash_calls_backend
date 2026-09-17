@@ -2068,9 +2068,23 @@ exports.analyzeCall = async (req, res) => {
       }
     }
     
-    // Calculate Commissions (70% Rep / 30% Platform)
-    const baseCallCommission = call.lead?.gigId?.commission?.commission_per_call || call.lead?.gigId?.rewardPerCall || 4;
-    const baseTransactionCommission = call.lead?.gigId?.commission?.transactionCommission || call.lead?.gigId?.rewardPerSale || 30;
+    // Calculate Commissions (70% Rep / 30% Platform).
+    // Use nullish coalescing: gig rates of 0€ are valid and must NOT fall back to 4/30.
+    const rawCallCommission =
+      call.lead?.gigId?.commission?.commission_per_call ?? call.lead?.gigId?.rewardPerCall;
+    const rawTxCommission = (() => {
+      const tc =
+        call.lead?.gigId?.commission?.transactionCommission ?? call.lead?.gigId?.rewardPerSale;
+      if (typeof tc === 'number') return tc;
+      if (tc && typeof tc === 'object' && typeof tc.amount === 'number') return tc.amount;
+      return undefined;
+    })();
+    const baseCallCommission =
+      typeof rawCallCommission === 'number' && Number.isFinite(rawCallCommission)
+        ? rawCallCommission
+        : 4;
+    const baseTransactionCommission =
+      typeof rawTxCommission === 'number' && Number.isFinite(rawTxCommission) ? rawTxCommission : 30;
 
     const repCallCommission = isValidByAI ? baseCallCommission * 0.7 : 0;
     const platformCallCommission = isValidByAI ? baseCallCommission * 0.3 : 0;
