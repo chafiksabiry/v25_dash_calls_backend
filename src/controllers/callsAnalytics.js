@@ -172,6 +172,12 @@ function derivedOutcomeExpr() {
         { case: { $eq: [status, "failed"] }, then: "wrong_number" },
         // Explicit Twilio error codes for bad/unreachable number even if status != failed.
         { case: wrongNumberErrCodeExpr, then: "wrong_number" },
+        // Company-signed sale (Calls "Signée") always counts as a dashboard transaction,
+        // even when AI previously stored a non-sale callOutcome (argued, voicemail, …).
+        {
+          case: { $eq: [{ $ifNull: ["$companyValidation", ""] }, "approved"] },
+          then: "transaction"
+        },
         // Use the persisted outcome for all other cases.
         {
           case: { $ne: [{ $ifNull: ["$callOutcome", null] }, null] },
