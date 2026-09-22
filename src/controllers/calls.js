@@ -1634,7 +1634,8 @@ const runAnalysisInBackground = (callId) => {
         return;
       }
       const alreadyScored = call.validByAI === true || call.validByAI === false || 
-                           call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused';
+                           call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused' ||
+                           call.ai_call_status === 'too_short';
       if (alreadyScored) {
         console.log(`🤖 [AutoAnalysis] Call ${callId} is already scored or processed. Skipping.`);
         return;
@@ -1682,10 +1683,16 @@ exports.analyzeCall = async (req, res) => {
     // re-scored after backend rule changes (e.g. voicemail shape cleanup).
     if (
       !force &&
-      (call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused')
+      (call.ai_call_status === 'scored' ||
+        call.ai_call_status === 'auto_refused' ||
+        call.ai_call_status === 'too_short')
     ) {
       const hasScores = detectAiScoring(call.ai_call_score);
-      if (hasScores || call.ai_call_status === 'auto_refused') {
+      if (
+        hasScores ||
+        call.ai_call_status === 'auto_refused' ||
+        call.ai_call_status === 'too_short'
+      ) {
         return res.json({
           success: true,
           message: 'Call already analyzed',
@@ -1694,6 +1701,7 @@ exports.analyzeCall = async (req, res) => {
           transcript: call.transcript,
           validByAI: call.validByAI,
           callOutcome: call.callOutcome,
+          ai_call_status: call.ai_call_status,
         });
       }
     }
@@ -1856,6 +1864,56 @@ exports.analyzeCall = async (req, res) => {
         validByAI: false,
         callOutcome,
         data: updated
+      });
+    }
+
+    // Too short to evaluate — never invent a commercial narrative for
+    // "Allo Allo" / hangups under a minute.
+    const MIN_ANALYSIS_DURATION_SECONDS = 60;
+    const callDurationSec = Number(call.duration) || 0;
+    if (callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
+      const shortMsgFr =
+        `Appel trop court (${callDurationSec}s) — analyse IA non effectuée (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+      const shortMsgEn =
+        `Call too short (${callDurationSec}s) — AI analysis skipped (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+      const updated = await Call.findByIdAndUpdate(
+        id,
+        {
+          $set: {
+            validByAI: false,
+            valid: false,
+            ai_refusal_reason: shortMsgFr,
+            ai_call_status: 'too_short',
+            ai_summary: shortMsgFr,
+            ai_summary_fr: shortMsgFr,
+            ai_summary_en: shortMsgEn,
+            ai_call_score: {},
+            callOutcome: null,
+            callOutcomeSource: 'system',
+            'flags.fraud': false,
+            'flags.serious': false,
+            'flags.transactionDetected': false,
+            'flags.refusalDetected': false,
+            repCallCommission: 0,
+            platformCallCommission: 0,
+            updatedAt: new Date(),
+          },
+        },
+        { new: true }
+      );
+      console.log(
+        `⏱️ [CallController] Call ${id} skipped — duration ${callDurationSec}s < ${MIN_ANALYSIS_DURATION_SECONDS}s`
+      );
+      notifyRepCallAnalysisComplete(call, {
+        ai_call_status: 'too_short',
+        validByAI: false,
+      });
+      return res.status(200).json({
+        success: true,
+        message: shortMsgFr,
+        validByAI: false,
+        ai_call_status: 'too_short',
+        data: updated,
       });
     }
 
@@ -2368,6 +2426,7 @@ exports.requestAnalysisHelp = async (req, res) => {
     const isFinished =
       call.ai_call_status === 'scored' ||
       call.ai_call_status === 'auto_refused' ||
+      call.ai_call_status === 'too_short' ||
       (call.ai_call_score?.overall?.score != null && call.ai_call_status !== 'error');
 
     if (isFinished) {
@@ -2428,6 +2487,78 @@ exports.requestAnalysisHelp = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to notify company',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Calibrage du scoring IA — thumbs up / thumbs down + explication de l'écart.
+ * Accessible au rep (ou confirmer) après une analyse `scored`.
+ */
+exports.calibrateCallScore = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const verdict = String(req.body?.verdict || '').toLowerCase();
+    const explanation = String(req.body?.explanation || '').trim();
+    const agentId = req.body?.agentId || req.headers['x-agent-id'] || null;
+
+    if (verdict !== 'up' && verdict !== 'down') {
+      return res.status(400).json({
+        success: false,
+        message: 'verdict must be "up" or "down"',
+      });
+    }
+    if (verdict === 'down' && explanation.length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: 'explanation is required when disagreeing with the score',
+      });
+    }
+
+    const call = await Call.findById(id);
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+    if (call.ai_call_status === 'too_short') {
+      return res.status(400).json({
+        success: false,
+        message: 'Short calls are not analyzed — calibration unavailable',
+      });
+    }
+    if (
+      call.ai_call_status !== 'scored' &&
+      !(call.ai_call_score && call.ai_call_score.overall && typeof call.ai_call_score.overall.score === 'number')
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Call has no AI score to calibrate',
+      });
+    }
+
+    const scoreCalibration = {
+      verdict,
+      explanation: explanation || null,
+      calibratedAt: new Date(),
+      calibratedByAgentId: agentId || null,
+    };
+
+    const updated = await Call.findByIdAndUpdate(
+      id,
+      { $set: { scoreCalibration, updatedAt: new Date() } },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Calibration saved',
+      data: { scoreCalibration: updated.scoreCalibration },
+    });
+  } catch (error) {
+    console.error('Error in calibrateCallScore:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save calibration',
       error: error.message,
     });
   }
