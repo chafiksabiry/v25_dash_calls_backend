@@ -2034,7 +2034,6 @@ exports.analyzeCall = async (req, res) => {
         }
       }
       transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
-      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
     }
 
     if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
@@ -2048,7 +2047,6 @@ exports.analyzeCall = async (req, res) => {
       ? transcriptData.map(t => `[${t.speaker}]: ${t.text}`).join("\n")
       : transcriptData;
 
-    const callDurationSec = call.duration || call._doc?.duration || 0;
     let voiceAnalysis = null;
     if (hasRecording && callDurationSec >= MIN_DURATION_VOICE_AI_SEC) {
       try {
