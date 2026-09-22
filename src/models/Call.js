@@ -235,7 +235,7 @@ const callSchema = new mongoose.Schema({
 
   // ──────────────────────────────────────────────────────────────────────────
   //  Unified call-analysis layer (powers the company OperationsDashboard:
-  //  Vue globale / Appels / Résultats / Équipe + the Leads "Rappels"
+  //  Vue globale / transactions /Résultats / Équipe + the Leads "Rappels"
   //  block). All fields below are denormalised at analyze-time so dashboards
   //  can group/filter without re-scanning transcripts or nested AI rubrics.
   // ──────────────────────────────────────────────────────────────────────────
@@ -299,9 +299,20 @@ const callSchema = new mongoose.Schema({
    *  "Analyse en cours" state instead of inferring from validByAI == null. */
   ai_call_status: {
     type: String,
-    enum: ['pending', 'processing', 'scored', 'auto_refused', 'error'],
+    enum: ['pending', 'processing', 'scored', 'auto_refused', 'too_short', 'error'],
     default: 'pending',
     index: true,
+  },
+  /** Rep / confirmer calibrates the AI overall score (thumbs up/down + gap note). */
+  scoreCalibration: {
+    verdict: {
+      type: String,
+      enum: ['up', 'down', null],
+      default: null,
+    },
+    explanation: { type: String, default: null },
+    calibratedAt: { type: Date, default: null },
+    calibratedByAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent', default: null },
   },
   /** Rep signale une analyse bloquée — alerte la company en temps réel. */
   analysisCompanyAlert: {
