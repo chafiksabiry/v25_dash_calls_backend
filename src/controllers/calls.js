@@ -562,7 +562,16 @@ exports.updateCall = async (req, res) => {
         );
 
         if (validByCompany === true) {
-          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          // Align dashboard KPIs with Calls "Signée": company signature = sale.
+          await Call.findByIdAndUpdate(callId, {
+            $set: {
+              companyValidation: 'approved',
+              callOutcome: 'transaction',
+              callOutcomeSource: 'company',
+              'flags.transactionDetected': true,
+              updatedAt: new Date(),
+            },
+          });
           await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
@@ -601,7 +610,15 @@ exports.updateCall = async (req, res) => {
         );
 
         if (validByCompany === true) {
-          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await Call.findByIdAndUpdate(callId, {
+            $set: {
+              companyValidation: 'approved',
+              callOutcome: 'transaction',
+              callOutcomeSource: 'company',
+              'flags.transactionDetected': true,
+              updatedAt: new Date(),
+            },
+          });
           await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
@@ -2017,7 +2034,6 @@ exports.analyzeCall = async (req, res) => {
         }
       }
       transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
-      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
     }
 
     if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
@@ -2031,7 +2047,6 @@ exports.analyzeCall = async (req, res) => {
       ? transcriptData.map(t => `[${t.speaker}]: ${t.text}`).join("\n")
       : transcriptData;
 
-    const callDurationSec = call.duration || call._doc?.duration || 0;
     let voiceAnalysis = null;
     if (hasRecording && callDurationSec >= MIN_DURATION_VOICE_AI_SEC) {
       try {
