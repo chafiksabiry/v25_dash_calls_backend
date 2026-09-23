@@ -1679,6 +1679,17 @@ const runAnalysisInBackground = (callId) => {
 
 exports.runAnalysisInBackground = runAnalysisInBackground;
 
+function resolveCallDurationSec(call) {
+  const stored = Number(call?.duration) || 0;
+  if (stored > 0) return stored;
+  const start = call?.startTime ? new Date(call.startTime).getTime() : 0;
+  const end = call?.endTime ? new Date(call.endTime).getTime() : 0;
+  if (start && end && end > start) {
+    return Math.max(1, Math.round((end - start) / 1000));
+  }
+  return 0;
+}
+
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1695,11 +1706,19 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
+    // Legacy short calls may already be `scored` with an invented narrative.
+    // Never reuse that — drop through to the 60s gate below.
+    const MIN_ANALYSIS_DURATION_SECONDS = 60;
+    const existingDurationSec = resolveCallDurationSec(call);
+    const alreadyTooShort =
+      existingDurationSec > 0 && existingDurationSec < MIN_ANALYSIS_DURATION_SECONDS;
+
     // Idempotent: return existing results when analysis already finished.
     // `force=true` (company relaunch) bypasses this so legacy analyses can be
     // re-scored after backend rule changes (e.g. voicemail shape cleanup).
     if (
       !force &&
+      !alreadyTooShort &&
       (call.ai_call_status === 'scored' ||
         call.ai_call_status === 'auto_refused' ||
         call.ai_call_status === 'too_short')
@@ -1886,8 +1905,10 @@ exports.analyzeCall = async (req, res) => {
 
     // Too short to evaluate — never invent a commercial narrative for
     // "Allo Allo" / hangups under a minute.
-    const MIN_ANALYSIS_DURATION_SECONDS = 60;
-    const callDurationSec = Number(call.duration) || 0;
+    const callDurationSec = resolveCallDurationSec(call);
+    if (callDurationSec > 0 && (!call.duration || Number(call.duration) === 0)) {
+      call.duration = callDurationSec;
+    }
     if (callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
       const shortMsgFr =
         `Appel trop court (${callDurationSec}s) — analyse IA non effectuée (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
@@ -1897,6 +1918,7 @@ exports.analyzeCall = async (req, res) => {
         id,
         {
           $set: {
+            duration: callDurationSec,
             validByAI: false,
             valid: false,
             ai_refusal_reason: shortMsgFr,
@@ -2517,6 +2539,7 @@ exports.calibrateCallScore = async (req, res) => {
     const verdict = String(req.body?.verdict || '').toLowerCase();
     const explanation = String(req.body?.explanation || '').trim();
     const agentId = req.body?.agentId || req.headers['x-agent-id'] || null;
+    const companyId = req.body?.companyId || req.headers['x-company-id'] || null;
 
     if (verdict !== 'up' && verdict !== 'down') {
       return res.status(400).json({
@@ -2556,6 +2579,7 @@ exports.calibrateCallScore = async (req, res) => {
       explanation: explanation || null,
       calibratedAt: new Date(),
       calibratedByAgentId: agentId || null,
+      calibratedByCompanyId: companyId || null,
     };
 
     const updated = await Call.findByIdAndUpdate(
