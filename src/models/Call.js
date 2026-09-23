@@ -313,6 +313,7 @@ const callSchema = new mongoose.Schema({
     explanation: { type: String, default: null },
     calibratedAt: { type: Date, default: null },
     calibratedByAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent', default: null },
+    calibratedByCompanyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
   },
   /** Rep signale une analyse bloquée — alerte la company en temps réel. */
   analysisCompanyAlert: {
