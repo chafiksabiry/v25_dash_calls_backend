@@ -1690,6 +1690,29 @@ function resolveCallDurationSec(call) {
   return 0;
 }
 
+/**
+ * When force-re-analyzing an existing call, prefer endTime-startTime over the
+ * stored `duration` field — the stored value may have been written as 0 or a
+ * very small number during the original Twilio callback, before the call was
+ * fully recorded. Falls back to stored duration when timestamps are missing.
+ */
+function resolveCallDurationSecForced(call) {
+  const start = call?.startTime ? new Date(call.startTime).getTime() : 0;
+  const end = call?.endTime ? new Date(call.endTime).getTime() : 0;
+  if (start && end && end > start) {
+    const computed = Math.max(1, Math.round((end - start) / 1000));
+    // Only trust computed if it is materially different (>15 s longer than
+    // stored). If stored already looks correct, no need to override.
+    const stored = Number(call?.duration) || 0;
+    if (computed > stored + 15) {
+      console.log(`⏱️ [resolveForced] Stored duration=${stored}s overridden by computed=${computed}s (endTime-startTime) for call ${call._id}`);
+      return computed;
+    }
+    return Math.max(computed, stored);
+  }
+  return Number(call?.duration) || 0;
+}
+
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1905,11 +1928,19 @@ exports.analyzeCall = async (req, res) => {
 
     // Too short to evaluate — never invent a commercial narrative for
     // "Allo Allo" / hangups under a minute.
-    const callDurationSec = resolveCallDurationSec(call);
+    // When force=true, prefer endTime-startTime (stored duration may be wrong
+    // for legacy calls where Twilio wrote 0 before the recording was complete).
+    const callDurationSec = force
+      ? resolveCallDurationSecForced(call)
+      : resolveCallDurationSec(call);
     if (callDurationSec > 0 && (!call.duration || Number(call.duration) === 0)) {
       call.duration = callDurationSec;
     }
-    if (callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
+    // When force=true AND the call already has a real transcript, the call
+    // clearly reached a human — skip the duration gate and let scoring run.
+    const hasExistingTranscript = Array.isArray(call.transcript) && call.transcript.length > 0;
+    const bypassTooShortGate = force && hasExistingTranscript;
+    if (!bypassTooShortGate && callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
       const shortMsgFr =
         `Appel trop court (${callDurationSec}s) — analyse IA non effectuée (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
       const shortMsgEn =
@@ -1954,6 +1985,17 @@ exports.analyzeCall = async (req, res) => {
         ai_call_status: 'too_short',
         data: updated,
       });
+    }
+
+    // When force+transcript bypass the too_short gate, persist the corrected
+    // duration so subsequent loads show the right value in the UI.
+    if (bypassTooShortGate) {
+      const storedDur = Number(call.duration) || 0;
+      if (callDurationSec > storedDur + 15) {
+        await Call.findByIdAndUpdate(id, { $set: { duration: callDurationSec } });
+        call.duration = callDurationSec;
+        console.log(`✅ [CallController] Corrected duration for call ${id}: ${storedDur}s → ${callDurationSec}s`);
+      }
     }
 
     // Get Gig Script/Description - First attempt from collection
