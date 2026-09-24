@@ -200,9 +200,23 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
         "feedback_en": "<same in english — factual call summary then 1-line quality verdict>"
       },
       "transaction_detected": <true|false>,
-      "refusal_detected": <true|false>
+      "refusal_detected": <true|false>,
+      "suggested_disposition": "<une seule valeur parmi : to_call | called_unreachable | called_voicemail | called_wrong_number | called_callback | called_rdv | argued_rdv | argued_declined | argued_done>"
     }
     \`\`\`
+
+    ### **RÈGLE POUR suggested_disposition :**
+    À partir de tout ce que tu as observé dans le transcript, choisis UNE SEULE valeur parmi :
+    - \`called_unreachable\` : le prospect n'a pas répondu ou a raccroché immédiatement
+    - \`called_voicemail\` : l'appel est tombé sur un répondeur
+    - \`called_wrong_number\` : mauvais numéro ou prospect ne correspond pas
+    - \`called_callback\` : le prospect a explicitement demandé à être rappelé à un autre moment
+    - \`called_rdv\` : un rendez-vous de rappel a été programmé (date/heure convenue)
+    - \`argued_rdv\` : l'agent a argumenté et le prospect prend un délai de réflexion ou un RDV commercial
+    - \`argued_declined\` : l'agent a argumenté et le prospect a décliné (pas intéressé, déjà équipé, refus ferme)
+    - \`argued_done\` : transaction conclue, accord commercial obtenu
+    - \`to_call\` : appel trop court ou non concluant, le prospect doit être recontacté
+    Justifie ton choix par les faits observés. Si incertain, choisis \`to_call\`.
 
     ### **RÈGLES ABSOLUES :**
     1. **Anti-invention :** Ne rédige JAMAIS un résumé ou un feedback basé sur ce que l'agent *aurait pu* dire. Tes phrases doivent toujours pouvoir être reliées à une citation du transcript. Si aucune citation n'est possible, indique simplement "Non évaluable sur cet appel."
