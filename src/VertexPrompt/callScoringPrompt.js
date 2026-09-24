@@ -33,113 +33,171 @@ exports.generateCallScoringPrompt = (gigScript = "") => {
     - **Langue :** Le transcript peut mélanger le Français, l'Anglais et l'Arabe (Darija Marocain). Tu dois tout comprendre. **TU DOIS GÉNÉRER DEUX VERSIONS DE CHAQUE FEEDBACK : UNE EN FRANÇAIS ("feedback_fr") ET UNE EN ANGLAIS ("feedback_en"). LE FEEDBACK DE BASE ("feedback") SERA UNE COPIE DE LA VERSION FRANÇAISE.**
     - **Acteurs :** [Agent] (le commercial) vs [Customer] (le prospect).
 
-    ### **CRITÈRES D'ÉVALUATION (SOIS TRÈS CRITIQUE) :**
-    1. **Agent fluency (Élocution) :** L'agent est-il professionnel ? Évite-t-il les hésitations ("euh", "ben") ? Sa voix inspire-t-elle confiance ?
-       - *Note < 70* : Si l'agent bafouille, utilise un langage trop familier ou semble hésitant.
-    2. **Sentiment analysis (Sentiment Client) :** Détecte la VRÉITABLE émotion du client. Est-il réellement intéressé ou veut-il juste raccrocher ?
-    3. **Fraud detection (Détection de Fraude) :** CRITIQUE. L'agent a-t-il menti, omis une information légale, forcé la main, ou été impoli ?
-       - **Auto-appel / simulation :** L'agent parle-t-il seul ou joue-t-il les deux rôles (Agent + Client) avec la même voix ou un dialogue simulé ? Si oui, score < 10.
-       - **RÈGLE D'OR :** Toute insulte, mensonge flagrant ou auto-appel simulé = Score < 20 et rejet immédiat.
-    4. **Script coherence (Cohérence) :** L'argumentation suit-elle une logique de vente ou l'agent récite-t-il sans réfléchir ?
-    5. **Argumentation (Qualité de l'argumentation) :** L'agent a-t-il traité les objections avec empathie et logique ? A-t-il créé un besoin ?
-       - *Note > 80* : Uniquement si l'agent a utilisé des techniques de vente avancées (reformulation, bénéfices VS caractéristiques).
-       - **IMPORTANT :** Évaluez l'effort et la compétence de l'agent dans l'argumentation, même si le client finit par refuser, accepter, ou demande de rappeler plus tard. Le résultat final (vente ou échec) ne doit pas pénaliser cette note si l'agent a bien fait son travail.
-    6. **Transaction analysis (Analyse de Vente) :**
-       - Évaluez rigoureusement si une transaction (vente, accord ferme, prise de RDV) a été effectuée.
-       - Le score doit être élevé (>= 80) si la transaction est claire et conclue.
-       - Le feedback doit expliquer les indices ou les raisons de l'échec.
-    7. **PAS INTÉRESSÉS :** Le prospect a-t-il exprimé un manque d'intérêt (par exemple "non merci", "ça ne m'intéresse pas", "je n'en veux pas") ?
-       - Score élevé (>= 50) si le prospect exprime clairement son désintérêt. Verdict binaire "Yes" s'il n'est pas intéressé.
-    8. **PAS AU COURANT :** Le prospect a-t-il indiqué ne pas être au courant de l'appel, du produit, d'un formulaire préalable, ou de la démarche ?
-       - Score élevé (>= 50) si le prospect exprime une surprise ou une méconnaissance totale de la raison du démarchage.
-    9. **DÉJÀ ÉQUIPÉS :** Le prospect a-t-il mentionné qu'il dispose déjà d'un produit similaire, d'un contrat, d'un prestataire, d'une solution ou d'un fournisseur existant ?
-       - Score élevé (>= 50) si l'objection "déjà équipé", "déjà sous contrat", "déjà un fournisseur" ou "déjà chez un concurrent" is soulevée.
-    10. **RDV :** L'appel a-t-il abouti à une prise de rendez-vous (date/heure programmée ou demande explicite de rappel planifié) ?
-        - Score élevé (>= 50) si un rendez-vous futur a été convenu.
-    11. **A plus tard :** Le prospect a-t-il demandé à écourter, reporter l'appel ou à être rappelé plus tard à un moment plus opportun ?
-        - Score élevé (>= 50) si le prospect demande "rappelez-moi plus tard", "je n'ai pas le temps", "demain", etc.
+    ### **CRITÈRES D'ÉVALUATION — INSTRUCTIONS PAR INDICATEUR :**
+
+    **FORMAT OBLIGATOIRE DE CHAQUE FEEDBACK (2-4 phrases max) :**
+    - Phrase 1 : Observation factuelle précise, citant un extrait du transcript entre guillemets.
+    - Phrase 2 : Impact professionnel ou conséquence commerciale de cette observation.
+    - Phrase 3 (si pertinent) : Point d'amélioration concret ou confirmation du point fort.
+    - INTERDITS : "L'agent a été bon", "Performance satisfaisante", "Aucun problème détecté" — toujours remplacer par des faits observables.
+
+    ---
+
+    1. **Agent fluency — Élocution & Posture Vocale**
+       - Compte les hésitations verbales ("euh", "ben", "donc voilà") et mots parasites visibles dans le transcript.
+       - Évalue la structure des phrases : sont-elles complètes, professionnelles, ou fragmentées ?
+       - Note le registre : est-il adapté (vouvoiement, terminologie métier) ou trop familier ?
+       - Feedback attendu : ex. *"L'agent s'exprime avec fluidité — aucune hésitation détectée dans le transcript. Registre professionnel maintenu : 'Je vous appelle concernant votre dossier de portabilité.'"* 
+         ou : *"2 ruptures syntaxiques relevées ('donc euh... voilà'). Le registre bascule vers le familier en milieu d'appel : 'Ouais, exactement.'"*
+       - *Note < 60* : si hésitations fréquentes ou langage familier/argotique.
+       - *Note > 85* : uniquement si le discours est fluide, structuré, avec un vocabulaire professionnel constant.
+
+    2. **Sentiment analysis — Engagement & Disposition du Prospect**
+       - Identifie la disposition initiale du prospect (coopératif, méfiant, pressé, indifférent).
+       - Trace l'évolution du ton au fil de l'appel (s'est-il réchauffé ou refroidi ?).
+       - Cite la phrase clé qui révèle l'état émotionnel réel.
+       - Feedback attendu : ex. *"Disposition initiale coopérative — 'Je voulais savoir si vous aviez reçu mon dossier'. Le prospect est en attente d'une réponse, non en posture de défense. Engagement maintenu jusqu'à la clôture."*
+         ou : *"Ton défensif dès l'introduction ('Vous êtes qui ?'). Le prospect ne rappelle pas le contexte de l'appel, signe d'une prise de contact froide."*
+
+    3. **Fraud detection — Conformité & Éthique Commerciale** ⚠️ CRITIQUE
+       - Vérifie EXPLICITEMENT chaque point de la liste suivante et cite le résultat dans le feedback :
+         ① Promesse mensongère ou exagération des bénéfices
+         ② Omission d'information légale obligatoire (prix, conditions, délai de rétractation)
+         ③ Pression excessive ("c'est maintenant ou jamais", urgence artificielle)
+         ④ Impolitesse ou agressivité envers le prospect
+         ⑤ Auto-appel simulé (même voix pour Agent et Client, dialogue inventé)
+       - Feedback attendu : ex. *"Contrôle des 5 points de conformité : aucune promesse abusive, aucune pression détectée, présentation factuelle de l'offre. Dialogue respectueux du début à la fin."*
+         ou : *"ALERTE : Pression temporelle artificielle détectée — 'Il faut valider aujourd'hui sinon l'offre est perdue.' Constitue une pratique commerciale trompeuse (non-conformité RGPD/démarchage)."*
+       - **RÈGLE D'OR :** Auto-appel simulé ou insulte = score < 10 immédiat.
+       - *Note > 80* : SEULEMENT si les 5 points ont été explicitement vérifiés et aucun problème trouvé.
+       - *Note 0* : si Fraud confirmée (auto-appel, mensonge flagrant, insulte).
+
+    4. **Script coherence — Structure & Progression de l'Appel**
+       - Identifie les étapes standard d'un appel commercial (accroche, présentation, découverte des besoins, argumentation, traitement des objections, closing) et note celles présentes ou absentes.
+       - Évalue si l'agent progresse logiquement ou saute des étapes.
+       - Feedback attendu : ex. *"Structure en 4 temps respectée : accroche personnalisée → rappel du contexte ('votre dossier de portabilité') → clarification du besoin → proposition de solution. Étape de découverte absente — l'agent formule directement une solution sans qualifier le besoin."*
+         ou : *"Appel trop court pour évaluer la structure complète. Seules les étapes d'accroche et d'identification ont pu être observées."*
+
+    5. **Argumentation — Traitement des Objections & Techniques de Vente**
+       - Identifie les objections explicites du prospect et évalue chaque réponse de l'agent (technique utilisée : reformulation, pivot, validation empathique, preuve sociale, bénéfice vs caractéristique).
+       - Si aucune objection → évalue la qualité de la proposition de valeur.
+       - Feedback attendu : ex. *"Objection 'je n'ai pas le temps' traitée par validation empathique ('Je comprends, je serai bref') puis pivot vers la valeur ('En 2 minutes, je vous explique l'avantage principal'). Technique efficace, prospect maintenu en ligne."*
+         ou : *"Aucune objection ne s'est présentée. L'agent n'a pas créé de besoin — il a répondu à une demande entrante sans tenter d'élargir la conversation commerciale. Opportunité manquée."*
+       - *Note > 80* : uniquement si au moins une technique de vente nommée est observable dans le transcript.
+       - *Note < 50* : si l'agent abandonne dès la première objection ou ne propose aucune valeur.
+
+    6. **Transaction analysis — Résultat Commercial**
+       - Détermine le résultat concret de l'appel parmi : Vente conclue / RDV fixé / Rappel programmé / Intérêt sans engagement / Refus / Non abouti.
+       - Cite la phrase ou l'échange qui confirme ce résultat.
+       - Évalue si l'agent a explicitement tenté de closer (demande d'engagement, proposition de date, récapitulatif de l'accord).
+       - Feedback attendu : ex. *"Appel de service — le prospect confirme avoir soumis un dossier. Pas de tentative de vente additionnelle. Résultat : demande prise en charge, pas de transaction commerciale conclue."*
+         ou : *"Transaction confirmée — accord verbal obtenu : 'D'accord, je vous laisse mes coordonnées.' L'agent a correctement fermé l'appel par une récapitulation et une prochaine étape claire."*
+
+    7. **PAS INTÉRESSÉS :** Détection de désintérêt explicite du prospect.
+       - Score > 50 si refus verbal clair ("non merci", "pas intéressé", "ça ne m'intéresse pas").
+       - Cite la phrase exacte du refus.
+       - Score = 0 si aucun signe de désintérêt.
+
+    8. **PAS AU COURANT :** Détection d'ignorance du contexte par le prospect.
+       - Score > 50 si le prospect exprime une surprise totale ("Je n'ai rien demandé", "C'est quoi cette offre ?").
+       - Score = 0 si le prospect connaît le contexte de l'appel.
+
+    9. **DÉJÀ ÉQUIPÉS :** Détection d'une situation d'équipement existant.
+       - Score > 50 si le prospect mentionne déjà disposer d'un concurrent, contrat ou solution équivalente.
+       - Cite la formulation exacte.
+
+    10. **RDV :** Détection d'une prise de rendez-vous.
+        - Score > 50 si une date/heure a été convenue explicitement.
+        - Cite l'échange confirmant le RDV.
+
+    11. **A plus tard :** Détection d'une demande de report.
+        - Score > 50 si le prospect demande à être rappelé à un autre moment.
+        - Cite la formulation exacte.
+
+    ---
 
     ### **CONSIGNES DE RÉDACTION DU FEEDBACK :**
-    - **Langues :** Tu dois rédiger deux versions pour chaque feedback :
-      1. Une version en **FRANÇAIS** dans le champ \`"feedback_fr"\` et dans le champ \`"feedback"\`.
-      2. Une version en **ANGLAIS** dans le champ \`"feedback_en"\`.
-    - **Style :** Direct, professionnel, chirurgical. Évite les phrases génériques comme "L'agent a été bon".
-    - **Preuves :** Cite des extraits courts entre guillemets pour justifier tes notes (en français dans \`feedback_fr\` / \`feedback\`, en anglais dans \`feedback_en\`).
+    - **Langues :** Génère deux versions pour chaque feedback :
+      1. **FRANÇAIS** dans \`"feedback_fr"\` et \`"feedback"\` (copie identique).
+      2. **ANGLAIS** dans \`"feedback_en"\`.
+    - **Style QA professionnel :** Utilise la terminologie centre d'appel (accroche, closing, objection, pivot, reformulation, prise de commande, NPS, première réponse).
+    - **Pas de généralités :** Chaque phrase doit s'appuyer sur un fait observable dans ce transcript précis.
+    - **Longueur :** 2 à 4 phrases par indicateur. Ni trop court (inutile), ni trop long (illisible).
 
     ### **FORMAT JSON STRICT (RETOURNE UNIQUEMENT LE JSON) :**
     \`\`\`json
     {
       "Agent fluency": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<observation sur l'élocution avec citation du transcript + verdict professionnel>", 
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "Sentiment analysis": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<disposition initiale du prospect + évolution + phrase clé révélatrice>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "Fraud detection": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<résultat explicite du contrôle des 5 points de conformité avec citation ou confirmation d'absence>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "Script coherence": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<étapes présentes / absentes de la structure commerciale standard + évaluation du fil directeur>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "Argumentation": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<objections identifiées + technique de réponse utilisée (ou absence) + évaluation de l'impact>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "Transaction analysis": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<résultat commercial exact (vente/RDV/rappel/refus/non abouti) + citation de l'échange conclusif>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "PAS INTÉRESSÉS": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<citation exacte du refus ou confirmation de l'absence de refus>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "PAS AU COURANT": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<citation de la réaction de surprise ou confirmation que le prospect connaît le contexte>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "DÉJÀ ÉQUIPÉS": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<citation de la mention d'équipement existant ou confirmation de l'absence>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "RDV": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<citation de l'accord de RDV avec date/heure si disponible, ou confirmation de l'absence>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },
       "A plus tard": { 
         "score": <0-100>, 
-        "feedback": "<analyse_détaillée_en_français>", 
-        "feedback_fr": "<analyse_détaillée_en_français>", 
-        "feedback_en": "<detailed_analysis_in_english>" 
+        "feedback": "<citation exacte de la demande de report ou confirmation de l'absence>",
+        "feedback_fr": "<idem en français>", 
+        "feedback_en": "<same in english>" 
       },${scriptJsonStructure}
       "overall": {
         "score": <0-100>,
-        "feedback": "<résumé_factuel_de_l_appel_en_français — que s'est-il passé, comment l'agent a-t-il géré, verdict qualité>",
-        "feedback_fr": "<même_contenu_en_français>",
-        "feedback_en": "<same_content_in_english — factual call summary then quality verdict>"
+        "feedback": "<résumé factuel : contexte de l'appel + ce que l'agent a fait + réaction du prospect + résultat + verdict qualité en 1 phrase>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english — factual call summary then 1-line quality verdict>"
       },
       "transaction_detected": <true|false>,
       "refusal_detected": <true|false>
