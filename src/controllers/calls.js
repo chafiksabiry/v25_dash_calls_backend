@@ -2185,6 +2185,17 @@ exports.analyzeCall = async (req, res) => {
     let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
     let refusalDetected = scores.refusal_detected || false;
 
+    // Extract and validate suggested disposition from HARX 9-status ladder.
+    const VALID_HARX_DISPOSITIONS = new Set([
+      'to_call', 'called_unreachable', 'called_voicemail', 'called_wrong_number',
+      'called_callback', 'called_rdv', 'argued_rdv', 'argued_declined', 'argued_done',
+    ]);
+    const rawSuggestedDisp = scores.suggested_disposition;
+    const suggestedDisposition = VALID_HARX_DISPOSITIONS.has(rawSuggestedDisp) ? rawSuggestedDisp : null;
+    if (suggestedDisposition) {
+      console.log(`🏷️ [CallController] AI suggested disposition for call ${id}: ${suggestedDisposition}`);
+    }
+
     // Call is valid if:
     // 1. No fraud (score >= 50 and no self-call signal)
     // 2. Script coherence is good (>= 50)
@@ -2373,6 +2384,7 @@ exports.analyzeCall = async (req, res) => {
       ai_summary: call.ai_summary || null,
       ai_summary_fr: call.ai_summary_fr || null,
       ai_summary_en: call.ai_summary_en || null,
+      suggestedDisposition: suggestedDisposition || null,
     };
     if (Array.isArray(transcriptData)) {
       analysisUpdate.transcript = call.transcript;

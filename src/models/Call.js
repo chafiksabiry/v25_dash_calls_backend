@@ -303,6 +303,18 @@ const callSchema = new mongoose.Schema({
     default: 'pending',
     index: true,
   },
+  /**
+   * Disposition suggérée par l'IA après analyse du transcript.
+   * Correspond aux 9 statuts HARX de la liste convenue.
+   */
+  suggestedDisposition: {
+    type: String,
+    enum: ['to_call', 'called_unreachable', 'called_voicemail', 'called_wrong_number',
+           'called_callback', 'called_rdv', 'argued_rdv', 'argued_declined', 'argued_done', null],
+    default: null,
+    index: true,
+  },
+
   /** Rep / confirmer calibrates the AI overall score (thumbs up/down + gap note). */
   scoreCalibration: {
     verdict: {
