@@ -27,6 +27,7 @@ const {
   buildAgentFraudMatchQuery,
 } = require('../utils/fraudStats');
 const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
+const { dispositionFromCallSignals, syncLeadDisposition } = require('../utils/leadDispositionSync');
 const {
   applyVoicemailAnalysisShape,
   applyFraudAnalysisShape,
@@ -1395,6 +1396,8 @@ exports.amdCallback = async (req, res) => {
 
     if (updated) {
       console.log(`✅ [AMD] Call ${CallSid} auto-marked as voicemail (doc _id=${updated._id})`);
+      const leadId = updated.lead && updated.lead._id ? updated.lead._id : updated.lead;
+      await syncLeadDisposition(leadId, 'called_voicemail');
     } else {
       // Document may not exist yet if store-call hasn't fired — that's fine,
       // saveCallToDB will pick up isVoicemail from the AMD flag later.
@@ -1914,6 +1917,12 @@ exports.analyzeCall = async (req, res) => {
         { new: true }
       );
       console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome}`);
+      const refusedLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
+      await syncLeadDisposition(refusedLeadId, dispositionFromCallSignals({
+        callOutcome,
+        status: callStatus,
+        answeredBy: call.answeredBy,
+      }));
       notifyRepCallAnalysisComplete(call, {
         ai_call_status: 'auto_refused',
         validByAI: false,
@@ -1986,6 +1995,8 @@ exports.analyzeCall = async (req, res) => {
       console.log(
         `⏱️ [CallController] Call ${id} skipped — duration ${callDurationSec}s < ${MIN_ANALYSIS_DURATION_SECONDS}s`
       );
+      const shortLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
+      await syncLeadDisposition(shortLeadId, keepVoicemail ? 'called_voicemail' : null);
       notifyRepCallAnalysisComplete(call, {
         ai_call_status: 'too_short',
         validByAI: false,
@@ -2338,6 +2349,12 @@ exports.analyzeCall = async (req, res) => {
         });
     call.callOutcome = callOutcome;
     call.callOutcomeSource = 'ai';
+    const scoredLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
+    await syncLeadDisposition(scoredLeadId, dispositionFromCallSignals({
+      callOutcome,
+      status: call.status,
+      answeredBy: call.answeredBy,
+    }));
     call.ai_call_status = 'scored';
     // Use the LLM's overall feedback as a starter summary. A dedicated
     // /audio/summarize prompt can replace this later without changing the
