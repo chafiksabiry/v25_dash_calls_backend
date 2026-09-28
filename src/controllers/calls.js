@@ -1377,9 +1377,10 @@ exports.amdCallback = async (req, res) => {
       : `Répondeur détecté automatiquement par Twilio AMD (${AnsweredBy})`;
 
     const updated = await Call.findOneAndUpdate(
-      { sid: CallSid },
+      { $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }] },
       {
         $set: {
+          answeredBy: AnsweredBy,
           callOutcome: outcome,
           callOutcomeSource: 'system',
           validByAI: false,
@@ -1945,6 +1946,11 @@ exports.analyzeCall = async (req, res) => {
         `Appel trop court (${callDurationSec}s) — analyse IA non effectuée (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
       const shortMsgEn =
         `Call too short (${callDurationSec}s) — AI analysis skipped (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+      const answeredBy = String(call.answeredBy || '').toLowerCase();
+      const keepVoicemail =
+        call.callOutcome === 'voicemail' ||
+        answeredBy.startsWith('machine') ||
+        answeredBy === 'fax';
       const updated = await Call.findByIdAndUpdate(
         id,
         {
@@ -1954,11 +1960,17 @@ exports.analyzeCall = async (req, res) => {
             valid: false,
             ai_refusal_reason: shortMsgFr,
             ai_call_status: 'too_short',
-            ai_summary: shortMsgFr,
-            ai_summary_fr: shortMsgFr,
-            ai_summary_en: shortMsgEn,
+            ai_summary: keepVoicemail
+              ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
+              : shortMsgFr,
+            ai_summary_fr: keepVoicemail
+              ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
+              : shortMsgFr,
+            ai_summary_en: keepVoicemail
+              ? 'Voicemail — no exchange with the prospect. No commission is due.'
+              : shortMsgEn,
             ai_call_score: {},
-            callOutcome: null,
+            callOutcome: keepVoicemail ? 'voicemail' : 'too_short',
             callOutcomeSource: 'system',
             'flags.fraud': false,
             'flags.serious': false,

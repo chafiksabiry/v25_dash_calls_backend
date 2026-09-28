@@ -276,6 +276,8 @@ const callSchema = new mongoose.Schema({
    *  number, 21214 = unreachable, 13224 = cannot dial). Used alongside
    *  status="failed" to classify the call as wrong_number. */
   twilioErrorCode: { type: Number, default: null, index: true },
+  /** Twilio AMD AnsweredBy: human, machine_start, machine_end_beep, fax, unknown. */
+  answeredBy: { type: String, default: null },
 
   /** Scheduled callback if the lead asked to be re-called. Drives the
    *  Leads view "À rappeler aujourd'hui / Cette semaine" KPI. */
