@@ -177,21 +177,26 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     // Fetch price if possible
     let calculatedPrice = 0;
-    if (call.price !== undefined && call.price !== null) {
-      calculatedPrice = Math.abs(parseFloat(call.price)) || 0;
-    } else if (callSid) {
+    let twilioAnsweredBy = call.answeredBy || null;
+    if (callSid && (call.price === undefined || call.price === null || !twilioAnsweredBy)) {
       try {
         const credentials = await getTwilioCredentials(userId || agentId);
         if (credentials && credentials.accountSid && credentials.authToken) {
           const client = twilio(credentials.accountSid, credentials.authToken);
           const twilioCall = await client.calls(callSid).fetch();
-          if (twilioCall && twilioCall.price) {
+          if (twilioCall && twilioCall.price && (call.price === undefined || call.price === null)) {
             calculatedPrice = Math.abs(parseFloat(twilioCall.price));
+          }
+          if (twilioCall && twilioCall.answeredBy) {
+            twilioAnsweredBy = twilioCall.answeredBy;
           }
         }
       } catch (err) {
         console.warn(`⚠️ [TwilioService] Could not dynamically retrieve call price: ${err.message}`);
       }
+    }
+    if (call.price !== undefined && call.price !== null) {
+      calculatedPrice = Math.abs(parseFloat(call.price)) || 0;
     }
 
     // Build update object
@@ -231,6 +236,22 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
         update.validByAI = true;
         update.valid = true;
       }
+    }
+
+    if (twilioAnsweredBy) {
+      update.answeredBy = twilioAnsweredBy;
+    }
+    const machineAnswer = String(twilioAnsweredBy || '').toLowerCase();
+    const answeredByMachine = machineAnswer.startsWith('machine') || machineAnswer === 'fax';
+    if (answeredByMachine && !appointmentAt && !callbackAt) {
+      update.validByAI = false;
+      update.valid = false;
+      update.ai_call_status = 'auto_refused';
+      update.callOutcome = 'voicemail';
+      update.callOutcomeSource = isVoicemail ? 'rep' : 'system';
+      update.ai_refusal_reason = isVoicemail
+        ? 'Appel sur messagerie vocale (déclaré par le rep)'
+        : `Répondeur détecté par Twilio (${twilioAnsweredBy})`;
     }
 
     if (call.ChildCallSid) {
@@ -451,10 +472,13 @@ const generateTwimlResponse = async (to, callerIdOverride) => {
       callerId: callerId,
       record: 'record-from-answer',
     });
+    // `<Number>` uses amdStatusCallback. asyncAmdStatusCallback is only
+    // valid on the REST Calls API, so Twilio was ignoring it and never
+    // reporting a voicemail.
     dial.number({
       machineDetection: 'DetectMessageEnd',
-      asyncAmdStatusCallback: amdCallbackUrl,
-      asyncAmdStatusCallbackMethod: 'POST',
+      amdStatusCallback: amdCallbackUrl,
+      amdStatusCallbackMethod: 'POST',
     }, to);
   } else {
     twiml.say("Invalid number");
