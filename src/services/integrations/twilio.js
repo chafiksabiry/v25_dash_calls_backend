@@ -8,6 +8,7 @@ const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 
 const { Call } = require('../../models/Call');
+const { dispositionFromCallSignals, syncLeadDisposition } = require('../../utils/leadDispositionSync');
 const Transaction = require('../../models/Transaction');
 const path = require("path");
 const fetch = require('node-fetch');
@@ -413,6 +414,12 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     // racing the in-process run — two concurrent `analyzeCall`s loaded the
     // same Mongoose document and the second `save()` threw a VersionError.
     // Keeping a single in-process analysis path removes both problems.
+
+    await syncLeadDisposition(leadId || result.lead, dispositionFromCallSignals({
+      callOutcome: result.callOutcome,
+      status: result.status,
+      answeredBy: result.answeredBy || twilioAnsweredBy,
+    }));
 
     return result;
   } catch (error) {
