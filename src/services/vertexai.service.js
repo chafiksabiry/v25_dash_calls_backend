@@ -477,10 +477,13 @@ ${fullTranscript}`;
     }
   }
 
-  async transcribeAudioBuffer(audioBuffer) {
+  async transcribeAudioBuffer(audioBuffer, options = {}) {
     try {
       await initializeServices();
       const prompt = generateAudioTranscriptionPrompt();
+      const strictNote = options.strict
+        ? '\nThe previous transcription invented dialogue that was not in the audio. Discard it. Return only the words you can actually hear. A greeting such as "Allô" or "Allô allô" must stay a greeting. If you are not sure, return [].'
+        : '';
 
       // Detect format
       let mimeType = "audio/wav";
@@ -514,7 +517,7 @@ ${fullTranscript}`;
                 "data": base64Audio
               }
             },
-            { "text": `${prompt}\nIMPORTANT: Identify speakers as "Agent" (company/rep) and "Customer" (lead) ONLY when you hear two distinct human voices. If a single voice simulates both sides of the dialogue, label ALL turns as "Agent" — never invent a Customer. Return ONLY the JSON array.` }
+            { "text": `${prompt}${strictNote}\nIdentify speakers as "Agent" and "Client" ONLY when you hear two distinct human voices. If one voice plays both sides, label ALL turns as "Agent" and set "simulated": true. Never invent a Client, a pitch, or a story. Return ONLY the JSON array.` }
           ]
         }],
       };
@@ -542,7 +545,7 @@ ${fullTranscript}`;
     }
   }
 
-  async transcribeAudioFromUrl(audioUrl) {
+  async transcribeAudioFromUrl(audioUrl, options = {}) {
     try {
       console.log(`🎙️ [VertexAIService] Fetching audio for transcription from: ${audioUrl}`);
       const response = await fetch(audioUrl);
@@ -551,7 +554,7 @@ ${fullTranscript}`;
       const audioBuffer = await response.buffer();
       console.log(`✅ [VertexAIService] Audio fetched (${audioBuffer.length} bytes). Starting transcription...`);
       
-      return await this.transcribeAudioBuffer(audioBuffer);
+      return await this.transcribeAudioBuffer(audioBuffer, options);
     } catch (error) {
       console.error('❌ [VertexAIService] Error in transcribeAudioFromUrl:', error);
       return [];
