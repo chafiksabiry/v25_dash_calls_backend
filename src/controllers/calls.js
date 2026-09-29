@@ -1717,6 +1717,51 @@ function resolveCallDurationSecForced(call) {
   return Number(call?.duration) || 0;
 }
 
+const EXAMPLE_STORY_LEAK = /je vous appelle de la part de HARX,\s*soci[eé]t[eé] sp[eé]cialis[eé]e en t[eé]l[eé]marketing|je vous contacte concernant votre demande de portabilit/i;
+
+function transcriptWordCount(transcript) {
+  if (!Array.isArray(transcript)) return 0;
+  return transcript
+    .map((turn) => String(turn?.text || ''))
+    .join(' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+/** A short "Allô" must not come back as a written sales story. */
+function transcriptLooksInvented(transcript, durationSec) {
+  if (!Array.isArray(transcript) || transcript.length === 0) return false;
+  const text = transcript.map((turn) => String(turn?.text || '')).join(' ');
+  if (EXAMPLE_STORY_LEAK.test(text)) return true;
+  const dur = Number(durationSec) || 0;
+  if (dur <= 0 || dur > 25) return false;
+  const words = transcriptWordCount(transcript);
+  const maxWords = Math.max(10, Math.ceil(dur * 2.5));
+  return words > maxWords || transcript.length > 4;
+}
+
+async function transcribeRecordingLiteral(recordingUrl, durationSec) {
+  let transcript = await withTimeout(
+    vertexAIService.transcribeAudioFromUrl(recordingUrl),
+    TRANSCRIPTION_TIMEOUT_MS,
+    'Audio transcription'
+  );
+  if (transcriptLooksInvented(transcript, durationSec)) {
+    console.warn(`⚠️ [CallController] Transcript looks invented for a ${durationSec}s call. Retrying literal mode.`);
+    transcript = await withTimeout(
+      vertexAIService.transcribeAudioFromUrl(recordingUrl, { strict: true }),
+      TRANSCRIPTION_TIMEOUT_MS,
+      'Audio transcription (literal)'
+    );
+    if (transcriptLooksInvented(transcript, durationSec)) {
+      console.warn('⚠️ [CallController] Literal retry still invented a story. Discarding it.');
+      return [];
+    }
+  }
+  return Array.isArray(transcript) ? transcript : [];
+}
+
 exports.analyzeCall = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1734,11 +1779,31 @@ exports.analyzeCall = async (req, res) => {
     }
 
     // Legacy short calls may already be `scored` with an invented narrative.
-    // Never reuse that — drop through to the 60s gate below.
-    const MIN_ANALYSIS_DURATION_SECONDS = 60;
+    // Never reuse that — drop through to the 30s QA gate below.
+    // Transcription still runs for every call. QA scoring does not.
+    const MIN_ANALYSIS_DURATION_SECONDS = 30;
     const existingDurationSec = resolveCallDurationSec(call);
     const alreadyTooShort =
       existingDurationSec > 0 && existingDurationSec < MIN_ANALYSIS_DURATION_SECONDS;
+
+    const storedTranscript = Array.isArray(call.transcript) ? call.transcript : [];
+    if (
+      !force &&
+      alreadyTooShort &&
+      call.ai_call_status === 'too_short' &&
+      storedTranscript.length > 0 &&
+      !transcriptLooksInvented(storedTranscript, existingDurationSec)
+    ) {
+      return res.json({
+        success: true,
+        message: 'Call already transcribed',
+        alreadyAnalyzed: true,
+        transcript: call.transcript,
+        validByAI: false,
+        ai_call_status: 'too_short',
+        data: call,
+      });
+    }
 
     // Idempotent: return existing results when analysis already finished.
     // `force=true` (company relaunch) bypasses this so legacy analyses can be
@@ -1936,8 +2001,8 @@ exports.analyzeCall = async (req, res) => {
       });
     }
 
-    // Too short to evaluate — never invent a commercial narrative for
-    // "Allo Allo" / hangups under a minute.
+    // QA scoring starts only above 30s. Transcription is required for every
+    // call, including a 5-second "Allô allô" — and must stay literal.
     // When force=true, prefer endTime-startTime (stored duration may be wrong
     // for legacy calls where Twilio wrote 0 before the recording was complete).
     const callDurationSec = force
@@ -1946,15 +2011,22 @@ exports.analyzeCall = async (req, res) => {
     if (callDurationSec > 0 && (!call.duration || Number(call.duration) === 0)) {
       call.duration = callDurationSec;
     }
-    // When force=true AND the call already has a real transcript, the call
-    // clearly reached a human — skip the duration gate and let scoring run.
-    const hasExistingTranscript = Array.isArray(call.transcript) && call.transcript.length > 0;
-    const bypassTooShortGate = force && hasExistingTranscript;
-    if (!bypassTooShortGate && callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
+    if (callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
+      let shortTranscript = Array.isArray(call.transcript) ? call.transcript : [];
+      if (transcriptLooksInvented(shortTranscript, callDurationSec)) shortTranscript = [];
+      const shortRecording = call.recording_url_cloudinary || call.recording_url;
+      if (shortRecording && (force || shortTranscript.length === 0)) {
+        try {
+          const literal = await transcribeRecordingLiteral(shortRecording, callDurationSec);
+          if (literal.length > 0) shortTranscript = literal;
+        } catch (transcriptionError) {
+          console.error(`❌ [CallController] Short-call transcription failed:`, transcriptionError);
+        }
+      }
       const shortMsgFr =
-        `Appel trop court (${callDurationSec}s) — analyse IA non effectuée (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+        `Appel trop court (${callDurationSec}s) — retranscription conservée, analyse QA non effectuée (réservée aux appels de plus de ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
       const shortMsgEn =
-        `Call too short (${callDurationSec}s) — AI analysis skipped (minimum ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+        `Call too short (${callDurationSec}s) — transcript kept, QA analysis skipped (only calls over ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
       const answeredBy = String(call.answeredBy || '').toLowerCase();
       const keepVoicemail =
         call.callOutcome === 'voicemail' ||
@@ -1965,6 +2037,7 @@ exports.analyzeCall = async (req, res) => {
         {
           $set: {
             duration: callDurationSec,
+            transcript: shortTranscript,
             validByAI: false,
             valid: false,
             ai_refusal_reason: shortMsgFr,
@@ -2008,17 +2081,6 @@ exports.analyzeCall = async (req, res) => {
         ai_call_status: 'too_short',
         data: updated,
       });
-    }
-
-    // When force+transcript bypass the too_short gate, persist the corrected
-    // duration so subsequent loads show the right value in the UI.
-    if (bypassTooShortGate) {
-      const storedDur = Number(call.duration) || 0;
-      if (callDurationSec > storedDur + 15) {
-        await Call.findByIdAndUpdate(id, { $set: { duration: callDurationSec } });
-        call.duration = callDurationSec;
-        console.log(`✅ [CallController] Corrected duration for call ${id}: ${storedDur}s → ${callDurationSec}s`);
-      }
     }
 
     // Get Gig Script/Description - First attempt from collection
@@ -2075,11 +2137,7 @@ exports.analyzeCall = async (req, res) => {
         );
         try {
           const recordingUrl = call.recording_url_cloudinary || call.recording_url;
-          const realTranscript = await withTimeout(
-            vertexAIService.transcribeAudioFromUrl(recordingUrl),
-            TRANSCRIPTION_TIMEOUT_MS,
-            'Audio transcription'
-          );
+          const realTranscript = await transcribeRecordingLiteral(recordingUrl, callDurationSec);
           if (realTranscript && realTranscript.length > 0) {
             transcriptData = realTranscript;
             console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
