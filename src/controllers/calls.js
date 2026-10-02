@@ -1645,8 +1645,14 @@ function notifyRepCallAnalysisComplete(call, overrides = {}) {
   });
 }
 
-const runAnalysisInBackground = (callId) => {
-  console.log(`🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in 5 seconds...`);
+const runAnalysisInBackground = (callId, options = {}) => {
+  const delayMs = Number(options.delayMs) > 0 ? Number(options.delayMs) : 5000;
+  const force = options.force === true;
+  const attempt = Number(options.attempt) > 0 ? Number(options.attempt) : 1;
+  const maxRecordingWaitAttempts = 6;
+  console.log(
+    `🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in ${delayMs}ms${force ? ' (force)' : ''} (attempt ${attempt})...`
+  );
   setTimeout(async () => {
     try {
       const call = await Call.findById(callId);
@@ -1654,31 +1660,71 @@ const runAnalysisInBackground = (callId) => {
         console.warn(`⚠️ [AutoAnalysis] Call ${callId} not found, aborting analysis.`);
         return;
       }
-      const alreadyScored = call.validByAI === true || call.validByAI === false || 
-                           call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused' ||
-                           call.ai_call_status === 'too_short';
+
+      const hasTranscript =
+        Array.isArray(call.transcript) && call.transcript.length > 0;
+      const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
+
+      // too_short without a transcript must be retried once the recording lands —
+      // otherwise a 5s "Allô" stays forever as TRANSCRIPT NOT AVAILABLE.
+      const tooShortNeedsTranscript =
+        call.ai_call_status === 'too_short' && (!hasTranscript || !hasRecording);
+
+      const alreadyScored =
+        !force &&
+        !tooShortNeedsTranscript &&
+        (call.validByAI === true ||
+          call.validByAI === false ||
+          call.ai_call_status === 'scored' ||
+          call.ai_call_status === 'auto_refused' ||
+          (call.ai_call_status === 'too_short' && hasTranscript));
+
       if (alreadyScored) {
         console.log(`🤖 [AutoAnalysis] Call ${callId} is already scored or processed. Skipping.`);
         return;
       }
 
+      // Still no recording: try again later (Twilio/Telnyx archive is often late).
+      if (!hasRecording && !force) {
+        if (attempt >= maxRecordingWaitAttempts) {
+          console.warn(
+            `⚠️ [AutoAnalysis] Call ${callId} still has no recording after ${attempt} attempts — giving up.`
+          );
+          return;
+        }
+        console.log(
+          `⏳ [AutoAnalysis] Call ${callId} has no recording yet — retrying in 15s (attempt ${attempt}/${maxRecordingWaitAttempts}).`
+        );
+        runAnalysisInBackground(callId, {
+          delayMs: 15000,
+          attempt: attempt + 1,
+        });
+        return;
+      }
+
       console.log(`🤖 [AutoAnalysis] Running background analysis for call: ${callId}`);
-      const mockReq = { params: { id: callId }, body: {} };
+      const mockReq = {
+        params: { id: callId },
+        body: force || tooShortNeedsTranscript ? { force: true } : {},
+      };
       const mockRes = {
-        status: function(code) {
+        status: function (code) {
           this.statusCode = code;
           return this;
         },
-        json: function(data) {
-          console.log(`🤖 [AutoAnalysis] Background analysis finished for ${callId} with status ${this.statusCode || 200}:`, data.success ? 'Success' : data.message);
+        json: function (data) {
+          console.log(
+            `🤖 [AutoAnalysis] Background analysis finished for ${callId} with status ${this.statusCode || 200}:`,
+            data.success ? 'Success' : data.message
+          );
           return this;
-        }
+        },
       };
       await exports.analyzeCall(mockReq, mockRes);
     } catch (err) {
       console.error(`❌ [AutoAnalysis] Background analysis failed for call ${callId}:`, err);
     }
-  }, 5000);
+  }, delayMs);
 };
 
 exports.runAnalysisInBackground = runAnalysisInBackground;
@@ -2980,6 +3026,16 @@ exports.handleTelnyxCallControlWebhook = async (req, res) => {
           console.warn('[Telnyx webhook] Cloudinary archive failed:', err.message);
         }
         await callDoc.save();
+        // Recording often arrives AFTER the first auto-analysis marked too_short
+        // with an empty transcript — re-run so every call gets a literal transcript.
+        const needsTranscript =
+          !Array.isArray(callDoc.transcript) || callDoc.transcript.length === 0;
+        if (needsTranscript || callDoc.ai_call_status === 'too_short') {
+          runAnalysisInBackground(callDoc._id, {
+            delayMs: 2000,
+            force: needsTranscript,
+          });
+        }
       }
     }
 
