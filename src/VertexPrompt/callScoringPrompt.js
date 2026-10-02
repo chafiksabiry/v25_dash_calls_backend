@@ -109,32 +109,23 @@ ${scriptInstructions}
        - *Note < 50* : si l'agent abandonne dès la première objection ou ne propose aucune valeur.
 
     6. **Transaction analysis — Résultat Commercial**
-       - Détermine le résultat concret de l'appel parmi : Vente conclue / RDV fixé / Rappel programmé / Intérêt sans engagement / Refus / Non abouti.
+       - Détermine le résultat concret de l'appel parmi la liste HARX : Transaction aboutie / RDV / Rappel demandé / Refus argumenté / Non abouti.
        - Cite la phrase ou l'échange qui confirme ce résultat.
        - Évalue si l'agent a explicitement tenté de closer (demande d'engagement, proposition de date, récapitulatif de l'accord).
-       - Feedback attendu : ex. *"Appel de service — le prospect confirme avoir soumis un dossier. Pas de tentative de vente additionnelle. Résultat : demande prise en charge, pas de transaction commerciale conclue."*
-         ou : *"Transaction confirmée — accord verbal obtenu : 'D'accord, je vous laisse mes coordonnées.' L'agent a correctement fermé l'appel par une récapitulation et une prochaine étape claire."*
+       - Feedback attendu : style QA professionnel, factuel, avec citation.
 
-    7. **PAS INTÉRESSÉS :** Détection de désintérêt explicite du prospect.
-       - Score > 50 si refus verbal clair ("non merci", "pas intéressé", "ça ne m'intéresse pas").
-       - Cite la phrase exacte du refus.
-       - Score = 0 si aucun signe de désintérêt.
+    7. **États d'avancement prospect (liste HARX obligatoire) :**
+       Pour chaque clé ci-dessous, score > 50 UNIQUEMENT si le transcript prouve explicitement cet état. Sinon score = 0 et feedback = "Non détecté — aucune preuve dans le transcript."
+       Remarques : ton professionnel de Quality Analyst, 1–2 phrases max, citation entre guillemets si détecté. N'invente jamais un suivi de commande, un besoin client ou une argumentation absente.
 
-    8. **PAS AU COURANT :** Détection d'ignorance du contexte par le prospect.
-       - Score > 50 si le prospect exprime une surprise totale ("Je n'ai rien demandé", "C'est quoi cette offre ?").
-       - Score = 0 si le prospect connaît le contexte de l'appel.
-
-    9. **DÉJÀ ÉQUIPÉS :** Détection d'une situation d'équipement existant.
-       - Score > 50 si le prospect mentionne déjà disposer d'un concurrent, contrat ou solution équivalente.
-       - Cite la formulation exacte.
-
-    10. **RDV :** Détection d'une prise de rendez-vous.
-        - Score > 50 si une date/heure a été convenue explicitement.
-        - Cite l'échange confirmant le RDV.
-
-    11. **A plus tard :** Détection d'une demande de report.
-        - Score > 50 si le prospect demande à être rappelé à un autre moment.
-        - Cite la formulation exacte.
+       - **called_unreachable** : Appelé – Injoignable (pas de réponse, busy, raccroché immédiat sans échange).
+       - **called_voicemail** : Appelé – Répondeur (messagerie / AMD).
+       - **called_wrong_number** : Appelé – Numéro non attribué (mauvais numéro, personne inconnue).
+       - **called_callback** : Appelé – Souhaite être rappelé (demande explicite de rappel).
+       - **called_rdv** : Appelé – RDV pris pour rappel (date/heure de rappel convenue, sans argumentation commerciale aboutie).
+       - **argued_rdv** : Appel argumenté – RDV pris / délai de réflexion (argumentation + RDV ou délai).
+       - **argued_declined** : Appel argumenté – Transaction déclinée (argumentation + refus / pas intéressé / déjà équipé).
+       - **argued_done** : Appel argumenté – Transaction aboutie (accord / vente conclue).
 
     ---
 
@@ -142,82 +133,101 @@ ${scriptInstructions}
     - **Langues :** Génère deux versions pour chaque feedback :
       1. **FRANÇAIS** dans \`"feedback_fr"\` et \`"feedback"\` (copie identique).
       2. **ANGLAIS** dans \`"feedback_en"\`.
-    - **Style QA professionnel :** Utilise la terminologie centre d'appel (accroche, closing, objection, pivot, reformulation, prise de commande, NPS, première réponse).
-    - **Pas de généralités :** Chaque phrase doit s'appuyer sur un fait observable dans ce transcript précis.
-    - **Longueur :** 2 à 4 phrases par indicateur. Ni trop court (inutile), ni trop long (illisible).
+    - **Style QA professionnel :** terminologie centre d'appel (accroche, closing, objection, pivot, reformulation). Phrases sobres, précises, sans marketing.
+    - **Pas de généralités :** Chaque phrase s'appuie sur un fait observable dans CE transcript.
+    - **Longueur :** 1 à 3 phrases par indicateur. Sur appel court : une seule phrase littérale suffit.
+    - **Statuts HARX :** utilise uniquement les libellés officiels ci-dessus ; n'emploie plus « PAS INTÉRESSÉS », « PAS AU COURANT », « DÉJÀ ÉQUIPÉS », « A plus tard » comme titres.
 
     ### **FORMAT JSON STRICT (RETOURNE UNIQUEMENT LE JSON) :**
     \`\`\`json
     {
       "Agent fluency": { 
         "score": <0-100>, 
-        "feedback": "<observation sur l'élocution avec citation du transcript + verdict professionnel>", 
+        "feedback": "<observation élocution + citation + verdict QA>", 
         "feedback_fr": "<idem en français>", 
         "feedback_en": "<same in english>" 
       },
       "Sentiment analysis": { 
         "score": <0-100>, 
-        "feedback": "<disposition initiale du prospect + évolution + phrase clé révélatrice>",
+        "feedback": "<disposition prospect + citation>",
         "feedback_fr": "<idem en français>", 
         "feedback_en": "<same in english>" 
       },
       "Fraud detection": { 
         "score": <0-100>, 
-        "feedback": "<résultat explicite du contrôle des 5 points de conformité avec citation ou confirmation d'absence>",
+        "feedback": "<contrôle conformité 5 points>",
         "feedback_fr": "<idem en français>", 
         "feedback_en": "<same in english>" 
       },
       "Script coherence": { 
         "score": <0-100>, 
-        "feedback": "<étapes présentes / absentes de la structure commerciale standard + évaluation du fil directeur>",
+        "feedback": "<structure commerciale observée>",
         "feedback_fr": "<idem en français>", 
         "feedback_en": "<same in english>" 
       },
       "Argumentation": { 
         "score": <0-100>, 
-        "feedback": "<objections identifiées + technique de réponse utilisée (ou absence) + évaluation de l'impact>",
+        "feedback": "<objections / techniques observées>",
         "feedback_fr": "<idem en français>", 
         "feedback_en": "<same in english>" 
       },
       "Transaction analysis": { 
         "score": <0-100>, 
-        "feedback": "<résultat commercial exact (vente/RDV/rappel/refus/non abouti) + citation de l'échange conclusif>",
+        "feedback": "<résultat commercial exact + citation>",
         "feedback_fr": "<idem en français>", 
         "feedback_en": "<same in english>" 
       },
-      "PAS INTÉRESSÉS": { 
-        "score": <0-100>, 
-        "feedback": "<citation exacte du refus ou confirmation de l'absence de refus>",
-        "feedback_fr": "<idem en français>", 
-        "feedback_en": "<same in english>" 
+      "called_unreachable": {
+        "score": <0-100>,
+        "feedback": "<preuve Injoignable ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
       },
-      "PAS AU COURANT": { 
-        "score": <0-100>, 
-        "feedback": "<citation de la réaction de surprise ou confirmation que le prospect connaît le contexte>",
-        "feedback_fr": "<idem en français>", 
-        "feedback_en": "<same in english>" 
+      "called_voicemail": {
+        "score": <0-100>,
+        "feedback": "<preuve Répondeur ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
       },
-      "DÉJÀ ÉQUIPÉS": { 
-        "score": <0-100>, 
-        "feedback": "<citation de la mention d'équipement existant ou confirmation de l'absence>",
-        "feedback_fr": "<idem en français>", 
-        "feedback_en": "<same in english>" 
+      "called_wrong_number": {
+        "score": <0-100>,
+        "feedback": "<preuve Numéro non attribué ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
       },
-      "RDV": { 
-        "score": <0-100>, 
-        "feedback": "<citation de l'accord de RDV avec date/heure si disponible, ou confirmation de l'absence>",
-        "feedback_fr": "<idem en français>", 
-        "feedback_en": "<same in english>" 
+      "called_callback": {
+        "score": <0-100>,
+        "feedback": "<preuve Souhaite être rappelé ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
       },
-      "A plus tard": { 
-        "score": <0-100>, 
-        "feedback": "<citation exacte de la demande de report ou confirmation de l'absence>",
-        "feedback_fr": "<idem en français>", 
-        "feedback_en": "<same in english>" 
+      "called_rdv": {
+        "score": <0-100>,
+        "feedback": "<preuve RDV de rappel ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
+      },
+      "argued_rdv": {
+        "score": <0-100>,
+        "feedback": "<preuve Appel argumenté – RDV / délai ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
+      },
+      "argued_declined": {
+        "score": <0-100>,
+        "feedback": "<preuve Transaction déclinée ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
+      },
+      "argued_done": {
+        "score": <0-100>,
+        "feedback": "<preuve Transaction aboutie ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
       },${scriptJsonStructure}
       "overall": {
         "score": <0-100>,
-        "feedback": "<résumé factuel : contexte de l'appel + ce que l'agent a fait + réaction du prospect + résultat + verdict qualité en 1 phrase>",
+        "feedback": "<résumé de l'appel factuel + verdict qualité>",
         "feedback_fr": "<idem en français>",
         "feedback_en": "<same in english — factual call summary then 1-line quality verdict>"
       },

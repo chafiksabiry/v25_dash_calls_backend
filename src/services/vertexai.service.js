@@ -482,9 +482,13 @@ ${fullTranscript}`;
   async transcribeAudioBuffer(audioBuffer, options = {}) {
     try {
       await initializeServices();
-      const prompt = generateAudioTranscriptionPrompt();
-      const strictNote = options.strict
-        ? '\nThe previous transcription invented dialogue that was not in the audio. Discard it. Return only the words you can actually hear. A greeting such as "Allô" or "Allô allô" must stay a greeting. If you are not sure, return [].'
+      const durationSec = Number(options.durationSec) > 0 ? Number(options.durationSec) : undefined;
+      const prompt = generateAudioTranscriptionPrompt({
+        durationSec,
+        strict: options.strict === true,
+      });
+      const durationHint = durationSec
+        ? `\nHARD LIMIT: audio ≈ ${Math.round(durationSec)}s. Do not invent more speech than that duration allows.`
         : '';
 
       // Detect format
@@ -519,7 +523,7 @@ ${fullTranscript}`;
                 "data": base64Audio
               }
             },
-            { "text": `${prompt}${strictNote}\nIdentify speakers as "Agent" and "Client" ONLY when you hear two distinct human voices. If one voice plays both sides, label ALL turns as "Agent" and set "simulated": true. Never invent a Client, a pitch, or a story. Return ONLY the JSON array.` }
+            { "text": `${prompt}${durationHint}\nIdentify speakers as "Agent" and "Client" ONLY when you hear two distinct human voices. If one voice plays both sides, label ALL turns as "Agent" and set "simulated": true. Never invent a Client, a pitch, an order number, or a story. Prefer [] over invented dialogue. Return ONLY the JSON array.` }
           ]
         }],
       };
