@@ -1763,7 +1763,8 @@ function resolveCallDurationSecForced(call) {
   return Number(call?.duration) || 0;
 }
 
-const EXAMPLE_STORY_LEAK = /je vous appelle de la part de HARX,\s*soci[eé]t[eé] sp[eé]cialis[eé]e en t[eé]l[eé]marketing|je vous contacte concernant votre demande de portabilit/i;
+const EXAMPLE_STORY_LEAK =
+  /je vous appelle de la part de HARX,\s*soci[eé]t[eé] sp[eé]cialis[eé]e en t[eé]l[eé]marketing|je vous contacte concernant votre demande de portabilit|num[eé]ro de votre commande|commande num[eé]ro\s*\d+|elle a [eé]t[eé] exp[eé]di[eé]e|quel est le num[eé]ro de votre commande|un instant,?\s*s['']il vous pla[iî]t/i;
 
 function transcriptWordCount(transcript) {
   if (!Array.isArray(transcript)) return 0;
@@ -1775,7 +1776,7 @@ function transcriptWordCount(transcript) {
     .filter(Boolean).length;
 }
 
-/** A short "Allô" must not come back as a written sales story. */
+/** A short "Allô" must not come back as a written sales / CS story. */
 function transcriptLooksInvented(transcript, durationSec) {
   if (!Array.isArray(transcript) || transcript.length === 0) return false;
   const text = transcript.map((turn) => String(turn?.text || '')).join(' ');
@@ -1783,20 +1784,22 @@ function transcriptLooksInvented(transcript, durationSec) {
   const dur = Number(durationSec) || 0;
   if (dur <= 0 || dur > 25) return false;
   const words = transcriptWordCount(transcript);
-  const maxWords = Math.max(10, Math.ceil(dur * 2.5));
-  return words > maxWords || transcript.length > 4;
+  const maxWords = Math.max(8, Math.ceil(dur * 2.5));
+  const maxTurns = dur <= 10 ? 3 : 4;
+  return words > maxWords || transcript.length > maxTurns;
 }
 
 async function transcribeRecordingLiteral(recordingUrl, durationSec) {
+  const opts = { durationSec: Number(durationSec) || undefined };
   let transcript = await withTimeout(
-    vertexAIService.transcribeAudioFromUrl(recordingUrl),
+    vertexAIService.transcribeAudioFromUrl(recordingUrl, opts),
     TRANSCRIPTION_TIMEOUT_MS,
     'Audio transcription'
   );
   if (transcriptLooksInvented(transcript, durationSec)) {
     console.warn(`⚠️ [CallController] Transcript looks invented for a ${durationSec}s call. Retrying literal mode.`);
     transcript = await withTimeout(
-      vertexAIService.transcribeAudioFromUrl(recordingUrl, { strict: true }),
+      vertexAIService.transcribeAudioFromUrl(recordingUrl, { ...opts, strict: true }),
       TRANSCRIPTION_TIMEOUT_MS,
       'Audio transcription (literal)'
     );
@@ -2385,6 +2388,14 @@ exports.analyzeCall = async (req, res) => {
       "DÉJÀ ÉQUIPÉS",
       "RDV",
       "A plus tard",
+      "called_unreachable",
+      "called_voicemail",
+      "called_wrong_number",
+      "called_callback",
+      "called_rdv",
+      "argued_rdv",
+      "argued_declined",
+      "argued_done",
       "overall"
     ];
     for (const k of RUBRIC_KEYS) {
@@ -2402,7 +2413,12 @@ exports.analyzeCall = async (req, res) => {
 
     // Discourse rubrics (RDV, déjà équipé, etc.) must not validate when fraud.
     if (isFraudDetected) {
-      for (const k of ['Transaction analysis', 'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard']) {
+      for (const k of [
+        'Transaction analysis',
+        'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard',
+        'called_unreachable', 'called_voicemail', 'called_wrong_number',
+        'called_callback', 'called_rdv', 'argued_rdv', 'argued_declined', 'argued_done',
+      ]) {
         if (scores[k] && typeof scores[k] === 'object') {
           scores[k].passed = false;
         }
