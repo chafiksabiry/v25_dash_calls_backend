@@ -330,6 +330,14 @@ function applySelfCallFraudToScores(scores, fraudResult) {
     'DÉJÀ ÉQUIPÉS',
     'RDV',
     'A plus tard',
+    'called_unreachable',
+    'called_voicemail',
+    'called_wrong_number',
+    'called_callback',
+    'called_rdv',
+    'argued_rdv',
+    'argued_declined',
+    'argued_done',
   ];
   for (const key of TX_RUBRIC_KEYS) {
     if (scores[key] && typeof scores[key] === 'object') {

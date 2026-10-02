@@ -170,6 +170,63 @@ const callSchema = new mongoose.Schema({
       feedback_en: { type: String },
       passed:   { type: Boolean, default: false }
     },
+    // HARX prospect ladder (remplace les libellés legacy ci-dessus pour les nouvelles analyses)
+    called_unreachable: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_voicemail: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_wrong_number: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_callback: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_rdv: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    argued_rdv: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    argued_declined: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    argued_done: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
     "overall": {
       score:    { type: Number, min: 0, max: 100 },
       feedback: { type: String },
