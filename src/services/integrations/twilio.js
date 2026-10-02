@@ -365,6 +365,12 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
           immediateOutcome = 'wrong_number';
         } else if (callStatus === 'busy') {
           immediateOutcome = 'busy';
+        } else if (
+          answeredByMachine ||
+          (callStatus === 'completed' && (result.duration || 0) === 0 && !result.recording_url_cloudinary)
+        ) {
+          // AMD / completed with no audio → Appelé – Répondeur (not Injoignable)
+          immediateOutcome = 'voicemail';
         } else {
           immediateOutcome = 'no_answer';
         }
