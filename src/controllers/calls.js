@@ -1602,7 +1602,8 @@ function classifyCallOutcome({
   }
 
   // 3) No AI scoring available — fall back on heuristics.
-  if (dur > 0 && dur < 30) return 'too_short';
+  // Short connected calls are "sans suite", not a user-facing "too_short" label.
+  if (dur > 0 && dur < 30) return 'connected_no_sale';
   return 'connected_no_sale';
 }
 
@@ -2081,6 +2082,22 @@ exports.analyzeCall = async (req, res) => {
         call.callOutcome === 'voicemail' ||
         answeredBy.startsWith('machine') ||
         answeredBy === 'fax';
+      const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
+      // User-facing status = Twilio / HARX disposition — never persist callOutcome "too_short".
+      const shortCallOutcome = keepVoicemail
+        ? 'voicemail'
+        : classifyCallOutcome({
+            status: call.status,
+            duration: callDurationSec,
+            hasRecording,
+            hasAiScoring: false,
+            twilioErrorCode: call.twilioErrorCode,
+          }) || 'connected_no_sale';
+      const shortDisposition = dispositionFromCallSignals({
+        callOutcome: shortCallOutcome,
+        status: call.status,
+        answeredBy: call.answeredBy,
+      });
       const updated = await Call.findByIdAndUpdate(
         id,
         {
@@ -2101,7 +2118,7 @@ exports.analyzeCall = async (req, res) => {
               ? 'Voicemail — no exchange with the prospect. No commission is due.'
               : shortMsgEn,
             ai_call_score: {},
-            callOutcome: keepVoicemail ? 'voicemail' : 'too_short',
+            callOutcome: shortCallOutcome,
             callOutcomeSource: 'system',
             'flags.fraud': false,
             'flags.serious': false,
@@ -2115,10 +2132,10 @@ exports.analyzeCall = async (req, res) => {
         { new: true }
       );
       console.log(
-        `⏱️ [CallController] Call ${id} skipped — duration ${callDurationSec}s < ${MIN_ANALYSIS_DURATION_SECONDS}s`
+        `⏱️ [CallController] Call ${id} skipped QA — duration ${callDurationSec}s < ${MIN_ANALYSIS_DURATION_SECONDS}s, callOutcome=${shortCallOutcome}`
       );
       const shortLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
-      await syncLeadDisposition(shortLeadId, keepVoicemail ? 'called_voicemail' : null);
+      await syncLeadDisposition(shortLeadId, shortDisposition);
       notifyRepCallAnalysisComplete(call, {
         ai_call_status: 'too_short',
         validByAI: false,
