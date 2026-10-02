@@ -2255,7 +2255,7 @@ exports.analyzeCall = async (req, res) => {
 
     console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
     const scores = await withTimeout(
-      vertexAIService.scoreCall(transcriptText, gigScript),
+      vertexAIService.scoreCall(transcriptText, gigScript, { durationSec: callDurationSec }),
       SCORING_TIMEOUT_MS,
       'AI scoring'
     );
