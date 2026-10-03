@@ -342,17 +342,17 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       }
     }
 
-    // ☎️  Short-circuit: calls that never reached a human (no-answer, busy,
-    // canceled, failed, or completed with zero duration) are auto-refused
-    // (`validByAI = false`). They carry no transcript / recording, so feeding
-    // them to the LLM would only waste credits and leave them stuck in
-    // "Analyse en cours" forever.
+    // ☎️  Busy / Injoignable / failed: auto-refuse, NEVER transcribe.
+    // Answered calls keep going to background analysis (literal transcript).
     const callStatus = (result.status || '').toString().toLowerCase();
     const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
     const isUnanswered =
       noConnectStatuses.has(callStatus) ||
       // A "completed" call with no duration and no audio is also a non-connect.
-      (callStatus === 'completed' && (result.duration || 0) === 0 && !result.recording_url_cloudinary);
+      (callStatus === 'completed' &&
+        (result.duration || 0) === 0 &&
+        !result.recording_url_cloudinary &&
+        !result.recording_url);
 
     if (isUnanswered && result.validByAI == null) {
       try {
@@ -367,7 +367,10 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
           immediateOutcome = 'busy';
         } else if (
           answeredByMachine ||
-          (callStatus === 'completed' && (result.duration || 0) === 0 && !result.recording_url_cloudinary)
+          (callStatus === 'completed' &&
+            (result.duration || 0) === 0 &&
+            !result.recording_url_cloudinary &&
+            !result.recording_url)
         ) {
           // AMD / completed with no audio → Appelé – Répondeur (not Injoignable)
           immediateOutcome = 'voicemail';
@@ -376,12 +379,13 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
         }
 
         const errSuffix = resultErrCode ? `, ErrorCode: ${resultErrCode}` : '';
-        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'}${errSuffix})`;
+        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'}${errSuffix}) — pas de transcription`;
         const refused = await Call.findOneAndUpdate(
           { _id: result._id },
           {
             $set: {
               validByAI: false,
+              transcript: [],
               ai_refusal_reason: refusalReason,
               callOutcome: immediateOutcome,
               callOutcomeSource: 'system',
