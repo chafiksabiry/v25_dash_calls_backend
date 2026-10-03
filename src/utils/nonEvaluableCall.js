@@ -23,6 +23,7 @@ const ANALYSIS_RUBRIC_KEYS = [
   'called_wrong_number',
   'called_callback',
   'called_rdv',
+  'not_argumented',
   'argued_rdv',
   'argued_declined',
   'argued_done',
