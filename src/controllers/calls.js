@@ -1663,6 +1663,14 @@ const runAnalysisInBackground = (callId, options = {}) => {
         return;
       }
 
+      // Busy / Injoignable: never schedule transcription or QA.
+      if (isUnreachableTelephonyCall(call)) {
+        console.log(
+          `🚫 [AutoAnalysis] Call ${callId} is busy/unreachable (${call.status}/${call.callOutcome}) — skip transcription.`
+        );
+        return;
+      }
+
       const hasTranscript =
         Array.isArray(call.transcript) && call.transcript.length > 0;
       const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
@@ -1670,7 +1678,9 @@ const runAnalysisInBackground = (callId, options = {}) => {
       // too_short without a transcript must be retried once the recording lands —
       // otherwise a 5s "Allô" stays forever as TRANSCRIPT NOT AVAILABLE.
       const tooShortNeedsTranscript =
-        call.ai_call_status === 'too_short' && (!hasTranscript || !hasRecording);
+        call.ai_call_status === 'too_short' &&
+        shouldTranscribeCall(call) &&
+        (!hasTranscript || !hasRecording);
 
       const alreadyScored =
         !force &&
@@ -1789,6 +1799,36 @@ function transcriptLooksInvented(transcript, durationSec) {
   const maxWords = Math.max(8, Math.ceil(dur * 2.5));
   const maxTurns = dur <= 10 ? 3 : 4;
   return words > maxWords || transcript.length > maxTurns;
+}
+
+/**
+ * Busy / No-Answer / canceled / failed → never transcribe (no conversation).
+ * Answered calls (completed + recording/duration, or AnsweredBy=human) → always transcribe.
+ */
+function isUnreachableTelephonyCall(call) {
+  const status = String(call?.status || '').toLowerCase();
+  if (['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed'].includes(status)) {
+    return true;
+  }
+  const outcome = String(call?.callOutcome || '').toLowerCase();
+  if (['no_answer', 'busy', 'wrong_number'].includes(outcome)) {
+    return true;
+  }
+  return false;
+}
+
+function shouldTranscribeCall(call) {
+  if (!call) return false;
+  if (isUnreachableTelephonyCall(call)) return false;
+  const answeredBy = String(call.answeredBy || '').toLowerCase();
+  if (answeredBy === 'human') return true;
+  const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
+  const duration = Number(call.duration) || 0;
+  const status = String(call.status || '').toLowerCase();
+  if (['completed', 'hangup', 'in-progress'].includes(status) && (hasRecording || duration > 0)) {
+    return true;
+  }
+  return hasRecording;
 }
 
 async function transcribeRecordingLiteral(recordingUrl, durationSec) {
@@ -1983,23 +2023,24 @@ exports.analyzeCall = async (req, res) => {
     }
     call.ai_call_status = 'processing';
 
-    // ☎️  Auto-refuse calls that never reached a human. No transcript, no
-    // audio → nothing for the LLM to score. We tag them as `validByAI=false`
-    // so they stop showing up as "Analyse en cours" forever.
+    // ☎️  Busy / Injoignable / failed: NEVER transcribe, NEVER score.
+    // Answered calls always get a literal transcript (even ≤30s).
     const callStatus = (call.status || '').toString().toLowerCase();
-    const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
     const looksUnanswered =
-      noConnectStatuses.has(callStatus) ||
-      (callStatus === 'completed' && (call.duration || 0) === 0 && !call.recording_url_cloudinary);
+      isUnreachableTelephonyCall(call) ||
+      (callStatus === 'completed' &&
+        (call.duration || 0) === 0 &&
+        !call.recording_url_cloudinary &&
+        !call.recording_url);
 
     if (looksUnanswered) {
       const errCode = call.twilioErrorCode ? Number(call.twilioErrorCode) : null;
       const errSuffix = errCode ? `, ErrorCode: ${errCode}` : '';
-      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix})`;
+      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix}) — pas de transcription`;
       const callOutcome = classifyCallOutcome({
         status: callStatus,
         duration: call.duration,
-        hasRecording: !!call.recording_url_cloudinary,
+        hasRecording: !!(call.recording_url_cloudinary || call.recording_url),
         hasAiScoring: false, // auto-refused: LLM never ran
         validByAI: false,
         refusalDetected: false,
@@ -2018,6 +2059,7 @@ exports.analyzeCall = async (req, res) => {
           $set: {
             validByAI: false,
             valid: false,
+            transcript: [], // never keep / request transcription for busy / injoignable
             ai_refusal_reason: refusalReason,
             ai_call_status: 'auto_refused',
             callOutcome,
@@ -2032,7 +2074,9 @@ exports.analyzeCall = async (req, res) => {
         },
         { new: true }
       );
-      console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome}`);
+      console.log(
+        `🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome} (no transcription)`
+      );
       const refusedLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
       await syncLeadDisposition(refusedLeadId, dispositionFromCallSignals({
         callOutcome,
@@ -2052,8 +2096,8 @@ exports.analyzeCall = async (req, res) => {
       });
     }
 
-    // QA scoring starts only above 30s. Transcription is required for every
-    // call, including a 5-second "Allô allô" — and must stay literal.
+    // Transcription for every answered call (including ≤30s "Allô").
+    // QA scoring only above 30s. Busy / Injoignable already returned above.
     // When force=true, prefer endTime-startTime (stored duration may be wrong
     // for legacy calls where Twilio wrote 0 before the recording was complete).
     const callDurationSec = force
@@ -2067,7 +2111,12 @@ exports.analyzeCall = async (req, res) => {
       let shortTranscript = Array.isArray(call.transcript) ? call.transcript : [];
       if (transcriptLooksInvented(shortTranscript, callDurationSec)) shortTranscript = [];
       const shortRecording = call.recording_url_cloudinary || call.recording_url;
-      if (shortRecording && (force || shortTranscript.length === 0)) {
+      // Answered ≤30s: always transcribe when audio exists. Never for busy/unreachable.
+      if (
+        shouldTranscribeCall(call) &&
+        shortRecording &&
+        (force || shortTranscript.length === 0)
+      ) {
         try {
           const literal = await transcribeRecordingLiteral(shortRecording, callDurationSec);
           if (literal.length > 0) shortTranscript = literal;
@@ -2193,8 +2242,10 @@ exports.analyzeCall = async (req, res) => {
     // Real Audio Transcription when missing, OR always on force re-analysis
     // (full recompute of transcript + decisions), OR when prior self-call
     // rewritten labels ("Voix simulée") make the stored transcript untrusted.
+    // Busy / Injoignable never reach this block; answered calls always do.
     const hasRecording = call.recording_url_cloudinary || call.recording_url;
     const shouldRefreshTranscript =
+      shouldTranscribeCall(call) &&
       hasRecording &&
       (force ||
         !transcriptData ||
@@ -2204,7 +2255,7 @@ exports.analyzeCall = async (req, res) => {
 
     if (shouldRefreshTranscript) {
         console.log(
-          `🎙️ [CallController] ${force ? 'Force-refreshing' : 'Attempting'} audio transcription for call ${id}...`
+          `🎙️ [CallController] ${force ? 'Force-refreshing' : 'Attempting'} audio transcription for answered call ${id}...`
         );
         try {
           const recordingUrl = call.recording_url_cloudinary || call.recording_url;
