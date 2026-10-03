@@ -2605,7 +2605,7 @@ exports.analyzeCall = async (req, res) => {
           overallScore: scores.overall?.score || 0,
           refusalReason: call.ai_refusal_reason,
         });
-    // Prefer explicit argumented accept/refuse / not argumented from the decision tree.
+    // Prefer explicit ladder outcomes from the decision tree (incl. rappel / RDV).
     if (!isNonProductiveCall && !isFraudDetected) {
       if (suggestedDisposition === 'argued_done' || transactionDetected) {
         callOutcome = 'transaction';
@@ -2614,6 +2614,12 @@ exports.analyzeCall = async (req, res) => {
         (refusalDetected && looksArgumented)
       ) {
         callOutcome = 'refusal';
+      } else if (suggestedDisposition === 'argued_rdv') {
+        callOutcome = 'argued_interested';
+      } else if (suggestedDisposition === 'called_callback') {
+        callOutcome = 'callback_requested';
+      } else if (suggestedDisposition === 'called_rdv') {
+        callOutcome = 'appointment';
       } else if (isNotArgumented || suggestedDisposition === 'not_argumented') {
         callOutcome = 'not_argumented';
       }

@@ -245,15 +245,23 @@ ${scriptInstructions}
     \`\`\`
 
     ### **RÈGLE POUR suggested_disposition (arbre décisionnel) :**
-    1. AMD / répondeur → \`called_voicemail\`
-    2. Busy / injoignable → \`called_unreachable\`
-    3. Prospect a décroché (>30s analysé) :
-       - **Aucune argumentation commerciale** → \`not_argumented\` (Non argumenté / Not argumented — invalide)
-       - **Argumenté + refus** → \`argued_declined\` (Argumented Call – Transaction Declined)
-       - **Argumenté + acceptation / vente** → \`argued_done\` (Argumented Call – Transaction Completed)
-       - Argumenté + RDV / délai → \`argued_rdv\`
-       - Demande de rappel sans argumentation → \`called_callback\` / \`called_rdv\`
-    Si incertain entre argumenté et non argumenté, choisis \`not_argumented\`.
+    1. AMD / répondeur → \`called_voicemail\` (Appelé – Répondeur / Called – Voicemail)
+    2. Busy / injoignable → \`called_unreachable\` (Appelé – Injoignable / Called – Unreachable)
+    3. Prospect a décroché (>30s analysé) — choisir UNE valeur :
+       - Demande explicite d'être rappelé (sans date fixe, sans argumentation) → \`called_callback\`
+         (Appelé – Souhaite être rappelé / Called – Requested callback)
+       - RDV de rappel convenu (date/heure) **sans** argumentation commerciale → \`called_rdv\`
+         (Appelé – RDV pris pour rappel / Called – Callback appointment)
+       - **Argumenté** + RDV commercial ou délai de réflexion → \`argued_rdv\`
+         (Appel argumenté – RDV / délai / Argumented Call – Appointment / thinking time)
+       - **Argumenté** + refus → \`argued_declined\`
+         (Appel argumenté – Transaction déclinée / Argumented Call – Transaction Declined)
+       - **Argumenté** + acceptation / vente → \`argued_done\`
+         (Appel argumenté – Transaction aboutie / Argumented Call – Transaction Completed)
+       - Décroché mais **aucune** argumentation **et** pas de demande de rappel/RDV → \`not_argumented\`
+         (Non argumenté / Not argumented — invalide)
+    Priorité : rappel/RDV explicite > argumenté refus/accept > non argumenté.
+    Ne choisis \`not_argumented\` que s'il n'y a ni argumentation ni demande de rappel/RDV.
 
     ### **RÈGLES ABSOLUES :**
     1. **Anti-invention :** Ne rédige JAMAIS un résumé ou un feedback basé sur ce que l'agent *aurait pu* dire. Chaque phrase doit pouvoir être reliée à une citation du transcript. Sinon : "Non évaluable sur cet appel."
