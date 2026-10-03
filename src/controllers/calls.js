@@ -2456,8 +2456,8 @@ exports.analyzeCall = async (req, res) => {
       console.log(`🏷️ [CallController] AI suggested disposition for call ${id}: ${suggestedDisposition}`);
     }
 
-    // Call is valid if argumented + no fraud + script OK + duration > 70s.
-    // Not argumented → always invalid (no commission).
+    // Call commission ($ Appel): argumented + duration > 30s + no fraud.
+    // Not argumented / AMD / Busy → always invalid (no commission).
     const duration = call.duration || call._doc?.duration || 0;
     const isNotArgumented =
       !isNonProductiveCall &&
@@ -2470,8 +2470,7 @@ exports.analyzeCall = async (req, res) => {
       !isNotArgumented &&
       looksArgumented &&
       fraudScore >= 50 &&
-      scriptCoherence >= 50 &&
-      duration > 70;
+      duration > 30;
 
     if (isFraudDetected) {
       transactionDetected = false;
