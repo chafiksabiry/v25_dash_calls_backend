@@ -2098,15 +2098,18 @@ exports.analyzeCall = async (req, res) => {
         status: call.status,
         answeredBy: call.answeredBy,
       });
+      // Connected but not argued: do NOT mark validByAI=false (that looks like a reject).
+      // Voicemail keeps false; otherwise null = no commission, no « Refusé AI ».
+      const shortValidByAI = keepVoicemail ? false : null;
       const updated = await Call.findByIdAndUpdate(
         id,
         {
           $set: {
             duration: callDurationSec,
             transcript: shortTranscript,
-            validByAI: false,
-            valid: false,
-            ai_refusal_reason: shortMsgFr,
+            validByAI: shortValidByAI,
+            valid: shortValidByAI,
+            ai_refusal_reason: keepVoicemail ? shortMsgFr : null,
             ai_call_status: 'too_short',
             ai_summary: keepVoicemail
               ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
@@ -2138,12 +2141,12 @@ exports.analyzeCall = async (req, res) => {
       await syncLeadDisposition(shortLeadId, shortDisposition);
       notifyRepCallAnalysisComplete(call, {
         ai_call_status: 'too_short',
-        validByAI: false,
+        validByAI: shortValidByAI,
       });
       return res.status(200).json({
         success: true,
         message: shortMsgFr,
-        validByAI: false,
+        validByAI: shortValidByAI,
         ai_call_status: 'too_short',
         data: updated,
       });
