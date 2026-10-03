@@ -1386,6 +1386,7 @@ exports.amdCallback = async (req, res) => {
           callOutcomeSource: 'system',
           validByAI: false,
           valid: false,
+          transcript: [], // AMD / répondeur — jamais de transcription
           ai_call_status: 'auto_refused',
           ai_refusal_reason: reason,
           updatedAt: new Date(),
@@ -1663,10 +1664,10 @@ const runAnalysisInBackground = (callId, options = {}) => {
         return;
       }
 
-      // Busy / Injoignable: never schedule transcription or QA.
-      if (isUnreachableTelephonyCall(call)) {
+      // Busy / Injoignable / AMD: never schedule transcription or QA.
+      if (shouldSkipTranscription(call)) {
         console.log(
-          `🚫 [AutoAnalysis] Call ${callId} is busy/unreachable (${call.status}/${call.callOutcome}) — skip transcription.`
+          `🚫 [AutoAnalysis] Call ${callId} skip transcription (${call.status}/${call.callOutcome}/${call.answeredBy}).`
         );
         return;
       }
@@ -1802,8 +1803,9 @@ function transcriptLooksInvented(transcript, durationSec) {
 }
 
 /**
- * Busy / No-Answer / canceled / failed → never transcribe (no conversation).
- * Answered calls (completed + recording/duration, or AnsweredBy=human) → always transcribe.
+ * Busy / No-Answer / canceled / failed → never transcribe.
+ * AMD / voicemail / fax → never transcribe.
+ * Human-answered calls → always transcribe.
  */
 function isUnreachableTelephonyCall(call) {
   const status = String(call?.status || '').toLowerCase();
@@ -1817,9 +1819,29 @@ function isUnreachableTelephonyCall(call) {
   return false;
 }
 
+function isAmdVoicemailCall(call) {
+  if (!call) return false;
+  if (typeof isCallVoicemail === 'function' && isCallVoicemail(call)) return true;
+  const answeredBy = String(call.answeredBy || '').toLowerCase();
+  if (answeredBy.startsWith('machine') || answeredBy === 'fax' || answeredBy.includes('amd')) {
+    return true;
+  }
+  const outcome = String(call.callOutcome || '').toLowerCase();
+  if (outcome === 'voicemail' || outcome === 'amd' || outcome === 'answering_machine') {
+    return true;
+  }
+  const status = String(call.status || '').toLowerCase();
+  return status.includes('machine') || status.includes('amd');
+}
+
+/** Skip transcription for busy / injoignable / AMD répondeur. */
+function shouldSkipTranscription(call) {
+  return isUnreachableTelephonyCall(call) || isAmdVoicemailCall(call);
+}
+
 function shouldTranscribeCall(call) {
   if (!call) return false;
-  if (isUnreachableTelephonyCall(call)) return false;
+  if (shouldSkipTranscription(call)) return false;
   const answeredBy = String(call.answeredBy || '').toLowerCase();
   if (answeredBy === 'human') return true;
   const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
@@ -2023,8 +2045,8 @@ exports.analyzeCall = async (req, res) => {
     }
     call.ai_call_status = 'processing';
 
-    // ☎️  Busy / Injoignable / failed: NEVER transcribe, NEVER score.
-    // Answered calls always get a literal transcript (even ≤30s).
+    // ☎️  Busy / Injoignable / AMD répondeur: NEVER transcribe, NEVER score.
+    // Human-answered calls always get a literal transcript (even ≤30s).
     const callStatus = (call.status || '').toString().toLowerCase();
     const looksUnanswered =
       isUnreachableTelephonyCall(call) ||
@@ -2032,34 +2054,39 @@ exports.analyzeCall = async (req, res) => {
         (call.duration || 0) === 0 &&
         !call.recording_url_cloudinary &&
         !call.recording_url);
+    const looksAmd = isAmdVoicemailCall(call);
 
-    if (looksUnanswered) {
+    if (looksUnanswered || looksAmd) {
       const errCode = call.twilioErrorCode ? Number(call.twilioErrorCode) : null;
       const errSuffix = errCode ? `, ErrorCode: ${errCode}` : '';
-      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix}) — pas de transcription`;
-      const callOutcome = classifyCallOutcome({
-        status: callStatus,
-        duration: call.duration,
-        hasRecording: !!(call.recording_url_cloudinary || call.recording_url),
-        hasAiScoring: false, // auto-refused: LLM never ran
-        validByAI: false,
-        refusalDetected: false,
-        transactionDetected: false,
-        fraudScore: null,
-        argumentationScore: 0,
-        scriptCoherence: 0,
-        sentimentScore: 0,
-        overallScore: 0,
-        refusalReason,
-        twilioErrorCode: errCode,
-      });
+      const callOutcome = looksAmd
+        ? 'voicemail'
+        : classifyCallOutcome({
+            status: callStatus,
+            duration: call.duration,
+            hasRecording: !!(call.recording_url_cloudinary || call.recording_url),
+            hasAiScoring: false,
+            validByAI: false,
+            refusalDetected: false,
+            transactionDetected: false,
+            fraudScore: null,
+            argumentationScore: 0,
+            scriptCoherence: 0,
+            sentimentScore: 0,
+            overallScore: 0,
+            refusalReason: '',
+            twilioErrorCode: errCode,
+          });
+      const refusalReason = looksAmd
+        ? `Répondeur / AMD (${call.answeredBy || 'machine'}) — pas de transcription`
+        : `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix}) — pas de transcription`;
       const updated = await Call.findByIdAndUpdate(
         id,
         {
           $set: {
             validByAI: false,
             valid: false,
-            transcript: [], // never keep / request transcription for busy / injoignable
+            transcript: [], // never transcribe busy / injoignable / AMD
             ai_refusal_reason: refusalReason,
             ai_call_status: 'auto_refused',
             callOutcome,
@@ -2075,14 +2102,19 @@ exports.analyzeCall = async (req, res) => {
         { new: true }
       );
       console.log(
-        `🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome} (no transcription)`
+        `🚫 [CallController] Call ${id} auto-refused (${callStatus}/${callOutcome}) — no transcription`
       );
       const refusedLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
-      await syncLeadDisposition(refusedLeadId, dispositionFromCallSignals({
-        callOutcome,
-        status: callStatus,
-        answeredBy: call.answeredBy,
-      }));
+      await syncLeadDisposition(
+        refusedLeadId,
+        looksAmd
+          ? 'called_voicemail'
+          : dispositionFromCallSignals({
+              callOutcome,
+              status: callStatus,
+              answeredBy: call.answeredBy,
+            })
+      );
       notifyRepCallAnalysisComplete(call, {
         ai_call_status: 'auto_refused',
         validByAI: false,
@@ -2096,8 +2128,8 @@ exports.analyzeCall = async (req, res) => {
       });
     }
 
-    // Transcription for every answered call (including ≤30s "Allô").
-    // QA scoring only above 30s. Busy / Injoignable already returned above.
+    // Transcription for every human-answered call (including ≤30s "Allô").
+    // QA scoring only above 30s. Busy / Injoignable / AMD already returned above.
     // When force=true, prefer endTime-startTime (stored duration may be wrong
     // for legacy calls where Twilio wrote 0 before the recording was complete).
     const callDurationSec = force
