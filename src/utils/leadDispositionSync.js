@@ -4,15 +4,16 @@ const { Lead } = require('../models/Lead');
 /**
  * HARX prospect ladder (9 statuses):
  *   to_call | called_unreachable | called_voicemail | called_wrong_number |
- *   called_callback | called_rdv | argued_rdv | argued_declined | argued_done
+ *   called_callback | called_rdv | not_argumented | argued_rdv | argued_declined | argued_done
  *
  * Twilio → HARX (telephony):
- *   AMD AnsweredBy=machine_* / fax          → called_voicemail  (Appelé – Répondeur)
- *   CallStatus=busy                        → called_unreachable (Appelé – Injoignable)
+ *   AMD AnsweredBy=machine_* / fax          → called_voicemail  (Appelé – Répondeur / Called – Voicemail)
+ *   CallStatus=busy                        → called_unreachable (Appelé – Injoignable / Called – Unreachable)
  *   CallStatus=no-answer / canceled        → called_unreachable
- *   CallStatus=failed                      → called_wrong_number (Appelé – Numéro non attribué)
+ *   CallStatus=failed                      → called_wrong_number
  *   callOutcome=voicemail                  → called_voicemail
  *   callOutcome=busy / no_answer           → called_unreachable
+ *   callOutcome=not_argumented             → not_argumented (Non argumenté / Not argumented)
  */
 
 const RANK = {
@@ -20,6 +21,7 @@ const RANK = {
   called_unreachable: 1,
   called_voicemail: 1,
   called_wrong_number: 1,
+  not_argumented: 1,
   called_callback: 2,
   called_rdv: 3,
   argued_rdv: 4,
@@ -54,6 +56,7 @@ function dispositionFromCallSignals({ callOutcome, status, answeredBy } = {}) {
   // 4) Commercial outcomes (AI / REP)
   if (outcome === 'callback_requested') return 'called_callback';
   if (outcome === 'appointment') return 'called_rdv';
+  if (outcome === 'not_argumented') return 'not_argumented';
   if (outcome === 'argued_interested') return 'argued_rdv';
   if (outcome === 'transaction') return 'argued_done';
   if (['refusal', 'not_interested', 'already_equipped'].includes(outcome)) return 'argued_declined';
