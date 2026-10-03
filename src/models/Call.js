@@ -315,8 +315,9 @@ const callSchema = new mongoose.Schema({
       'busy',                // occupé
       'wrong_number',        // numéro invalide
       'fraud',               // fraude détectée
-      'too_short',           // <X sec, indécidable
-      'connected_no_sale',   // connecté sans issue claire (fallback)
+      'too_short',           // ≤30s, indécidable (pas d'analyse IA)
+      'connected_no_sale',   // legacy connecté sans issue claire
+      'not_argumented',      // >30s analysé : connecté mais non argumenté (invalide)
     ],
     default: null,
     index: true,
@@ -369,7 +370,8 @@ const callSchema = new mongoose.Schema({
   suggestedDisposition: {
     type: String,
     enum: ['to_call', 'called_unreachable', 'called_voicemail', 'called_wrong_number',
-           'called_callback', 'called_rdv', 'argued_rdv', 'argued_declined', 'argued_done', null],
+           'called_callback', 'called_rdv', 'not_argumented', 'argued_rdv', 'argued_declined',
+           'argued_done', null],
     default: null,
     index: true,
   },

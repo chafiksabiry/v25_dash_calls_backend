@@ -118,14 +118,15 @@ ${scriptInstructions}
        Pour chaque clé ci-dessous, score > 50 UNIQUEMENT si le transcript prouve explicitement cet état. Sinon score = 0 et feedback = "Non détecté — aucune preuve dans le transcript."
        Remarques : ton professionnel de Quality Analyst, 1–2 phrases max, citation entre guillemets si détecté. N'invente jamais un suivi de commande, un besoin client ou une argumentation absente.
 
-       - **called_unreachable** : Appelé – Injoignable (pas de réponse, busy, raccroché immédiat sans échange).
-       - **called_voicemail** : Appelé – Répondeur (messagerie / AMD).
-       - **called_wrong_number** : Appelé – Numéro non attribué (mauvais numéro, personne inconnue).
-       - **called_callback** : Appelé – Souhaite être rappelé (demande explicite de rappel).
-       - **called_rdv** : Appelé – RDV pris pour rappel (date/heure de rappel convenue, sans argumentation commerciale aboutie).
-       - **argued_rdv** : Appel argumenté – RDV pris / délai de réflexion (argumentation + RDV ou délai).
-       - **argued_declined** : Appel argumenté – Transaction déclinée (argumentation + refus / pas intéressé / déjà équipé).
-       - **argued_done** : Appel argumenté – Transaction aboutie (accord / vente conclue).
+       - **called_unreachable** : Appelé – Injoignable / Called – Unreachable (busy, no-answer).
+       - **called_voicemail** : Appelé – Répondeur / Called – Voicemail (AMD / messagerie).
+       - **called_wrong_number** : Appelé – Numéro non attribué / Called – Wrong number.
+       - **called_callback** : Appelé – Souhaite être rappelé / Called – Requested callback.
+       - **called_rdv** : Appelé – RDV pris pour rappel / Called – Callback appointment.
+       - **not_argumented** : Non argumenté / Not argumented (prospect a décroché mais aucune argumentation commerciale — appel invalide).
+       - **argued_rdv** : Appel argumenté – RDV / délai / Argumented Call – Appointment / thinking time.
+       - **argued_declined** : Appel argumenté – Transaction déclinée / Argumented Call – Transaction Declined (argumenté + refus).
+       - **argued_done** : Appel argumenté – Transaction aboutie / Argumented Call – Transaction Completed (argumenté + acceptation).
 
     ---
 
@@ -207,6 +208,12 @@ ${scriptInstructions}
         "feedback_fr": "<idem en français>",
         "feedback_en": "<same in english>"
       },
+      "not_argumented": {
+        "score": <0-100>,
+        "feedback": "<preuve Non argumenté ou Non détecté>",
+        "feedback_fr": "<idem en français>",
+        "feedback_en": "<same in english>"
+      },
       "argued_rdv": {
         "score": <0-100>,
         "feedback": "<preuve Appel argumenté – RDV / délai ou Non détecté>",
@@ -233,22 +240,20 @@ ${scriptInstructions}
       },
       "transaction_detected": <true|false>,
       "refusal_detected": <true|false>,
-      "suggested_disposition": "<une seule valeur parmi : to_call | called_unreachable | called_voicemail | called_wrong_number | called_callback | called_rdv | argued_rdv | argued_declined | argued_done>"
+      "suggested_disposition": "<une seule valeur parmi : to_call | called_unreachable | called_voicemail | called_wrong_number | called_callback | called_rdv | not_argumented | argued_rdv | argued_declined | argued_done>"
     }
     \`\`\`
 
-    ### **RÈGLE POUR suggested_disposition :**
-    À partir de tout ce que tu as observé dans le transcript, choisis UNE SEULE valeur parmi :
-    - \`called_unreachable\` : le prospect n'a pas répondu ou a raccroché immédiatement
-    - \`called_voicemail\` : l'appel est tombé sur un répondeur
-    - \`called_wrong_number\` : mauvais numéro ou prospect ne correspond pas
-    - \`called_callback\` : le prospect a explicitement demandé à être rappelé à un autre moment
-    - \`called_rdv\` : un rendez-vous de rappel a été programmé (date/heure convenue)
-    - \`argued_rdv\` : l'agent a argumenté et le prospect prend un délai de réflexion ou un RDV commercial
-    - \`argued_declined\` : l'agent a argumenté et le prospect a décliné (pas intéressé, déjà équipé, refus ferme)
-    - \`argued_done\` : transaction conclue, accord commercial obtenu
-    - \`to_call\` : appel trop court ou non concluant, le prospect doit être recontacté
-    Justifie ton choix par les faits observés. Si incertain, choisis \`to_call\`.
+    ### **RÈGLE POUR suggested_disposition (arbre décisionnel) :**
+    1. AMD / répondeur → \`called_voicemail\`
+    2. Busy / injoignable → \`called_unreachable\`
+    3. Prospect a décroché (>30s analysé) :
+       - **Aucune argumentation commerciale** → \`not_argumented\` (Non argumenté / Not argumented — invalide)
+       - **Argumenté + refus** → \`argued_declined\` (Argumented Call – Transaction Declined)
+       - **Argumenté + acceptation / vente** → \`argued_done\` (Argumented Call – Transaction Completed)
+       - Argumenté + RDV / délai → \`argued_rdv\`
+       - Demande de rappel sans argumentation → \`called_callback\` / \`called_rdv\`
+    Si incertain entre argumenté et non argumenté, choisis \`not_argumented\`.
 
     ### **RÈGLES ABSOLUES :**
     1. **Anti-invention :** Ne rédige JAMAIS un résumé ou un feedback basé sur ce que l'agent *aurait pu* dire. Chaque phrase doit pouvoir être reliée à une citation du transcript. Sinon : "Non évaluable sur cet appel."

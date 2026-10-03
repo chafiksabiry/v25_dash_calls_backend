@@ -1596,14 +1596,15 @@ function classifyCallOutcome({
       return 'argued_interested';
     }
 
-    // AI ran but no specific signal → connected without a clear outcome.
-    // (e.g. agent silent, no engagement on either side, dead air, ...)
-    return 'connected_no_sale';
+    // AI ran: conversation present but not argumented → Not argumented (invalid).
+    if (typeof argumentationScore === 'number' && argumentationScore < 50) {
+      return 'not_argumented';
+    }
+    return 'not_argumented';
   }
 
-  // 3) No AI scoring available — fall back on heuristics.
-  // Short connected calls are "sans suite", not a user-facing "too_short" label.
-  if (dur > 0 && dur < 30) return 'connected_no_sale';
+  // 3) No AI scoring available — ≤30s answered calls: no analysis yet.
+  if (dur > 0 && dur <= 30) return 'connected_no_sale';
   return 'connected_no_sale';
 }
 
@@ -1834,7 +1835,7 @@ exports.analyzeCall = async (req, res) => {
     const MIN_ANALYSIS_DURATION_SECONDS = 30;
     const existingDurationSec = resolveCallDurationSec(call);
     const alreadyTooShort =
-      existingDurationSec > 0 && existingDurationSec < MIN_ANALYSIS_DURATION_SECONDS;
+      existingDurationSec > 0 && existingDurationSec <= MIN_ANALYSIS_DURATION_SECONDS;
 
     const storedTranscript = Array.isArray(call.transcript) ? call.transcript : [];
     if (
@@ -2061,7 +2062,8 @@ exports.analyzeCall = async (req, res) => {
     if (callDurationSec > 0 && (!call.duration || Number(call.duration) === 0)) {
       call.duration = callDurationSec;
     }
-    if (callDurationSec > 0 && callDurationSec < MIN_ANALYSIS_DURATION_SECONDS) {
+    // AI analysis only when duration is strictly greater than 30 seconds.
+    if (callDurationSec > 0 && callDurationSec <= MIN_ANALYSIS_DURATION_SECONDS) {
       let shortTranscript = Array.isArray(call.transcript) ? call.transcript : [];
       if (transcriptLooksInvented(shortTranscript, callDurationSec)) shortTranscript = [];
       const shortRecording = call.recording_url_cloudinary || call.recording_url;
@@ -2074,9 +2076,9 @@ exports.analyzeCall = async (req, res) => {
         }
       }
       const shortMsgFr =
-        `Appel trop court (${callDurationSec}s) — retranscription conservée, analyse QA non effectuée (réservée aux appels de plus de ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+        `Appel ≤ ${MIN_ANALYSIS_DURATION_SECONDS}s (${callDurationSec}s) — retranscription conservée. L'analyse IA (argumenté / non argumenté) ne se lance que si la durée est supérieure à ${MIN_ANALYSIS_DURATION_SECONDS}s.`;
       const shortMsgEn =
-        `Call too short (${callDurationSec}s) — transcript kept, QA analysis skipped (only calls over ${MIN_ANALYSIS_DURATION_SECONDS}s).`;
+        `Call ≤ ${MIN_ANALYSIS_DURATION_SECONDS}s (${callDurationSec}s) — transcript kept. AI analysis (argumented / not argumented) runs only when duration is greater than ${MIN_ANALYSIS_DURATION_SECONDS}s.`;
       const answeredBy = String(call.answeredBy || '').toLowerCase();
       const keepVoicemail =
         call.callOutcome === 'voicemail' ||
@@ -2335,25 +2337,55 @@ exports.analyzeCall = async (req, res) => {
     let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
     let refusalDetected = scores.refusal_detected || false;
 
-    // Extract and validate suggested disposition from HARX 9-status ladder.
+    // Extract and validate suggested disposition from HARX ladder (+ not_argumented).
     const VALID_HARX_DISPOSITIONS = new Set([
       'to_call', 'called_unreachable', 'called_voicemail', 'called_wrong_number',
-      'called_callback', 'called_rdv', 'argued_rdv', 'argued_declined', 'argued_done',
+      'called_callback', 'called_rdv', 'not_argumented',
+      'argued_rdv', 'argued_declined', 'argued_done',
     ]);
     const rawSuggestedDisp = scores.suggested_disposition;
-    const suggestedDisposition = VALID_HARX_DISPOSITIONS.has(rawSuggestedDisp) ? rawSuggestedDisp : null;
+    let suggestedDisposition = VALID_HARX_DISPOSITIONS.has(rawSuggestedDisp) ? rawSuggestedDisp : null;
+
+    // Answered >30s: classify argumented vs not argumented from AI signals.
+    const isArgumentedDisposition = ['argued_done', 'argued_declined', 'argued_rdv'].includes(
+      String(suggestedDisposition || '')
+    );
+    const softAnsweredDisposition = ['called_callback', 'called_rdv', 'called_wrong_number'].includes(
+      String(suggestedDisposition || '')
+    );
+    const looksArgumented =
+      isArgumentedDisposition ||
+      transactionDetected ||
+      refusalDetected ||
+      argumentationScore >= 50;
+    if (
+      !isNonProductiveCall &&
+      !isFraudDetected &&
+      !looksArgumented &&
+      !softAnsweredDisposition &&
+      (!suggestedDisposition ||
+        suggestedDisposition === 'to_call' ||
+        suggestedDisposition === 'called_unreachable')
+    ) {
+      suggestedDisposition = 'not_argumented';
+    }
     if (suggestedDisposition) {
       console.log(`🏷️ [CallController] AI suggested disposition for call ${id}: ${suggestedDisposition}`);
     }
 
-    // Call is valid if:
-    // 1. No fraud (score >= 50 and no self-call signal)
-    // 2. Script coherence is good (>= 50)
-    // 3. Call duration is greater than 70 seconds
+    // Call is valid if argumented + no fraud + script OK + duration > 70s.
+    // Not argumented → always invalid (no commission).
     const duration = call.duration || call._doc?.duration || 0;
+    const isNotArgumented =
+      !isNonProductiveCall &&
+      !isFraudDetected &&
+      !softAnsweredDisposition &&
+      (suggestedDisposition === 'not_argumented' || !looksArgumented);
     const isValidByAI =
       !isNonProductiveCall &&
       !isFraudDetected &&
+      !isNotArgumented &&
+      looksArgumented &&
       fraudScore >= 50 &&
       scriptCoherence >= 50 &&
       duration > 70;
@@ -2413,6 +2445,7 @@ exports.analyzeCall = async (req, res) => {
       "called_wrong_number",
       "called_callback",
       "called_rdv",
+      "not_argumented",
       "argued_rdv",
       "argued_declined",
       "argued_done",
@@ -2437,7 +2470,8 @@ exports.analyzeCall = async (req, res) => {
         'Transaction analysis',
         'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard',
         'called_unreachable', 'called_voicemail', 'called_wrong_number',
-        'called_callback', 'called_rdv', 'argued_rdv', 'argued_declined', 'argued_done',
+        'called_callback', 'called_rdv', 'not_argumented',
+        'argued_rdv', 'argued_declined', 'argued_done',
       ]) {
         if (scores[k] && typeof scores[k] === 'object') {
           scores[k].passed = false;
@@ -2454,8 +2488,9 @@ exports.analyzeCall = async (req, res) => {
 
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
-    call.validByAI = isValidByAI;
-    call.valid = isValidByAI; // Unified valid flag
+    call.validByAI = isNotArgumented ? false : isValidByAI;
+    call.valid = isNotArgumented ? false : isValidByAI;
+    call.suggestedDisposition = suggestedDisposition || null;
     call.argumentation_score = isNonProductiveCall || isFraudDetected ? 0 : argumentationScore;
     call.repCallCommission = repCallCommission;
     call.platformCallCommission = platformCallCommission;
@@ -2468,7 +2503,7 @@ exports.analyzeCall = async (req, res) => {
     //  without re-scanning ai_call_score on every request.
     //
     //  Voicemail short-circuit: rubrics were stripped above; force outcome explicitly.
-    const callOutcome = isNonProductiveCall
+    let callOutcome = isNonProductiveCall
       ? 'voicemail'
       : isFraudDetected
       ? 'fraud'
@@ -2487,14 +2522,31 @@ exports.analyzeCall = async (req, res) => {
           overallScore: scores.overall?.score || 0,
           refusalReason: call.ai_refusal_reason,
         });
+    // Prefer explicit argumented accept/refuse / not argumented from the decision tree.
+    if (!isNonProductiveCall && !isFraudDetected) {
+      if (suggestedDisposition === 'argued_done' || transactionDetected) {
+        callOutcome = 'transaction';
+      } else if (
+        suggestedDisposition === 'argued_declined' ||
+        (refusalDetected && looksArgumented)
+      ) {
+        callOutcome = 'refusal';
+      } else if (isNotArgumented || suggestedDisposition === 'not_argumented') {
+        callOutcome = 'not_argumented';
+      }
+    }
     call.callOutcome = callOutcome;
     call.callOutcomeSource = 'ai';
     const scoredLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
-    await syncLeadDisposition(scoredLeadId, dispositionFromCallSignals({
-      callOutcome,
-      status: call.status,
-      answeredBy: call.answeredBy,
-    }));
+    await syncLeadDisposition(
+      scoredLeadId,
+      suggestedDisposition ||
+        dispositionFromCallSignals({
+          callOutcome,
+          status: call.status,
+          answeredBy: call.answeredBy,
+        })
+    );
     call.ai_call_status = 'scored';
     // Use the LLM's overall feedback as a starter summary. A dedicated
     // /audio/summarize prompt can replace this later without changing the
