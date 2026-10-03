@@ -250,9 +250,10 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       update.ai_call_status = 'auto_refused';
       update.callOutcome = 'voicemail';
       update.callOutcomeSource = isVoicemail ? 'rep' : 'system';
+      update.transcript = []; // AMD / répondeur — jamais de transcription
       update.ai_refusal_reason = isVoicemail
-        ? 'Appel sur messagerie vocale (déclaré par le rep)'
-        : `Répondeur détecté par Twilio (${twilioAnsweredBy})`;
+        ? 'Appel sur messagerie vocale (déclaré par le rep) — pas de transcription'
+        : `Répondeur détecté par Twilio AMD (${twilioAnsweredBy}) — pas de transcription`;
     }
 
     if (call.ChildCallSid) {
