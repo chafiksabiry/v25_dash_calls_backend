@@ -29,6 +29,8 @@ const RANK = {
   argued_done: 5,
 };
 
+const MAX_FOLLOW_UP_DAYS = 90;
+
 function dispositionFromCallSignals({ callOutcome, status, answeredBy } = {}) {
   const answered = String(answeredBy || '').toLowerCase();
   const outcome = String(callOutcome || '').toLowerCase();
@@ -80,4 +82,128 @@ async function syncLeadDisposition(leadId, disposition) {
   );
 }
 
-module.exports = { dispositionFromCallSignals, syncLeadDisposition, RANK };
+/**
+ * Parse AI/REP schedule datetime. Returns null if invalid, past, or > 90 days out.
+ */
+function parseFollowUpAt(raw, nowMs = Date.now()) {
+  if (raw == null || raw === '' || raw === 'null') return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  const ms = d.getTime();
+  // Allow slight past (clock skew / "in a few minutes" race) — 5 min.
+  if (ms < nowMs - 5 * 60 * 1000) return null;
+  if (ms > nowMs + MAX_FOLLOW_UP_DAYS * 24 * 60 * 60 * 1000) return null;
+  return d;
+}
+
+/**
+ * Infer schedule type from AI fields + disposition when schedule_type is missing.
+ */
+function resolveFollowUpType({ scheduleType, suggestedDisposition, appointmentAt, callbackAt } = {}) {
+  const t = String(scheduleType || '').toLowerCase();
+  if (t === 'appointment' || t === 'callback') return t;
+  if (appointmentAt) return 'appointment';
+  if (callbackAt) return 'callback';
+  const disp = String(suggestedDisposition || '').toLowerCase();
+  if (disp === 'called_rdv' || disp === 'argued_rdv') return 'appointment';
+  if (disp === 'called_callback') return 'callback';
+  return null;
+}
+
+/**
+ * Persist next RDV/callback on the lead for Workspace reminders.
+ * REP source always wins over AI. AI does not overwrite an existing REP date.
+ */
+async function syncLeadFollowUp(leadId, { at, type, source } = {}) {
+  if (!leadId || !type || !['appointment', 'callback'].includes(type)) return;
+  if (!mongoose.Types.ObjectId.isValid(String(leadId))) return;
+  const when = at instanceof Date ? at : parseFollowUpAt(at);
+  if (!when) return;
+
+  const _id = new mongoose.Types.ObjectId(String(leadId));
+  const lead = await Lead.collection.findOne(
+    { _id },
+    { projection: { nextFollowUpAt: 1, nextFollowUpSource: 1, nextFollowUpType: 1 } }
+  );
+  if (!lead) return;
+
+  const src = source === 'rep' ? 'rep' : 'ai';
+  if (src === 'ai' && lead.nextFollowUpSource === 'rep' && lead.nextFollowUpAt) {
+    return;
+  }
+
+  await Lead.collection.updateOne(
+    { _id },
+    {
+      $set: {
+        nextFollowUpAt: when,
+        nextFollowUpType: type,
+        nextFollowUpSource: src,
+        nextFollowUpNotifiedAt: null,
+        updatedAt: new Date(),
+      },
+    }
+  );
+}
+
+/**
+ * Apply AI schedule extraction onto a Call mongoose doc (mutates, does not save).
+ * Respects existing REP-set appointmentAt/callbackAt.
+ */
+function applyAiScheduleToCall(call, scores = {}) {
+  if (!call || !scores || typeof scores !== 'object') {
+    return { applied: false, at: null, type: null };
+  }
+
+  const suggestedDisposition = scores.suggested_disposition || call.suggestedDisposition || null;
+  let scheduleType = resolveFollowUpType({
+    scheduleType: scores.schedule_type,
+    suggestedDisposition,
+  });
+
+  const parsedAt = parseFollowUpAt(scores.scheduled_at);
+  if (!parsedAt || !scheduleType) {
+    return { applied: false, at: null, type: scheduleType };
+  }
+
+  const repLocked =
+    call.callOutcomeSource === 'rep' && (call.appointmentAt || call.callbackAt);
+
+  if (repLocked) {
+    return {
+      applied: false,
+      at: call.appointmentAt || call.callbackAt,
+      type: call.appointmentAt ? 'appointment' : 'callback',
+    };
+  }
+
+  if (scheduleType === 'appointment') {
+    if (!call.appointmentAt) {
+      call.appointmentAt = parsedAt;
+      if (!call.callOutcome || call.callOutcomeSource === 'ai') {
+        call.callOutcome = call.callOutcome === 'argued_interested' ? 'argued_interested' : 'appointment';
+        if (!call.callOutcomeSource) call.callOutcomeSource = 'ai';
+      }
+    }
+  } else if (scheduleType === 'callback') {
+    if (!call.callbackAt) {
+      call.callbackAt = parsedAt;
+      if (!call.callOutcome || call.callOutcomeSource === 'ai') {
+        call.callOutcome = 'callback_requested';
+        if (!call.callOutcomeSource) call.callOutcomeSource = 'ai';
+      }
+    }
+  }
+
+  return { applied: true, at: parsedAt, type: scheduleType, raw: scores.scheduled_at_raw || null };
+}
+
+module.exports = {
+  dispositionFromCallSignals,
+  syncLeadDisposition,
+  syncLeadFollowUp,
+  parseFollowUpAt,
+  resolveFollowUpType,
+  applyAiScheduleToCall,
+  RANK,
+};

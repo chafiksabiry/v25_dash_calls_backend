@@ -240,7 +240,10 @@ ${scriptInstructions}
       },
       "transaction_detected": <true|false>,
       "refusal_detected": <true|false>,
-      "suggested_disposition": "<une seule valeur parmi : to_call | called_unreachable | called_voicemail | called_wrong_number | called_callback | called_rdv | not_argumented | argued_rdv | argued_declined | argued_done>"
+      "suggested_disposition": "<une seule valeur parmi : to_call | called_unreachable | called_voicemail | called_wrong_number | called_callback | called_rdv | not_argumented | argued_rdv | argued_declined | argued_done>",
+      "schedule_type": "<appointment | callback | null — null si aucun RDV/rappel daté>",
+      "scheduled_at": "<ISO 8601 datetime avec timezone si possible, sinon null — date+heure du RDV ou du rappel convenu>",
+      "scheduled_at_raw": "<citation courte du transcript, ex. « mardi 14h », ou null>"
     }
     \`\`\`
 
@@ -262,6 +265,15 @@ ${scriptInstructions}
          (Non argumenté / Not argumented — invalide)
     Priorité : rappel/RDV explicite > argumenté refus/accept > non argumenté.
     Ne choisis \`not_argumented\` que s'il n'y a ni argumentation ni demande de rappel/RDV.
+
+    ### **RÈGLE POUR schedule_type / scheduled_at :**
+    - RDV avec date/heure (même implicite : « mardi à 14h », « on se rappelle demain ») → \`schedule_type=appointment\` et \`scheduled_at\` ISO.
+    - « Rappelez-moi demain matin / cet après-midi » sans RDV formel → \`schedule_type=callback\` et \`scheduled_at\` ISO.
+    - Heure floue (« demain matin ») → 10:00 locale ; « demain après-midi » → 15:00 ; « ce soir » → 18:00.
+    - Relatif : « dans 2 heures », « demain », « lundi prochain » — convertis par rapport à **maintenant** (date/heure de l'analyse).
+    - Si disposition rappel/RDV mais **aucune** date/heure exploitable → \`schedule_type\` cohérent + \`scheduled_at=null\`.
+    - Sinon (pas de rappel/RDV) → \`schedule_type=null\`, \`scheduled_at=null\`, \`scheduled_at_raw=null\`.
+    - N'invente jamais une date absente du transcript.
 
     ### **RÈGLES ABSOLUES :**
     1. **Anti-invention :** Ne rédige JAMAIS un résumé ou un feedback basé sur ce que l'agent *aurait pu* dire. Chaque phrase doit pouvoir être reliée à une citation du transcript. Sinon : "Non évaluable sur cet appel."

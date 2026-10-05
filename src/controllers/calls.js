@@ -27,7 +27,14 @@ const {
   buildAgentFraudMatchQuery,
 } = require('../utils/fraudStats');
 const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
-const { dispositionFromCallSignals, syncLeadDisposition } = require('../utils/leadDispositionSync');
+const {
+  dispositionFromCallSignals,
+  syncLeadDisposition,
+  syncLeadFollowUp,
+  applyAiScheduleToCall,
+  resolveFollowUpType,
+  parseFollowUpAt,
+} = require('../utils/leadDispositionSync');
 const {
   applyVoicemailAnalysisShape,
   applyFraudAnalysisShape,
@@ -1230,6 +1237,27 @@ async function saveTelnyxCallDocument({
     }
   } catch (err) {
     console.warn('[Telnyx] minutes charge error:', err.message);
+  }
+
+  try {
+    const followAt = result.appointmentAt || result.callbackAt || appointmentAt || callbackAt;
+    const followType = resolveFollowUpType({
+      appointmentAt: result.appointmentAt || appointmentAt,
+      callbackAt: result.callbackAt || callbackAt,
+    });
+    if (followAt && followType) {
+      await syncLeadDisposition(
+        leadId || result.lead,
+        dispositionFromCallSignals({ callOutcome: result.callOutcome, status: result.status })
+      );
+      await syncLeadFollowUp(leadId || result.lead, {
+        at: parseFollowUpAt(followAt) || followAt,
+        type: followType,
+        source: 'rep',
+      });
+    }
+  } catch (err) {
+    console.warn('[Telnyx] lead follow-up sync failed:', err.message);
   }
 
   return result;
@@ -2624,17 +2652,44 @@ exports.analyzeCall = async (req, res) => {
       }
     }
     call.callOutcome = callOutcome;
-    call.callOutcomeSource = 'ai';
+    // Keep REP outcome/source if the REP already scheduled a RDV/callback on this call.
+    const hadRepSchedule =
+      call.callOutcomeSource === 'rep' && (call.appointmentAt || call.callbackAt);
+    if (!hadRepSchedule) {
+      call.callOutcomeSource = 'ai';
+    }
+
+    // Extract RDV/callback datetime from AI (does not overwrite REP-set dates).
+    const scheduleApplied = applyAiScheduleToCall(call, scores);
+    if (scheduleApplied.raw) {
+      call.notes = [call.notes, `AI schedule: ${scheduleApplied.raw}`].filter(Boolean).join('\n').slice(0, 2000);
+    }
+
     const scoredLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
     await syncLeadDisposition(
       scoredLeadId,
       suggestedDisposition ||
         dispositionFromCallSignals({
-          callOutcome,
+          callOutcome: call.callOutcome || callOutcome,
           status: call.status,
           answeredBy: call.answeredBy,
         })
     );
+
+    const followUpAt = call.appointmentAt || call.callbackAt || scheduleApplied.at;
+    const followUpType = resolveFollowUpType({
+      scheduleType: scheduleApplied.type || scores.schedule_type,
+      suggestedDisposition,
+      appointmentAt: call.appointmentAt,
+      callbackAt: call.callbackAt,
+    });
+    if (followUpAt && followUpType) {
+      await syncLeadFollowUp(scoredLeadId, {
+        at: followUpAt,
+        type: followUpType,
+        source: hadRepSchedule || call.callOutcomeSource === 'rep' ? 'rep' : 'ai',
+      });
+    }
     call.ai_call_status = 'scored';
     // Use the LLM's overall feedback as a starter summary. A dedicated
     // /audio/summarize prompt can replace this later without changing the

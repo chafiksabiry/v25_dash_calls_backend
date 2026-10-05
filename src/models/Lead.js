@@ -49,6 +49,22 @@ const leadSchema = new mongoose.Schema({
     enum: ['call', 'email', 'meeting', 'follow-up'],
   },
   notes: String,
+  /** HARX disposition ladder (written via collection.updateOne). */
+  repDisposition: { type: String, default: null },
+  repDispositionAt: { type: Date, default: null },
+  /** Next RDV / callback for Workspace reminders. */
+  nextFollowUpAt: { type: Date, default: null, index: true },
+  nextFollowUpType: {
+    type: String,
+    enum: [null, 'appointment', 'callback'],
+    default: null,
+  },
+  nextFollowUpSource: {
+    type: String,
+    enum: [null, 'rep', 'ai'],
+    default: null,
+  },
+  nextFollowUpNotifiedAt: { type: Date, default: null },
   metadata: {
     ai_analysis: {
       score: Number,
