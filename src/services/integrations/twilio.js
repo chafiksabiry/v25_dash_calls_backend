@@ -8,7 +8,7 @@ const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 
 const { Call } = require('../../models/Call');
-const { dispositionFromCallSignals, syncLeadDisposition } = require('../../utils/leadDispositionSync');
+const { dispositionFromCallSignals, syncLeadDisposition, syncLeadFollowUp, resolveFollowUpType } = require('../../utils/leadDispositionSync');
 const Transaction = require('../../models/Transaction');
 const path = require("path");
 const fetch = require('node-fetch');
@@ -431,6 +431,24 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       status: result.status,
       answeredBy: result.answeredBy || twilioAnsweredBy,
     }));
+
+    const followAt = result.appointmentAt || result.callbackAt;
+    const followType = resolveFollowUpType({
+      appointmentAt: result.appointmentAt,
+      callbackAt: result.callbackAt,
+      suggestedDisposition: dispositionFromCallSignals({
+        callOutcome: result.callOutcome,
+        status: result.status,
+        answeredBy: result.answeredBy || twilioAnsweredBy,
+      }),
+    });
+    if (followAt && followType) {
+      await syncLeadFollowUp(leadId || result.lead, {
+        at: followAt,
+        type: followType,
+        source: 'rep',
+      });
+    }
 
     return result;
   } catch (error) {
