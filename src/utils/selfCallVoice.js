@@ -1,5 +1,5 @@
 /** Minimum call length before Gemini voice fraud check runs. */
-const MIN_DURATION_VOICE_AI_SEC = 45;
+const MIN_DURATION_VOICE_AI_SEC = 30;
 
 /** Confidence threshold for audio-based self-call fraud. */
 const SELF_CALL_CONFIDENCE_THRESHOLD = 75;
