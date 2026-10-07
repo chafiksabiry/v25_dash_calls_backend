@@ -41,6 +41,10 @@ const {
   VOICEMAIL_SUMMARY_FR,
   VOICEMAIL_SUMMARY_EN,
 } = require('../utils/nonEvaluableCall');
+const {
+  correctScoresDuration,
+  correctDurationInText,
+} = require('../utils/correctSummaryDuration');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
@@ -2397,6 +2401,8 @@ exports.analyzeCall = async (req, res) => {
       SCORING_TIMEOUT_MS,
       'AI scoring'
     );
+    // Models often invent a wrong duration in the summary — force telephony duration.
+    correctScoresDuration(scores, callDurationSec);
 
     let selfCallFraud = resolveSelfCallFraud({
       voiceAnalysis,
@@ -2701,9 +2707,21 @@ exports.analyzeCall = async (req, res) => {
       call.ai_summary_fr = VOICEMAIL_SUMMARY_FR;
       call.ai_summary_en = VOICEMAIL_SUMMARY_EN;
     } else if (scores && scores.overall) {
-      call.ai_summary = scores.overall.feedback || scores.overall.feedback_fr || '';
-      call.ai_summary_fr = scores.overall.feedback_fr || scores.overall.feedback || '';
-      call.ai_summary_en = scores.overall.feedback_en || '';
+      call.ai_summary = correctDurationInText(
+        scores.overall.feedback || scores.overall.feedback_fr || '',
+        callDurationSec,
+        'auto'
+      );
+      call.ai_summary_fr = correctDurationInText(
+        scores.overall.feedback_fr || scores.overall.feedback || '',
+        callDurationSec,
+        'fr'
+      );
+      call.ai_summary_en = correctDurationInText(
+        scores.overall.feedback_en || '',
+        callDurationSec,
+        'en'
+      );
     }
     call.flags = {
       fraud:               isNonProductiveCall ? false : isFraudDetected,

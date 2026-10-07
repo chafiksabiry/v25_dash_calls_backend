@@ -1,8 +1,9 @@
 exports.generateCallScoringPrompt = (gigScript = "", options = {}) => {
-    const durationSec = Number(options.durationSec) || 0;
+    const durationSec = Math.max(0, Math.round(Number(options.durationSec) || 0));
+    // durationSec is only for short-call scoring rules — NEVER ask the model to state a duration.
     const durationHint =
-      durationSec > 0
-        ? `\n    - **Durée réelle de l'appel :** ${durationSec} secondes. Si < 30 s → résumé STRICTEMENT littéral, scores 0–25, aucun compliment inventé, suggested_disposition = to_call.`
+      durationSec > 0 && durationSec < 30
+        ? `\n    - **Contexte interne (ne pas citer dans le résumé) :** appel < 30 s → résumé STRICTEMENT littéral, scores 0–25, aucun compliment inventé, suggested_disposition = to_call.`
         : '';
 
     let scriptInstructions = "";
@@ -280,6 +281,7 @@ ${scriptInstructions}
     2. **Appels courts :** < 6 échanges, < 30 s, ou seulement des salutations → overall.feedback = résumé littéral des mots réellement dits ; scores 0–25 ; INTERDIT d'écrire une histoire commerciale, un besoin client ou un compliment de performance.
     3. **Validation Fraude :** Si "Fraud detection" < 50, le score "overall" doit être < 40.
     4. **Résumé de l'appel (overall.feedback) :** résumé factuel de CE QUI S'EST PASSÉ — pas un "résumé exécutif" marketing. Faits d'abord, verdict qualité en 1–2 phrases ensuite.
+    5. **Durée — INTERDIT ABSOLU :** ne mentionne JAMAIS la durée de l'appel dans overall.feedback / feedback_fr / feedback_en ni dans aucun feedback (pas de « L'appel a duré X minutes », « The call lasted… », « 12 minutes et 10 secondes », etc.). La durée est affichée ailleurs dans l'UI ; tu n'as pas à la détecter ni à l'estimer.
     `;
 };
 

@@ -12,6 +12,7 @@ const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt
 const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
 const { generateSelfCallVoicePrompt } = require('../VertexPrompt/selfCallVoicePrompt');
 const { normalizeVoiceAnalysis } = require('../utils/selfCallVoice');
+const { correctScoresDuration } = require('../utils/correctSummaryDuration');
 const { Storage } = require('@google-cloud/storage');
 const axios = require('axios'); // Preferring axios if available or node-fetch
 const fetch = require('node-fetch');
@@ -334,7 +335,8 @@ ${transcript}`;
       const result = await gModel.generateContent(prompt);
       const responseText = result.response.candidates[0].content.parts[0].text;
       const scores = this.parseJsonResponse(responseText);
-      
+      correctScoresDuration(scores, options.durationSec);
+
       console.log('✅ [VertexAIService] Precision scores generated.');
       return scores;
     } catch (error) {
