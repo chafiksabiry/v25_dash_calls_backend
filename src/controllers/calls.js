@@ -1230,6 +1230,8 @@ async function saveTelnyxCallDocument({
         body: JSON.stringify({
           companyId: targetCompanyId,
           callSid: externalId,
+          // Orchestrator accepts `duration` (primary) or `durationSeconds`.
+          duration: durationSeconds,
           durationSeconds,
           provider: 'telnyx',
         }),
