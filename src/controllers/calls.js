@@ -2582,6 +2582,39 @@ exports.analyzeCall = async (req, res) => {
       scores['Fraud detection'].score = Math.min(readFraudScore(scores), 49);
     }
 
+    // Keep the chosen HARX disposition rubric aligned with suggested_disposition.
+    // The LLM often picks suggested_disposition=called_callback while leaving
+    // called_callback.score at 0 ("Non détecté") — that contradicts the banner.
+    if (
+      suggestedDisposition
+      && !isFraudDetected
+      && !isNonProductiveCall
+      && [
+        'called_unreachable', 'called_voicemail', 'called_wrong_number',
+        'called_callback', 'called_rdv', 'not_argumented',
+        'argued_rdv', 'argued_declined', 'argued_done',
+      ].includes(suggestedDisposition)
+    ) {
+      const node = (scores[suggestedDisposition] && typeof scores[suggestedDisposition] === 'object')
+        ? scores[suggestedDisposition]
+        : { score: 0, feedback: '', feedback_fr: '', feedback_en: '' };
+      const scoreNum = typeof node.score === 'number' ? node.score : 0;
+      if (scoreNum < PASS_THRESHOLD) {
+        node.score = Math.max(scoreNum, 85);
+        const weakFr = !node.feedback_fr || /non\s*d[ée]tect/i.test(String(node.feedback_fr || node.feedback || ''));
+        const weakEn = !node.feedback_en || /not\s*detect/i.test(String(node.feedback_en || ''));
+        if (weakFr) {
+          node.feedback_fr = 'Statut retenu par l\'analyse IA (disposition suggérée).';
+          node.feedback = node.feedback_fr;
+        }
+        if (weakEn) {
+          node.feedback_en = 'Status selected by AI analysis (suggested disposition).';
+        }
+      }
+      node.passed = true;
+      scores[suggestedDisposition] = node;
+    }
+
     // Discourse rubrics (RDV, déjà équipé, etc.) must not validate when fraud.
     if (isFraudDetected) {
       for (const k of [
