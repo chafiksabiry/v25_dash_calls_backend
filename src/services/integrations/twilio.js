@@ -104,10 +104,18 @@ const getCallDetails = async (callSid, userId) => {
       const effectiveErrorCode =
         callFils[0]?.errorCode ?? callParent.errorCode ?? null;
 
+      const child = callFils[0];
+      const childDuration = child ? parseInt(child.duration, 10) || 0 : 0;
+      const parentDuration = parseInt(callParent.duration, 10) || 0;
+      // Parent duration includes ringing ("mise en communication").
+      // Bill only the answered leg: the child call once the callee picks up.
+      // No child means a direct call whose duration is already talk time.
+      const billedDuration = child ? childDuration : parentDuration;
+
       return {
         ParentCallSid: callSid,
-        ChildCallSid: callFils[0]?.sid || null,
-        duration: callParent.duration,
+        ChildCallSid: child?.sid || null,
+        duration: billedDuration,
         from: callFils[0]?.from || callParent.from,
         to: callFils[0]?.to || callParent.to,
         status: effectiveStatus,
@@ -200,10 +208,29 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       calculatedPrice = Math.abs(parseFloat(call.price)) || 0;
     }
 
+    // Parent duration includes ringing. When a child leg exists, bill only
+    // the answered customer leg (0 if it never connected).
+    let talkDuration = parseInt(call.duration, 10) || 0;
+    try {
+      const children = await getChildCalls(callSid, userId || agentId);
+      if (children.length > 0) {
+        const child = children[0];
+        const childSeconds = parseInt(child.duration, 10);
+        const childDone = ['completed', 'busy', 'no-answer', 'failed', 'canceled'].includes(
+          String(child.status || '').toLowerCase()
+        );
+        if (Number.isFinite(childSeconds) && (childSeconds > 0 || childDone)) {
+          talkDuration = Math.max(0, childSeconds);
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️ [TwilioService] Could not read child-leg duration: ${err.message}`);
+    }
+
     // Build update object
     const update = {
       status: call.status || 'completed',
-      duration: parseInt(call.duration) || 0,
+      duration: talkDuration,
       recording_url: call.recordingUrl,
       recording_url_cloudinary: finalCloudinaryUrl,
       from: call.from,
@@ -294,7 +321,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     // any failure here cannot break the saveCallToDB response.
     try {
       const targetCompanyId = result.companyId || companyId;
-      const durationSeconds = parseInt(call.duration) || 0;
+      const durationSeconds = talkDuration;
       if (targetCompanyId && durationSeconds > 0) {
         const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL
           || 'https://v25comporchestratorback-production.up.railway.app').replace(/\/$/, '');
