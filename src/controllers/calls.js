@@ -15,6 +15,7 @@ const {
   resolveSelfCallFraud,
   correctTranscriptForSelfCallFraud,
   applySelfCallFraudToScores,
+  sanitizeTranscriptForReanalysis,
   MIN_DURATION_VOICE_AI_SEC,
   isFraudFromScores,
   readFraudScore,
@@ -27,11 +28,23 @@ const {
 } = require('../utils/fraudStats');
 const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
 const {
+  dispositionFromCallSignals,
+  syncLeadDisposition,
+  syncLeadFollowUp,
+  applyAiScheduleToCall,
+  resolveFollowUpType,
+  parseFollowUpAt,
+} = require('../utils/leadDispositionSync');
+const {
   applyVoicemailAnalysisShape,
   applyFraudAnalysisShape,
   VOICEMAIL_SUMMARY_FR,
   VOICEMAIL_SUMMARY_EN,
 } = require('../utils/nonEvaluableCall');
+const {
+  correctScoresDuration,
+  correctDurationInText,
+} = require('../utils/correctSummaryDuration');
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
@@ -561,7 +574,16 @@ exports.updateCall = async (req, res) => {
         );
 
         if (validByCompany === true) {
-          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          // Align dashboard KPIs with Calls "Signée": company signature = sale.
+          await Call.findByIdAndUpdate(callId, {
+            $set: {
+              companyValidation: 'approved',
+              callOutcome: 'transaction',
+              callOutcomeSource: 'company',
+              'flags.transactionDetected': true,
+              updatedAt: new Date(),
+            },
+          });
           await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
@@ -600,7 +622,15 @@ exports.updateCall = async (req, res) => {
         );
 
         if (validByCompany === true) {
-          await Call.findByIdAndUpdate(callId, { $set: { companyValidation: 'approved', updatedAt: new Date() } });
+          await Call.findByIdAndUpdate(callId, {
+            $set: {
+              companyValidation: 'approved',
+              callOutcome: 'transaction',
+              callOutcomeSource: 'company',
+              'flags.transactionDetected': true,
+              updatedAt: new Date(),
+            },
+          });
           await markLeadContractSigned(callObj.lead, callObj.agent);
           await triggerCompanyReconcile(callObj.companyId);
         } else if (validByCompany === false) {
@@ -1204,6 +1234,8 @@ async function saveTelnyxCallDocument({
         body: JSON.stringify({
           companyId: targetCompanyId,
           callSid: externalId,
+          // Orchestrator accepts `duration` (primary) or `durationSeconds`.
+          duration: durationSeconds,
           durationSeconds,
           provider: 'telnyx',
         }),
@@ -1211,6 +1243,27 @@ async function saveTelnyxCallDocument({
     }
   } catch (err) {
     console.warn('[Telnyx] minutes charge error:', err.message);
+  }
+
+  try {
+    const followAt = result.appointmentAt || result.callbackAt || appointmentAt || callbackAt;
+    const followType = resolveFollowUpType({
+      appointmentAt: result.appointmentAt || appointmentAt,
+      callbackAt: result.callbackAt || callbackAt,
+    });
+    if (followAt && followType) {
+      await syncLeadDisposition(
+        leadId || result.lead,
+        dispositionFromCallSignals({ callOutcome: result.callOutcome, status: result.status })
+      );
+      await syncLeadFollowUp(leadId || result.lead, {
+        at: parseFollowUpAt(followAt) || followAt,
+        type: followType,
+        source: 'rep',
+      });
+    }
+  } catch (err) {
+    console.warn('[Telnyx] lead follow-up sync failed:', err.message);
   }
 
   return result;
@@ -1359,13 +1412,15 @@ exports.amdCallback = async (req, res) => {
       : `Répondeur détecté automatiquement par Twilio AMD (${AnsweredBy})`;
 
     const updated = await Call.findOneAndUpdate(
-      { sid: CallSid },
+      { $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }] },
       {
         $set: {
+          answeredBy: AnsweredBy,
           callOutcome: outcome,
           callOutcomeSource: 'system',
           validByAI: false,
           valid: false,
+          transcript: [], // AMD / répondeur — jamais de transcription
           ai_call_status: 'auto_refused',
           ai_refusal_reason: reason,
           updatedAt: new Date(),
@@ -1376,6 +1431,8 @@ exports.amdCallback = async (req, res) => {
 
     if (updated) {
       console.log(`✅ [AMD] Call ${CallSid} auto-marked as voicemail (doc _id=${updated._id})`);
+      const leadId = updated.lead && updated.lead._id ? updated.lead._id : updated.lead;
+      await syncLeadDisposition(leadId, 'called_voicemail');
     } else {
       // Document may not exist yet if store-call hasn't fired — that's fine,
       // saveCallToDB will pick up isVoicemail from the AMD flag later.
@@ -1574,13 +1631,15 @@ function classifyCallOutcome({
       return 'argued_interested';
     }
 
-    // AI ran but no specific signal → connected without a clear outcome.
-    // (e.g. agent silent, no engagement on either side, dead air, ...)
-    return 'connected_no_sale';
+    // AI ran: conversation present but not argumented → Not argumented (invalid).
+    if (typeof argumentationScore === 'number' && argumentationScore < 50) {
+      return 'not_argumented';
+    }
+    return 'not_argumented';
   }
 
-  // 3) No AI scoring available — fall back on heuristics.
-  if (dur > 0 && dur < 30) return 'too_short';
+  // 3) No AI scoring available — ≤30s answered calls: no analysis yet.
+  if (dur > 0 && dur <= 30) return 'connected_no_sale';
   return 'connected_no_sale';
 }
 
@@ -1623,8 +1682,14 @@ function notifyRepCallAnalysisComplete(call, overrides = {}) {
   });
 }
 
-const runAnalysisInBackground = (callId) => {
-  console.log(`🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in 5 seconds...`);
+const runAnalysisInBackground = (callId, options = {}) => {
+  const delayMs = Number(options.delayMs) > 0 ? Number(options.delayMs) : 5000;
+  const force = options.force === true;
+  const attempt = Number(options.attempt) > 0 ? Number(options.attempt) : 1;
+  const maxRecordingWaitAttempts = 6;
+  console.log(
+    `🤖 [AutoAnalysis] Scheduling background analysis for call ${callId} in ${delayMs}ms${force ? ' (force)' : ''} (attempt ${attempt})...`
+  );
   setTimeout(async () => {
     try {
       const call = await Call.findById(callId);
@@ -1632,31 +1697,217 @@ const runAnalysisInBackground = (callId) => {
         console.warn(`⚠️ [AutoAnalysis] Call ${callId} not found, aborting analysis.`);
         return;
       }
-      const alreadyScored = call.validByAI === true || call.validByAI === false || 
-                           call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused';
+
+      // Busy / Injoignable / AMD: never schedule transcription or QA.
+      if (shouldSkipTranscription(call)) {
+        console.log(
+          `🚫 [AutoAnalysis] Call ${callId} skip transcription (${call.status}/${call.callOutcome}/${call.answeredBy}).`
+        );
+        return;
+      }
+
+      const hasTranscript =
+        Array.isArray(call.transcript) && call.transcript.length > 0;
+      const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
+
+      // too_short without a transcript must be retried once the recording lands —
+      // otherwise a 5s "Allô" stays forever as TRANSCRIPT NOT AVAILABLE.
+      const tooShortNeedsTranscript =
+        call.ai_call_status === 'too_short' &&
+        shouldTranscribeCall(call) &&
+        (!hasTranscript || !hasRecording);
+
+      const alreadyScored =
+        !force &&
+        !tooShortNeedsTranscript &&
+        (call.validByAI === true ||
+          call.validByAI === false ||
+          call.ai_call_status === 'scored' ||
+          call.ai_call_status === 'auto_refused' ||
+          (call.ai_call_status === 'too_short' && hasTranscript));
+
       if (alreadyScored) {
         console.log(`🤖 [AutoAnalysis] Call ${callId} is already scored or processed. Skipping.`);
         return;
       }
 
+      // Still no recording: try again later (Twilio/Telnyx archive is often late).
+      if (!hasRecording && !force) {
+        if (attempt >= maxRecordingWaitAttempts) {
+          console.warn(
+            `⚠️ [AutoAnalysis] Call ${callId} still has no recording after ${attempt} attempts — giving up.`
+          );
+          return;
+        }
+        console.log(
+          `⏳ [AutoAnalysis] Call ${callId} has no recording yet — retrying in 15s (attempt ${attempt}/${maxRecordingWaitAttempts}).`
+        );
+        runAnalysisInBackground(callId, {
+          delayMs: 15000,
+          attempt: attempt + 1,
+        });
+        return;
+      }
+
       console.log(`🤖 [AutoAnalysis] Running background analysis for call: ${callId}`);
-      const mockReq = { params: { id: callId }, body: {} };
+      const mockReq = {
+        params: { id: callId },
+        body: force || tooShortNeedsTranscript ? { force: true } : {},
+      };
       const mockRes = {
-        status: function(code) {
+        status: function (code) {
           this.statusCode = code;
           return this;
         },
-        json: function(data) {
-          console.log(`🤖 [AutoAnalysis] Background analysis finished for ${callId} with status ${this.statusCode || 200}:`, data.success ? 'Success' : data.message);
+        json: function (data) {
+          console.log(
+            `🤖 [AutoAnalysis] Background analysis finished for ${callId} with status ${this.statusCode || 200}:`,
+            data.success ? 'Success' : data.message
+          );
           return this;
-        }
+        },
       };
       await exports.analyzeCall(mockReq, mockRes);
     } catch (err) {
       console.error(`❌ [AutoAnalysis] Background analysis failed for call ${callId}:`, err);
     }
-  }, 5000);
+  }, delayMs);
 };
+
+exports.runAnalysisInBackground = runAnalysisInBackground;
+
+function resolveCallDurationSec(call) {
+  const stored = Number(call?.duration) || 0;
+  if (stored > 0) return stored;
+  const start = call?.startTime ? new Date(call.startTime).getTime() : 0;
+  const end = call?.endTime ? new Date(call.endTime).getTime() : 0;
+  if (start && end && end > start) {
+    return Math.max(1, Math.round((end - start) / 1000));
+  }
+  return 0;
+}
+
+/**
+ * When force-re-analyzing an existing call, prefer endTime-startTime over the
+ * stored `duration` field — the stored value may have been written as 0 or a
+ * very small number during the original Twilio callback, before the call was
+ * fully recorded. Falls back to stored duration when timestamps are missing.
+ */
+function resolveCallDurationSecForced(call) {
+  const start = call?.startTime ? new Date(call.startTime).getTime() : 0;
+  const end = call?.endTime ? new Date(call.endTime).getTime() : 0;
+  if (start && end && end > start) {
+    const computed = Math.max(1, Math.round((end - start) / 1000));
+    // Only trust computed if it is materially different (>15 s longer than
+    // stored). If stored already looks correct, no need to override.
+    const stored = Number(call?.duration) || 0;
+    if (computed > stored + 15) {
+      console.log(`⏱️ [resolveForced] Stored duration=${stored}s overridden by computed=${computed}s (endTime-startTime) for call ${call._id}`);
+      return computed;
+    }
+    return Math.max(computed, stored);
+  }
+  return Number(call?.duration) || 0;
+}
+
+const EXAMPLE_STORY_LEAK =
+  /je vous appelle de la part de HARX,\s*soci[eé]t[eé] sp[eé]cialis[eé]e en t[eé]l[eé]marketing|je vous contacte concernant votre demande de portabilit|num[eé]ro de votre commande|commande num[eé]ro\s*\d+|elle a [eé]t[eé] exp[eé]di[eé]e|quel est le num[eé]ro de votre commande|un instant,?\s*s['']il vous pla[iî]t/i;
+
+function transcriptWordCount(transcript) {
+  if (!Array.isArray(transcript)) return 0;
+  return transcript
+    .map((turn) => String(turn?.text || ''))
+    .join(' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+/** A short "Allô" must not come back as a written sales / CS story. */
+function transcriptLooksInvented(transcript, durationSec) {
+  if (!Array.isArray(transcript) || transcript.length === 0) return false;
+  const text = transcript.map((turn) => String(turn?.text || '')).join(' ');
+  if (EXAMPLE_STORY_LEAK.test(text)) return true;
+  const dur = Number(durationSec) || 0;
+  if (dur <= 0 || dur > 25) return false;
+  const words = transcriptWordCount(transcript);
+  const maxWords = Math.max(8, Math.ceil(dur * 2.5));
+  const maxTurns = dur <= 10 ? 3 : 4;
+  return words > maxWords || transcript.length > maxTurns;
+}
+
+/**
+ * Busy / No-Answer / canceled / failed → never transcribe.
+ * AMD / voicemail / fax → never transcribe.
+ * Human-answered calls → always transcribe.
+ */
+function isUnreachableTelephonyCall(call) {
+  const status = String(call?.status || '').toLowerCase();
+  if (['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed'].includes(status)) {
+    return true;
+  }
+  const outcome = String(call?.callOutcome || '').toLowerCase();
+  if (['no_answer', 'busy', 'wrong_number'].includes(outcome)) {
+    return true;
+  }
+  return false;
+}
+
+function isAmdVoicemailCall(call) {
+  if (!call) return false;
+  if (typeof isCallVoicemail === 'function' && isCallVoicemail(call)) return true;
+  const answeredBy = String(call.answeredBy || '').toLowerCase();
+  if (answeredBy.startsWith('machine') || answeredBy === 'fax' || answeredBy.includes('amd')) {
+    return true;
+  }
+  const outcome = String(call.callOutcome || '').toLowerCase();
+  if (outcome === 'voicemail' || outcome === 'amd' || outcome === 'answering_machine') {
+    return true;
+  }
+  const status = String(call.status || '').toLowerCase();
+  return status.includes('machine') || status.includes('amd');
+}
+
+/** Skip transcription for busy / injoignable / AMD répondeur. */
+function shouldSkipTranscription(call) {
+  return isUnreachableTelephonyCall(call) || isAmdVoicemailCall(call);
+}
+
+function shouldTranscribeCall(call) {
+  if (!call) return false;
+  if (shouldSkipTranscription(call)) return false;
+  const answeredBy = String(call.answeredBy || '').toLowerCase();
+  if (answeredBy === 'human') return true;
+  const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
+  const duration = Number(call.duration) || 0;
+  const status = String(call.status || '').toLowerCase();
+  if (['completed', 'hangup', 'in-progress'].includes(status) && (hasRecording || duration > 0)) {
+    return true;
+  }
+  return hasRecording;
+}
+
+async function transcribeRecordingLiteral(recordingUrl, durationSec) {
+  const opts = { durationSec: Number(durationSec) || undefined };
+  let transcript = await withTimeout(
+    vertexAIService.transcribeAudioFromUrl(recordingUrl, opts),
+    TRANSCRIPTION_TIMEOUT_MS,
+    'Audio transcription'
+  );
+  if (transcriptLooksInvented(transcript, durationSec)) {
+    console.warn(`⚠️ [CallController] Transcript looks invented for a ${durationSec}s call. Retrying literal mode.`);
+    transcript = await withTimeout(
+      vertexAIService.transcribeAudioFromUrl(recordingUrl, { ...opts, strict: true }),
+      TRANSCRIPTION_TIMEOUT_MS,
+      'Audio transcription (literal)'
+    );
+    if (transcriptLooksInvented(transcript, durationSec)) {
+      console.warn('⚠️ [CallController] Literal retry still invented a story. Discarding it.');
+      return [];
+    }
+  }
+  return Array.isArray(transcript) ? transcript : [];
+}
 
 exports.analyzeCall = async (req, res) => {
   try {
@@ -1674,15 +1925,49 @@ exports.analyzeCall = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
+    // Legacy short calls may already be `scored` with an invented narrative.
+    // Never reuse that — drop through to the 30s QA gate below.
+    // Transcription still runs for every call. QA scoring does not.
+    const MIN_ANALYSIS_DURATION_SECONDS = 30;
+    const existingDurationSec = resolveCallDurationSec(call);
+    const alreadyTooShort =
+      existingDurationSec > 0 && existingDurationSec <= MIN_ANALYSIS_DURATION_SECONDS;
+
+    const storedTranscript = Array.isArray(call.transcript) ? call.transcript : [];
+    if (
+      !force &&
+      alreadyTooShort &&
+      call.ai_call_status === 'too_short' &&
+      storedTranscript.length > 0 &&
+      !transcriptLooksInvented(storedTranscript, existingDurationSec)
+    ) {
+      return res.json({
+        success: true,
+        message: 'Call already transcribed',
+        alreadyAnalyzed: true,
+        transcript: call.transcript,
+        validByAI: false,
+        ai_call_status: 'too_short',
+        data: call,
+      });
+    }
+
     // Idempotent: return existing results when analysis already finished.
     // `force=true` (company relaunch) bypasses this so legacy analyses can be
     // re-scored after backend rule changes (e.g. voicemail shape cleanup).
     if (
       !force &&
-      (call.ai_call_status === 'scored' || call.ai_call_status === 'auto_refused')
+      !alreadyTooShort &&
+      (call.ai_call_status === 'scored' ||
+        call.ai_call_status === 'auto_refused' ||
+        call.ai_call_status === 'too_short')
     ) {
       const hasScores = detectAiScoring(call.ai_call_score);
-      if (hasScores || call.ai_call_status === 'auto_refused') {
+      if (
+        hasScores ||
+        call.ai_call_status === 'auto_refused' ||
+        call.ai_call_status === 'too_short'
+      ) {
         return res.json({
           success: true,
           message: 'Call already analyzed',
@@ -1691,11 +1976,58 @@ exports.analyzeCall = async (req, res) => {
           transcript: call.transcript,
           validByAI: call.validByAI,
           callOutcome: call.callOutcome,
+          ai_call_status: call.ai_call_status,
         });
       }
     }
     if (force) {
-      console.log(`♻️ [CallController] Force re-analysis requested for call ${id}.`);
+      console.log(`♻️ [CallController] Force re-analysis requested for call ${id} — resetting all AI fields.`);
+      // Wipe previous AI decisions so a re-run never mixes old + new results.
+      await Call.findByIdAndUpdate(id, {
+        $set: {
+          ai_call_score: {},
+          ai_summary: null,
+          ai_summary_fr: null,
+          ai_summary_en: null,
+          ai_refusal_reason: null,
+          callOutcome: null,
+          callOutcomeSource: null,
+          validByAI: false,
+          valid: false,
+          argumentation_score: 0,
+          repCallCommission: 0,
+          platformCallCommission: 0,
+          repTransactionCommission: 0,
+          platformTransactionCommission: 0,
+          flags: {
+            fraud: false,
+            selfCall: false,
+            serious: false,
+            transactionDetected: false,
+            refusalDetected: false,
+          },
+          agentValidation: 'pending',
+          companyValidation: 'pending',
+          analysisCompanyAlert: {
+            acknowledgedAt: null,
+            message: null,
+            repName: null,
+            requestCount: 0,
+            requestedAt: null,
+          },
+          updatedAt: new Date(),
+        },
+      });
+      // Keep in-memory flags clean for the rest of this run.
+      call.flags = {
+        fraud: false,
+        selfCall: false,
+        serious: false,
+        transactionDetected: false,
+        refusalDetected: false,
+      };
+      call.ai_call_score = {};
+      call.ai_refusal_reason = null;
     }
 
     // Another worker (usually auto-analysis after store-call) is already
@@ -1747,41 +2079,48 @@ exports.analyzeCall = async (req, res) => {
     }
     call.ai_call_status = 'processing';
 
-    // ☎️  Auto-refuse calls that never reached a human. No transcript, no
-    // audio → nothing for the LLM to score. We tag them as `validByAI=false`
-    // so they stop showing up as "Analyse en cours" forever.
+    // ☎️  Busy / Injoignable / AMD répondeur: NEVER transcribe, NEVER score.
+    // Human-answered calls always get a literal transcript (even ≤30s).
     const callStatus = (call.status || '').toString().toLowerCase();
-    const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
     const looksUnanswered =
-      noConnectStatuses.has(callStatus) ||
-      (callStatus === 'completed' && (call.duration || 0) === 0 && !call.recording_url_cloudinary);
+      isUnreachableTelephonyCall(call) ||
+      (callStatus === 'completed' &&
+        (call.duration || 0) === 0 &&
+        !call.recording_url_cloudinary &&
+        !call.recording_url);
+    const looksAmd = isAmdVoicemailCall(call);
 
-    if (looksUnanswered) {
+    if (looksUnanswered || looksAmd) {
       const errCode = call.twilioErrorCode ? Number(call.twilioErrorCode) : null;
       const errSuffix = errCode ? `, ErrorCode: ${errCode}` : '';
-      const refusalReason = `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix})`;
-      const callOutcome = classifyCallOutcome({
-        status: callStatus,
-        duration: call.duration,
-        hasRecording: !!call.recording_url_cloudinary,
-        hasAiScoring: false, // auto-refused: LLM never ran
-        validByAI: false,
-        refusalDetected: false,
-        transactionDetected: false,
-        fraudScore: null,
-        argumentationScore: 0,
-        scriptCoherence: 0,
-        sentimentScore: 0,
-        overallScore: 0,
-        refusalReason,
-        twilioErrorCode: errCode,
-      });
+      const callOutcome = looksAmd
+        ? 'voicemail'
+        : classifyCallOutcome({
+            status: callStatus,
+            duration: call.duration,
+            hasRecording: !!(call.recording_url_cloudinary || call.recording_url),
+            hasAiScoring: false,
+            validByAI: false,
+            refusalDetected: false,
+            transactionDetected: false,
+            fraudScore: null,
+            argumentationScore: 0,
+            scriptCoherence: 0,
+            sentimentScore: 0,
+            overallScore: 0,
+            refusalReason: '',
+            twilioErrorCode: errCode,
+          });
+      const refusalReason = looksAmd
+        ? `Répondeur / AMD (${call.answeredBy || 'machine'}) — pas de transcription`
+        : `Appel non décroché (status: ${call.status || 'unknown'}${errSuffix}) — pas de transcription`;
       const updated = await Call.findByIdAndUpdate(
         id,
         {
           $set: {
             validByAI: false,
             valid: false,
+            transcript: [], // never transcribe busy / injoignable / AMD
             ai_refusal_reason: refusalReason,
             ai_call_status: 'auto_refused',
             callOutcome,
@@ -1796,7 +2135,20 @@ exports.analyzeCall = async (req, res) => {
         },
         { new: true }
       );
-      console.log(`🚫 [CallController] Call ${id} auto-refused (${callStatus}) → outcome=${callOutcome}`);
+      console.log(
+        `🚫 [CallController] Call ${id} auto-refused (${callStatus}/${callOutcome}) — no transcription`
+      );
+      const refusedLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
+      await syncLeadDisposition(
+        refusedLeadId,
+        looksAmd
+          ? 'called_voicemail'
+          : dispositionFromCallSignals({
+              callOutcome,
+              status: callStatus,
+              answeredBy: call.answeredBy,
+            })
+      );
       notifyRepCallAnalysisComplete(call, {
         ai_call_status: 'auto_refused',
         validByAI: false,
@@ -1807,6 +2159,113 @@ exports.analyzeCall = async (req, res) => {
         validByAI: false,
         callOutcome,
         data: updated
+      });
+    }
+
+    // Transcription for every human-answered call (including ≤30s "Allô").
+    // QA scoring only above 30s. Busy / Injoignable / AMD already returned above.
+    // When force=true, prefer endTime-startTime (stored duration may be wrong
+    // for legacy calls where Twilio wrote 0 before the recording was complete).
+    const callDurationSec = force
+      ? resolveCallDurationSecForced(call)
+      : resolveCallDurationSec(call);
+    if (callDurationSec > 0 && (!call.duration || Number(call.duration) === 0)) {
+      call.duration = callDurationSec;
+    }
+    // AI analysis only when duration is strictly greater than 30 seconds.
+    if (callDurationSec > 0 && callDurationSec <= MIN_ANALYSIS_DURATION_SECONDS) {
+      let shortTranscript = Array.isArray(call.transcript) ? call.transcript : [];
+      if (transcriptLooksInvented(shortTranscript, callDurationSec)) shortTranscript = [];
+      const shortRecording = call.recording_url_cloudinary || call.recording_url;
+      // Answered ≤30s: always transcribe when audio exists. Never for busy/unreachable.
+      if (
+        shouldTranscribeCall(call) &&
+        shortRecording &&
+        (force || shortTranscript.length === 0)
+      ) {
+        try {
+          const literal = await transcribeRecordingLiteral(shortRecording, callDurationSec);
+          if (literal.length > 0) shortTranscript = literal;
+        } catch (transcriptionError) {
+          console.error(`❌ [CallController] Short-call transcription failed:`, transcriptionError);
+        }
+      }
+      const shortMsgFr =
+        `Appel ≤ ${MIN_ANALYSIS_DURATION_SECONDS}s (${callDurationSec}s) — retranscription conservée. L'analyse IA (argumenté / non argumenté) ne se lance que si la durée est supérieure à ${MIN_ANALYSIS_DURATION_SECONDS}s.`;
+      const shortMsgEn =
+        `Call ≤ ${MIN_ANALYSIS_DURATION_SECONDS}s (${callDurationSec}s) — transcript kept. AI analysis (argumented / not argumented) runs only when duration is greater than ${MIN_ANALYSIS_DURATION_SECONDS}s.`;
+      const answeredBy = String(call.answeredBy || '').toLowerCase();
+      const keepVoicemail =
+        call.callOutcome === 'voicemail' ||
+        answeredBy.startsWith('machine') ||
+        answeredBy === 'fax';
+      const hasRecording = !!(call.recording_url_cloudinary || call.recording_url);
+      // User-facing status = Twilio / HARX disposition — never persist callOutcome "too_short".
+      const shortCallOutcome = keepVoicemail
+        ? 'voicemail'
+        : classifyCallOutcome({
+            status: call.status,
+            duration: callDurationSec,
+            hasRecording,
+            hasAiScoring: false,
+            twilioErrorCode: call.twilioErrorCode,
+          }) || 'connected_no_sale';
+      const shortDisposition = dispositionFromCallSignals({
+        callOutcome: shortCallOutcome,
+        status: call.status,
+        answeredBy: call.answeredBy,
+      });
+      // Connected but not argued: do NOT mark validByAI=false (that looks like a reject).
+      // Voicemail keeps false; otherwise null = no commission, no « Refusé AI ».
+      const shortValidByAI = keepVoicemail ? false : null;
+      const updated = await Call.findByIdAndUpdate(
+        id,
+        {
+          $set: {
+            duration: callDurationSec,
+            transcript: shortTranscript,
+            validByAI: shortValidByAI,
+            valid: shortValidByAI,
+            ai_refusal_reason: keepVoicemail ? shortMsgFr : null,
+            ai_call_status: 'too_short',
+            ai_summary: keepVoicemail
+              ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
+              : shortMsgFr,
+            ai_summary_fr: keepVoicemail
+              ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
+              : shortMsgFr,
+            ai_summary_en: keepVoicemail
+              ? 'Voicemail — no exchange with the prospect. No commission is due.'
+              : shortMsgEn,
+            ai_call_score: {},
+            callOutcome: shortCallOutcome,
+            callOutcomeSource: 'system',
+            'flags.fraud': false,
+            'flags.serious': false,
+            'flags.transactionDetected': false,
+            'flags.refusalDetected': false,
+            repCallCommission: 0,
+            platformCallCommission: 0,
+            updatedAt: new Date(),
+          },
+        },
+        { new: true }
+      );
+      console.log(
+        `⏱️ [CallController] Call ${id} skipped QA — duration ${callDurationSec}s < ${MIN_ANALYSIS_DURATION_SECONDS}s, callOutcome=${shortCallOutcome}`
+      );
+      const shortLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
+      await syncLeadDisposition(shortLeadId, shortDisposition);
+      notifyRepCallAnalysisComplete(call, {
+        ai_call_status: 'too_short',
+        validByAI: shortValidByAI,
+      });
+      return res.status(200).json({
+        success: true,
+        message: shortMsgFr,
+        validByAI: shortValidByAI,
+        ai_call_status: 'too_short',
+        data: updated,
       });
     }
 
@@ -1837,27 +2296,54 @@ exports.analyzeCall = async (req, res) => {
 
     // Attempt to get transcript.
     let transcriptData = call.transcript || [];
-    
-    // Real Audio Transcription if no transcript exists and recording is available
+
+    const transcriptLooksPoisonedBySelfCall =
+      Array.isArray(transcriptData) &&
+      transcriptData.some(
+        (t) =>
+          t?.simulated === true ||
+          /voix simul|simulated/i.test(String(t?.speaker || ''))
+      );
+
+    // Real Audio Transcription when missing, OR always on force re-analysis
+    // (full recompute of transcript + decisions), OR when prior self-call
+    // rewritten labels ("Voix simulée") make the stored transcript untrusted.
+    // Busy / Injoignable never reach this block; answered calls always do.
     const hasRecording = call.recording_url_cloudinary || call.recording_url;
-    if ((!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) && hasRecording) {
-        console.log(`🎙️ [CallController] Attempting real audio transcription for call ${id}...`);
+    const shouldRefreshTranscript =
+      shouldTranscribeCall(call) &&
+      hasRecording &&
+      (force ||
+        !transcriptData ||
+        (Array.isArray(transcriptData) && transcriptData.length === 0) ||
+        transcriptLooksPoisonedBySelfCall ||
+        call.flags?.selfCall === true);
+
+    if (shouldRefreshTranscript) {
+        console.log(
+          `🎙️ [CallController] ${force ? 'Force-refreshing' : 'Attempting'} audio transcription for answered call ${id}...`
+        );
         try {
           const recordingUrl = call.recording_url_cloudinary || call.recording_url;
-          const realTranscript = await withTimeout(
-            vertexAIService.transcribeAudioFromUrl(recordingUrl),
-            TRANSCRIPTION_TIMEOUT_MS,
-            'Audio transcription'
-          );
+          const realTranscript = await transcribeRecordingLiteral(recordingUrl, callDurationSec);
           if (realTranscript && realTranscript.length > 0) {
             transcriptData = realTranscript;
             console.log(`✅ [CallController] Audio transcribed successfully: ${transcriptData.length} turns.`);
           } else {
             console.warn(`⚠️ [CallController] Transcription returned empty for call ${id}.`);
+            // Fall back to restoring Customer labels from a poisoned transcript.
+            if (transcriptLooksPoisonedBySelfCall) {
+              transcriptData = sanitizeTranscriptForReanalysis(transcriptData);
+            }
           }
         } catch (transcriptionError) {
           console.error(`❌ [CallController] Transcription failed:`, transcriptionError);
+          if (transcriptLooksPoisonedBySelfCall) {
+            transcriptData = sanitizeTranscriptForReanalysis(transcriptData);
+          }
         }
+    } else if (transcriptLooksPoisonedBySelfCall) {
+      transcriptData = sanitizeTranscriptForReanalysis(transcriptData);
     }
 
     // Fallback if transcription failed or no recording. Reset the lock so the
@@ -1881,7 +2367,6 @@ exports.analyzeCall = async (req, res) => {
         }
       }
       transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
-      transcriptData = structuredTranscript.length > 0 ? structuredTranscript : [{ speaker: "Unknown", text: transcriptData }];
     }
 
     if (!transcriptData || (Array.isArray(transcriptData) && transcriptData.length === 0)) {
@@ -1895,7 +2380,6 @@ exports.analyzeCall = async (req, res) => {
       ? transcriptData.map(t => `[${t.speaker}]: ${t.text}`).join("\n")
       : transcriptData;
 
-    const callDurationSec = call.duration || call._doc?.duration || 0;
     let voiceAnalysis = null;
     if (hasRecording && callDurationSec >= MIN_DURATION_VOICE_AI_SEC) {
       try {
@@ -1913,15 +2397,18 @@ exports.analyzeCall = async (req, res) => {
 
     console.log(`🧠 [CallController] Triggering precision AI scoring for call ${id}...`);
     const scores = await withTimeout(
-      vertexAIService.scoreCall(transcriptText, gigScript),
+      vertexAIService.scoreCall(transcriptText, gigScript, { durationSec: callDurationSec }),
       SCORING_TIMEOUT_MS,
       'AI scoring'
     );
+    // Models often invent a wrong duration in the summary — force telephony duration.
+    correctScoresDuration(scores, callDurationSec);
 
     let selfCallFraud = resolveSelfCallFraud({
       voiceAnalysis,
       transcript: Array.isArray(transcriptData) ? transcriptData : [],
       durationSec: callDurationSec,
+      scores,
     });
     if (selfCallFraud.isFraud) {
       console.warn(
@@ -1969,17 +2456,57 @@ exports.analyzeCall = async (req, res) => {
     let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
     let refusalDetected = scores.refusal_detected || false;
 
-    // Call is valid if:
-    // 1. No fraud (score >= 50 and no self-call signal)
-    // 2. Script coherence is good (>= 50)
-    // 3. Call duration is greater than 70 seconds
+    // Extract and validate suggested disposition from HARX ladder (+ not_argumented).
+    const VALID_HARX_DISPOSITIONS = new Set([
+      'to_call', 'called_unreachable', 'called_voicemail', 'called_wrong_number',
+      'called_callback', 'called_rdv', 'not_argumented',
+      'argued_rdv', 'argued_declined', 'argued_done',
+    ]);
+    const rawSuggestedDisp = scores.suggested_disposition;
+    let suggestedDisposition = VALID_HARX_DISPOSITIONS.has(rawSuggestedDisp) ? rawSuggestedDisp : null;
+
+    // Answered >30s: classify argumented vs not argumented from AI signals.
+    const isArgumentedDisposition = ['argued_done', 'argued_declined', 'argued_rdv'].includes(
+      String(suggestedDisposition || '')
+    );
+    const softAnsweredDisposition = ['called_callback', 'called_rdv', 'called_wrong_number'].includes(
+      String(suggestedDisposition || '')
+    );
+    const looksArgumented =
+      isArgumentedDisposition ||
+      transactionDetected ||
+      refusalDetected ||
+      argumentationScore >= 50;
+    if (
+      !isNonProductiveCall &&
+      !isFraudDetected &&
+      !looksArgumented &&
+      !softAnsweredDisposition &&
+      (!suggestedDisposition ||
+        suggestedDisposition === 'to_call' ||
+        suggestedDisposition === 'called_unreachable')
+    ) {
+      suggestedDisposition = 'not_argumented';
+    }
+    if (suggestedDisposition) {
+      console.log(`🏷️ [CallController] AI suggested disposition for call ${id}: ${suggestedDisposition}`);
+    }
+
+    // Call commission ($ Appel): argumented + duration > 30s + no fraud.
+    // Not argumented / AMD / Busy → always invalid (no commission).
     const duration = call.duration || call._doc?.duration || 0;
+    const isNotArgumented =
+      !isNonProductiveCall &&
+      !isFraudDetected &&
+      !softAnsweredDisposition &&
+      (suggestedDisposition === 'not_argumented' || !looksArgumented);
     const isValidByAI =
       !isNonProductiveCall &&
       !isFraudDetected &&
+      !isNotArgumented &&
+      looksArgumented &&
       fraudScore >= 50 &&
-      scriptCoherence >= 50 &&
-      duration > 70;
+      duration > 30;
 
     if (isFraudDetected) {
       transactionDetected = false;
@@ -1989,9 +2516,23 @@ exports.analyzeCall = async (req, res) => {
       }
     }
     
-    // Calculate Commissions (70% Rep / 30% Platform)
-    const baseCallCommission = call.lead?.gigId?.commission?.commission_per_call || call.lead?.gigId?.rewardPerCall || 4;
-    const baseTransactionCommission = call.lead?.gigId?.commission?.transactionCommission || call.lead?.gigId?.rewardPerSale || 30;
+    // Calculate Commissions (70% Rep / 30% Platform).
+    // Use nullish coalescing: gig rates of 0€ are valid and must NOT fall back to 4/30.
+    const rawCallCommission =
+      call.lead?.gigId?.commission?.commission_per_call ?? call.lead?.gigId?.rewardPerCall;
+    const rawTxCommission = (() => {
+      const tc =
+        call.lead?.gigId?.commission?.transactionCommission ?? call.lead?.gigId?.rewardPerSale;
+      if (typeof tc === 'number') return tc;
+      if (tc && typeof tc === 'object' && typeof tc.amount === 'number') return tc.amount;
+      return undefined;
+    })();
+    const baseCallCommission =
+      typeof rawCallCommission === 'number' && Number.isFinite(rawCallCommission)
+        ? rawCallCommission
+        : 4;
+    const baseTransactionCommission =
+      typeof rawTxCommission === 'number' && Number.isFinite(rawTxCommission) ? rawTxCommission : 30;
 
     const repCallCommission = isValidByAI ? baseCallCommission * 0.7 : 0;
     const platformCallCommission = isValidByAI ? baseCallCommission * 0.3 : 0;
@@ -2017,6 +2558,15 @@ exports.analyzeCall = async (req, res) => {
       "DÉJÀ ÉQUIPÉS",
       "RDV",
       "A plus tard",
+      "called_unreachable",
+      "called_voicemail",
+      "called_wrong_number",
+      "called_callback",
+      "called_rdv",
+      "not_argumented",
+      "argued_rdv",
+      "argued_declined",
+      "argued_done",
       "overall"
     ];
     for (const k of RUBRIC_KEYS) {
@@ -2032,9 +2582,48 @@ exports.analyzeCall = async (req, res) => {
       scores['Fraud detection'].score = Math.min(readFraudScore(scores), 49);
     }
 
+    // Keep the chosen HARX disposition rubric aligned with suggested_disposition.
+    // The LLM often picks suggested_disposition=called_callback while leaving
+    // called_callback.score at 0 ("Non détecté") — that contradicts the banner.
+    if (
+      suggestedDisposition
+      && !isFraudDetected
+      && !isNonProductiveCall
+      && [
+        'called_unreachable', 'called_voicemail', 'called_wrong_number',
+        'called_callback', 'called_rdv', 'not_argumented',
+        'argued_rdv', 'argued_declined', 'argued_done',
+      ].includes(suggestedDisposition)
+    ) {
+      const node = (scores[suggestedDisposition] && typeof scores[suggestedDisposition] === 'object')
+        ? scores[suggestedDisposition]
+        : { score: 0, feedback: '', feedback_fr: '', feedback_en: '' };
+      const scoreNum = typeof node.score === 'number' ? node.score : 0;
+      if (scoreNum < PASS_THRESHOLD) {
+        node.score = Math.max(scoreNum, 85);
+        const weakFr = !node.feedback_fr || /non\s*d[ée]tect/i.test(String(node.feedback_fr || node.feedback || ''));
+        const weakEn = !node.feedback_en || /not\s*detect/i.test(String(node.feedback_en || ''));
+        if (weakFr) {
+          node.feedback_fr = 'Statut retenu par l\'analyse IA (disposition suggérée).';
+          node.feedback = node.feedback_fr;
+        }
+        if (weakEn) {
+          node.feedback_en = 'Status selected by AI analysis (suggested disposition).';
+        }
+      }
+      node.passed = true;
+      scores[suggestedDisposition] = node;
+    }
+
     // Discourse rubrics (RDV, déjà équipé, etc.) must not validate when fraud.
     if (isFraudDetected) {
-      for (const k of ['Transaction analysis', 'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard']) {
+      for (const k of [
+        'Transaction analysis',
+        'PAS INTÉRESSÉS', 'PAS AU COURANT', 'DÉJÀ ÉQUIPÉS', 'RDV', 'A plus tard',
+        'called_unreachable', 'called_voicemail', 'called_wrong_number',
+        'called_callback', 'called_rdv', 'not_argumented',
+        'argued_rdv', 'argued_declined', 'argued_done',
+      ]) {
         if (scores[k] && typeof scores[k] === 'object') {
           scores[k].passed = false;
         }
@@ -2050,8 +2639,9 @@ exports.analyzeCall = async (req, res) => {
 
     // Update the call with the new scores and ensure transcript is saved in structured format
     call.ai_call_score = scores;
-    call.validByAI = isValidByAI;
-    call.valid = isValidByAI; // Unified valid flag
+    call.validByAI = isNotArgumented ? false : isValidByAI;
+    call.valid = isNotArgumented ? false : isValidByAI;
+    call.suggestedDisposition = suggestedDisposition || null;
     call.argumentation_score = isNonProductiveCall || isFraudDetected ? 0 : argumentationScore;
     call.repCallCommission = repCallCommission;
     call.platformCallCommission = platformCallCommission;
@@ -2064,7 +2654,7 @@ exports.analyzeCall = async (req, res) => {
     //  without re-scanning ai_call_score on every request.
     //
     //  Voicemail short-circuit: rubrics were stripped above; force outcome explicitly.
-    const callOutcome = isNonProductiveCall
+    let callOutcome = isNonProductiveCall
       ? 'voicemail'
       : isFraudDetected
       ? 'fraud'
@@ -2083,8 +2673,64 @@ exports.analyzeCall = async (req, res) => {
           overallScore: scores.overall?.score || 0,
           refusalReason: call.ai_refusal_reason,
         });
+    // Prefer explicit ladder outcomes from the decision tree (incl. rappel / RDV).
+    if (!isNonProductiveCall && !isFraudDetected) {
+      if (suggestedDisposition === 'argued_done' || transactionDetected) {
+        callOutcome = 'transaction';
+      } else if (
+        suggestedDisposition === 'argued_declined' ||
+        (refusalDetected && looksArgumented)
+      ) {
+        callOutcome = 'refusal';
+      } else if (suggestedDisposition === 'argued_rdv') {
+        callOutcome = 'argued_interested';
+      } else if (suggestedDisposition === 'called_callback') {
+        callOutcome = 'callback_requested';
+      } else if (suggestedDisposition === 'called_rdv') {
+        callOutcome = 'appointment';
+      } else if (isNotArgumented || suggestedDisposition === 'not_argumented') {
+        callOutcome = 'not_argumented';
+      }
+    }
     call.callOutcome = callOutcome;
-    call.callOutcomeSource = 'ai';
+    // Keep REP outcome/source if the REP already scheduled a RDV/callback on this call.
+    const hadRepSchedule =
+      call.callOutcomeSource === 'rep' && (call.appointmentAt || call.callbackAt);
+    if (!hadRepSchedule) {
+      call.callOutcomeSource = 'ai';
+    }
+
+    // Extract RDV/callback datetime from AI (does not overwrite REP-set dates).
+    const scheduleApplied = applyAiScheduleToCall(call, scores);
+    if (scheduleApplied.raw) {
+      call.notes = [call.notes, `AI schedule: ${scheduleApplied.raw}`].filter(Boolean).join('\n').slice(0, 2000);
+    }
+
+    const scoredLeadId = call.lead && call.lead._id ? call.lead._id : call.lead;
+    await syncLeadDisposition(
+      scoredLeadId,
+      suggestedDisposition ||
+        dispositionFromCallSignals({
+          callOutcome: call.callOutcome || callOutcome,
+          status: call.status,
+          answeredBy: call.answeredBy,
+        })
+    );
+
+    const followUpAt = call.appointmentAt || call.callbackAt || scheduleApplied.at;
+    const followUpType = resolveFollowUpType({
+      scheduleType: scheduleApplied.type || scores.schedule_type,
+      suggestedDisposition,
+      appointmentAt: call.appointmentAt,
+      callbackAt: call.callbackAt,
+    });
+    if (followUpAt && followUpType) {
+      await syncLeadFollowUp(scoredLeadId, {
+        at: followUpAt,
+        type: followUpType,
+        source: hadRepSchedule || call.callOutcomeSource === 'rep' ? 'rep' : 'ai',
+      });
+    }
     call.ai_call_status = 'scored';
     // Use the LLM's overall feedback as a starter summary. A dedicated
     // /audio/summarize prompt can replace this later without changing the
@@ -2094,9 +2740,21 @@ exports.analyzeCall = async (req, res) => {
       call.ai_summary_fr = VOICEMAIL_SUMMARY_FR;
       call.ai_summary_en = VOICEMAIL_SUMMARY_EN;
     } else if (scores && scores.overall) {
-      call.ai_summary = scores.overall.feedback || scores.overall.feedback_fr || '';
-      call.ai_summary_fr = scores.overall.feedback_fr || scores.overall.feedback || '';
-      call.ai_summary_en = scores.overall.feedback_en || '';
+      call.ai_summary = correctDurationInText(
+        scores.overall.feedback || scores.overall.feedback_fr || '',
+        callDurationSec,
+        'auto'
+      );
+      call.ai_summary_fr = correctDurationInText(
+        scores.overall.feedback_fr || scores.overall.feedback || '',
+        callDurationSec,
+        'fr'
+      );
+      call.ai_summary_en = correctDurationInText(
+        scores.overall.feedback_en || '',
+        callDurationSec,
+        'en'
+      );
     }
     call.flags = {
       fraud:               isNonProductiveCall ? false : isFraudDetected,
@@ -2139,14 +2797,19 @@ exports.analyzeCall = async (req, res) => {
       callOutcomeSource: call.callOutcomeSource,
       ai_call_status: call.ai_call_status,
       flags: call.flags,
+      ai_refusal_reason: null,
+      ai_summary: call.ai_summary || null,
+      ai_summary_fr: call.ai_summary_fr || null,
+      ai_summary_en: call.ai_summary_en || null,
+      suggestedDisposition: suggestedDisposition || null,
     };
-    if (scores && scores.overall) {
-      analysisUpdate.ai_summary = call.ai_summary;
-      analysisUpdate.ai_summary_fr = call.ai_summary_fr;
-      analysisUpdate.ai_summary_en = call.ai_summary_en;
-    }
     if (Array.isArray(transcriptData)) {
       analysisUpdate.transcript = call.transcript;
+    }
+    if (force) {
+      // Ensure validations are re-opened after a full re-analysis.
+      analysisUpdate.agentValidation = 'pending';
+      analysisUpdate.companyValidation = 'pending';
     }
     await Call.findByIdAndUpdate(id, { $set: analysisUpdate });
 
@@ -2158,7 +2821,15 @@ exports.analyzeCall = async (req, res) => {
     // Update or Create Transaction
     // Rule: If call is rejected by AI (Fraud or Coherence), transaction is automatically REJECTED.
     // Otherwise, use detection signals.
-    const transactionStatus = !isValidByAI ? false : (transactionDetected ? true : (refusalDetected ? false : null));
+    // Always upsert on force (and whenever we score) so a prior fraud run cannot
+    // leave stale validByCompany=false → UI "Call refused" forever.
+    const transactionStatus = !isValidByAI
+      ? false
+      : transactionDetected
+        ? true
+        : refusalDetected
+          ? false
+          : null;
 
     const transactionUpdate = {
       call: id,
@@ -2171,15 +2842,22 @@ exports.analyzeCall = async (req, res) => {
       transaction_score: scores.overall?.score || 0,
       repTransactionCommission: repTransactionCommission,
       platformTransactionCommission: platformTransactionCommission,
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
-    // Rule: If call is rejected by AI, transaction final validation is also automatically REJECTED.
     if (!isValidByAI) {
-      transactionUpdate.validByCompany = false;
-    } else if (transactionDetected) {
-      // Reset stale company rejection so the company UI can approve the sale.
+      // AI rejected the call → mark transaction invalid for AI only.
+      // Never set validByCompany here: that flag is the company decision
+      // (Validate / Not signed). Auto-setting it caused sticky "Call refused".
       transactionUpdate.validByCompany = null;
+    } else {
+      // Call is AI-valid again (e.g. after force re-run cleared a false fraud).
+      // Re-open company decision so a prior auto-reject cannot stick.
+      // Keep an explicit company approval (true).
+      const existingTx = await Transaction.findOne({ call: id }).select('validByCompany').lean();
+      if (!existingTx || existingTx.validByCompany !== true) {
+        transactionUpdate.validByCompany = null;
+      }
     }
 
     transactionUpdate.valid = resolveTransactionValid(
@@ -2187,13 +2865,11 @@ exports.analyzeCall = async (req, res) => {
       transactionUpdate.validByCompany !== undefined ? transactionUpdate.validByCompany : null
     );
 
-    if (transactionDetected || refusalDetected || !isValidByAI) {
-      await Transaction.findOneAndUpdate(
-        { call: id },
-        transactionUpdate,
-        { upsert: true, new: true }
-      );
-    }
+    await Transaction.findOneAndUpdate(
+      { call: id },
+      transactionUpdate,
+      { upsert: true, new: true }
+    );
 
     res.json({ 
         success: true, 
@@ -2258,6 +2934,7 @@ exports.requestAnalysisHelp = async (req, res) => {
     const isFinished =
       call.ai_call_status === 'scored' ||
       call.ai_call_status === 'auto_refused' ||
+      call.ai_call_status === 'too_short' ||
       (call.ai_call_score?.overall?.score != null && call.ai_call_status !== 'error');
 
     if (isFinished) {
@@ -2318,6 +2995,80 @@ exports.requestAnalysisHelp = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to notify company',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Calibrage du scoring IA — thumbs up / thumbs down + explication de l'écart.
+ * Accessible au rep (ou confirmer) après une analyse `scored`.
+ */
+exports.calibrateCallScore = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const verdict = String(req.body?.verdict || '').toLowerCase();
+    const explanation = String(req.body?.explanation || '').trim();
+    const agentId = req.body?.agentId || req.headers['x-agent-id'] || null;
+    const companyId = req.body?.companyId || req.headers['x-company-id'] || null;
+
+    if (verdict !== 'up' && verdict !== 'down') {
+      return res.status(400).json({
+        success: false,
+        message: 'verdict must be "up" or "down"',
+      });
+    }
+    if (verdict === 'down' && explanation.length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: 'explanation is required when disagreeing with the score',
+      });
+    }
+
+    const call = await Call.findById(id);
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+    if (call.ai_call_status === 'too_short') {
+      return res.status(400).json({
+        success: false,
+        message: 'Short calls are not analyzed — calibration unavailable',
+      });
+    }
+    if (
+      call.ai_call_status !== 'scored' &&
+      !(call.ai_call_score && call.ai_call_score.overall && typeof call.ai_call_score.overall.score === 'number')
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Call has no AI score to calibrate',
+      });
+    }
+
+    const scoreCalibration = {
+      verdict,
+      explanation: explanation || null,
+      calibratedAt: new Date(),
+      calibratedByAgentId: agentId || null,
+      calibratedByCompanyId: companyId || null,
+    };
+
+    const updated = await Call.findByIdAndUpdate(
+      id,
+      { $set: { scoreCalibration, updatedAt: new Date() } },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Calibration saved',
+      data: { scoreCalibration: updated.scoreCalibration },
+    });
+  } catch (error) {
+    console.error('Error in calibrateCallScore:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save calibration',
       error: error.message,
     });
   }
@@ -2397,6 +3148,112 @@ exports.startTelnyxRecording = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/calls/ai-outbound
+ * Start a per-lead AI voice outbound call (Gemini/OpenAI Live + Telnyx or Twilio stream).
+ * Body: { leadId, gigId?, companyId? }
+ */
+exports.startAiOutbound = async (req, res) => {
+  try {
+    const { startAiOutboundCall } = require('../services/aiOutboundCallService');
+    const { leadId, gigId, companyId } = req.body || {};
+    const result = await startAiOutboundCall({
+      leadId,
+      gigId,
+      companyId: companyId || req.user?.companyId || req.headers['x-company-id'],
+      req,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || 500;
+    console.error('[AiOutbound] start failed:', error.message);
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Failed to start AI outbound call',
+    });
+  }
+};
+
+/**
+ * POST /api/calls/ai-outbound/hangup
+ * Hang up an active AI outbound Telnyx or Twilio leg.
+ * Body: { callControlId } or { callId }
+ */
+exports.hangupAiOutbound = async (req, res) => {
+  try {
+    const { hangupAiOutboundCall } = require('../services/aiOutboundCallService');
+    const { callControlId, callId } = req.body || {};
+    const result = await hangupAiOutboundCall({ callControlId, callId });
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || 500;
+    console.error('[AiOutbound] hangup failed:', error.message);
+    return res.status(status).json({
+      success: false,
+      message: error.message || 'Failed to hang up AI outbound call',
+    });
+  }
+};
+
+/**
+ * POST /api/calls/webhooks/telnyx/ai-outbound
+ * Telnyx Call Control webhook for AI outbound legs (answered → media stream).
+ */
+exports.handleTelnyxAiOutboundWebhook = async (req, res) => {
+  try {
+    const { handleAiOutboundWebhook } = require('../services/aiOutboundCallService');
+    const event = req.body?.data || req.body;
+    await handleAiOutboundWebhook(event);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
+/**
+ * POST /api/calls/webhooks/twilio/ai-outbound/voice
+ * Twilio answers → TwiML <Connect><Stream> to our WSS bridge.
+ */
+exports.handleTwilioAiOutboundVoice = async (req, res) => {
+  try {
+    const { handleTwilioAiOutboundVoice } = require('../services/aiOutboundCallService');
+    const twiml = await handleTwilioAiOutboundVoice(req);
+    res.type('text/xml');
+    return res.status(200).send(twiml);
+  } catch (error) {
+    console.error('[AiOutbound] Twilio voice webhook error:', error.message);
+    res.type('text/xml');
+    return res
+      .status(200)
+      .send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say language="fr-FR">Erreur technique.</Say></Response>'
+      );
+  }
+};
+
+exports.handleTwilioAiOutboundStatus = async (req, res) => {
+  try {
+    const { handleTwilioAiOutboundStatus } = require('../services/aiOutboundCallService');
+    await handleTwilioAiOutboundStatus(req);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] Twilio status webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
+exports.handleTwilioAiOutboundRecording = async (req, res) => {
+  try {
+    const { handleTwilioAiOutboundRecording } = require('../services/aiOutboundCallService');
+    await handleTwilioAiOutboundRecording(req);
+    return res.status(200).send('OK');
+  } catch (error) {
+    console.error('[AiOutbound] Twilio recording webhook error:', error.message);
+    return res.status(200).send('OK');
+  }
+};
+
 exports.handleTelnyxCallControlWebhook = async (req, res) => {
   try {
     const event = req.body?.data;
@@ -2453,6 +3310,16 @@ exports.handleTelnyxCallControlWebhook = async (req, res) => {
           console.warn('[Telnyx webhook] Cloudinary archive failed:', err.message);
         }
         await callDoc.save();
+        // Recording often arrives AFTER the first auto-analysis marked too_short
+        // with an empty transcript — re-run so every call gets a literal transcript.
+        const needsTranscript =
+          !Array.isArray(callDoc.transcript) || callDoc.transcript.length === 0;
+        if (needsTranscript || callDoc.ai_call_status === 'too_short') {
+          runAnalysisInBackground(callDoc._id, {
+            delayMs: 2000,
+            force: needsTranscript,
+          });
+        }
       }
     }
 

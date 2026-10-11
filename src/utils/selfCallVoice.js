@@ -1,8 +1,17 @@
 /** Minimum call length before Gemini voice fraud check runs. */
-const MIN_DURATION_VOICE_AI_SEC = 45;
+const MIN_DURATION_VOICE_AI_SEC = 30;
 
-/** Confidence threshold when sameSpeakerSuspected is true. */
+/** Confidence threshold for audio-based self-call fraud. */
 const SELF_CALL_CONFIDENCE_THRESHOLD = 75;
+
+/**
+ * Transcript-only heuristics are a weak signal (STT often labels everyone as Agent).
+ * Require a long call + strong imbalance, and never override a clear 2-voice audio result.
+ */
+const MIN_DURATION_TRANSCRIPT_FRAUD_SEC = 180;
+const MIN_AGENT_TURNS_TRANSCRIPT_FRAUD = 5;
+const MIN_TOTAL_WORDS_TRANSCRIPT_FRAUD = 50;
+const CUSTOMER_WORD_RATIO_MAX = 0.05;
 
 const FRAUD_FEEDBACK = {
   same_voice_ai: {
@@ -18,8 +27,8 @@ const FRAUD_FEEDBACK = {
     feedback_en: 'Suspected fraud: no Customer turns in the transcript on a long call.',
   },
   transcript_customer_absent: {
-    feedback_fr: 'Fraude suspectée : le Client est quasi absent du dialogue (< 8 % des mots).',
-    feedback_en: 'Suspected fraud: the Customer is nearly absent from the dialogue (< 8% of words).',
+    feedback_fr: 'Fraude suspectée : le Client est quasi absent du dialogue (< 5 % des mots).',
+    feedback_en: 'Suspected fraud: the Customer is nearly absent from the dialogue (< 5% of words).',
   },
 };
 
@@ -42,18 +51,102 @@ function normalizeVoiceAnalysis(raw) {
 }
 
 function isCustomerSpeaker(label) {
-  return /customer|client|prospect|lead|appel[ée]|destinataire/i.test(String(label || ''));
+  return /customer|client|prospect|lead|appel[ée]|destinataire|voix simul/i.test(
+    String(label || '')
+  );
 }
 
 function isAgentSpeaker(label) {
   return /agent|rep|commercial|vendeur|conseiller|seller|harx/i.test(String(label || ''));
 }
 
-function assessSelfCallFromTranscript(transcript, durationSec) {
-  if (!Array.isArray(transcript) || durationSec < MIN_DURATION_VOICE_AI_SEC) return null;
+function isSimulatedSpeakerLabel(label) {
+  return /voix simul|simulated/i.test(String(label || ''));
+}
 
-  const turns = transcript.filter((t) => t && String(t.text || '').trim());
+/**
+ * Restore Customer labels before re-analysis when a prior self-call pass
+ * rewrote them to "Voix simulée" (otherwise re-runs stay poisoned).
+ */
+function sanitizeTranscriptForReanalysis(transcript) {
+  if (!Array.isArray(transcript)) return [];
+  return transcript.map((turn) => {
+    if (!turn || typeof turn !== 'object') return turn;
+    const speaker = String(turn.speaker || '');
+    if (turn.originalSpeaker && (turn.simulated || isSimulatedSpeakerLabel(speaker))) {
+      const { simulated, ...rest } = turn;
+      return { ...rest, speaker: turn.originalSpeaker };
+    }
+    if (isSimulatedSpeakerLabel(speaker)) {
+      const { simulated, ...rest } = turn;
+      return { ...rest, speaker: 'Customer' };
+    }
+    return turn;
+  });
+}
+
+/**
+ * True when transcript content looks like a real two-party sales dialogue
+ * (lots of back-and-forth with substantial "customer" speech), even if audio
+ * mono/diarization is unreliable.
+ */
+function transcriptSuggestsRealTwoPartyDialogue(transcript) {
+  const turns = sanitizeTranscriptForReanalysis(transcript).filter(
+    (t) => t && String(t.text || '').trim()
+  );
+  if (turns.length < 12) return false;
+
+  const customerTurns = turns.filter((t) => isCustomerSpeaker(t.speaker));
+  const agentTurns = turns.filter((t) => isAgentSpeaker(t.speaker));
+
+  const wordCount = (rows) =>
+    rows.reduce(
+      (sum, t) => sum + String(t.text || '').trim().split(/\s+/).filter(Boolean).length,
+      0
+    );
+
+  const customerWords = wordCount(customerTurns);
+  const agentWords = wordCount(agentTurns);
+
+  // Strong signal: many turns on both sides with real customer content.
+  if (customerTurns.length >= 6 && agentTurns.length >= 6 && customerWords >= 60) {
+    return true;
+  }
+
+  // Fallback: speaker labels may be messy, but total dialogue is long and
+  // non-agent speech (Customer / Voix simulée / unknown) is substantial.
+  const nonAgentTurns = turns.filter((t) => !isAgentSpeaker(t.speaker));
+  const nonAgentWords = wordCount(nonAgentTurns);
+  if (turns.length >= 20 && nonAgentWords >= 100 && agentWords >= 80) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * True when the scoring LLM already saw a two-party interaction
+ * (refusal / transaction / clean fraud rubric) — do not convict on transcript alone.
+ */
+function scoringSuggestsTwoPartyDialogue(scores) {
+  if (!scores || typeof scores !== 'object') return false;
+  if (scores.refusal_detected === true) return true;
+  if (scores.transaction_detected === true) return true;
+  const fraudScore = scores['Fraud detection']?.score;
+  if (typeof fraudScore === 'number' && fraudScore >= 60) return true;
+  return false;
+}
+
+function assessSelfCallFromTranscript(transcript, durationSec) {
+  if (!Array.isArray(transcript) || durationSec < MIN_DURATION_TRANSCRIPT_FRAUD_SEC) return null;
+
+  const turns = sanitizeTranscriptForReanalysis(transcript).filter(
+    (t) => t && String(t.text || '').trim()
+  );
   if (turns.length === 0) return null;
+
+  // Rich two-party dialogue → never convict from transcript heuristics alone.
+  if (transcriptSuggestsRealTwoPartyDialogue(turns)) return null;
 
   const customerTurns = turns.filter((t) => isCustomerSpeaker(t.speaker));
   const agentTurns = turns.filter((t) => isAgentSpeaker(t.speaker));
@@ -64,16 +157,27 @@ function assessSelfCallFromTranscript(transcript, durationSec) {
   const totalWords = wordCount(turns);
   const customerWords = wordCount(customerTurns);
 
-  if (customerTurns.length === 0 && agentTurns.length >= 2 && durationSec >= 60) {
-    return buildFraudResult('transcript_no_customer', 72, {
+  // Weak STT diarization often marks every turn as Agent — do not treat that as fraud lightly.
+  if (
+    customerTurns.length === 0 &&
+    agentTurns.length >= MIN_AGENT_TURNS_TRANSCRIPT_FRAUD &&
+    totalWords >= MIN_TOTAL_WORDS_TRANSCRIPT_FRAUD &&
+    durationSec >= MIN_DURATION_TRANSCRIPT_FRAUD_SEC
+  ) {
+    return buildFraudResult('transcript_no_customer', 68, {
       distinctVoices: 1,
       sameSpeakerSuspected: true,
       source: 'transcript',
     });
   }
 
-  if (totalWords > 20 && customerWords / totalWords < 0.08 && durationSec >= 60) {
-    return buildFraudResult('transcript_customer_absent', 70, {
+  if (
+    totalWords >= MIN_TOTAL_WORDS_TRANSCRIPT_FRAUD &&
+    customerWords / totalWords < CUSTOMER_WORD_RATIO_MAX &&
+    durationSec >= MIN_DURATION_TRANSCRIPT_FRAUD_SEC &&
+    agentTurns.length >= MIN_AGENT_TURNS_TRANSCRIPT_FRAUD
+  ) {
+    return buildFraudResult('transcript_customer_absent', 68, {
       distinctVoices: 1,
       sameSpeakerSuspected: true,
       source: 'transcript',
@@ -103,8 +207,15 @@ function isSelfCallFraudFromVoice(voiceAnalysis, durationSec) {
   if (!voiceAnalysis || voiceAnalysis.isVoicemail) return null;
   if (durationSec < MIN_DURATION_VOICE_AI_SEC) return null;
 
-  if (voiceAnalysis.distinctVoices === 1) {
-    return buildFraudResult('single_speaker_ai', Math.max(voiceAnalysis.confidence, 80), {
+  const confidence =
+    typeof voiceAnalysis.confidence === 'number' ? voiceAnalysis.confidence : 0;
+
+  // Require high confidence — low-confidence "1 voice" is often quiet/far customer or mono mix.
+  if (
+    voiceAnalysis.distinctVoices === 1 &&
+    confidence >= SELF_CALL_CONFIDENCE_THRESHOLD
+  ) {
+    return buildFraudResult('single_speaker_ai', confidence, {
       ...voiceAnalysis,
       source: 'audio',
     });
@@ -112,9 +223,9 @@ function isSelfCallFraudFromVoice(voiceAnalysis, durationSec) {
 
   if (
     voiceAnalysis.sameSpeakerSuspected &&
-    voiceAnalysis.confidence >= SELF_CALL_CONFIDENCE_THRESHOLD
+    confidence >= SELF_CALL_CONFIDENCE_THRESHOLD
   ) {
-    return buildFraudResult('same_voice_ai', voiceAnalysis.confidence, {
+    return buildFraudResult('same_voice_ai', confidence, {
       ...voiceAnalysis,
       source: 'audio',
     });
@@ -123,15 +234,53 @@ function isSelfCallFraudFromVoice(voiceAnalysis, durationSec) {
   return null;
 }
 
-function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec }) {
+/**
+ * Resolve self-call fraud.
+ * Priority: clear audio signal > transcript heuristics (conservative).
+ * Never override a clear 2-voice audio result with transcript.
+ * Never use transcript alone when scoring already saw a real refusal/transaction.
+ */
+function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores } = {}) {
   if (voiceAnalysis?.isVoicemail) {
     return { isFraud: false, voiceAnalysis };
   }
 
-  const fromVoice = isSelfCallFraudFromVoice(voiceAnalysis, durationSec);
-  if (fromVoice) return fromVoice;
+  const cleanTranscript = sanitizeTranscriptForReanalysis(transcript);
+  const twoPartyContent = transcriptSuggestsRealTwoPartyDialogue(cleanTranscript);
 
-  const fromTranscript = assessSelfCallFromTranscript(transcript, durationSec);
+  const fromVoice = isSelfCallFraudFromVoice(voiceAnalysis, durationSec);
+  if (fromVoice) {
+    // Twilio/Cloudinary mono mixes often make Gemini report "1 voice" even on
+    // real Agent↔Customer calls. If the transcript already shows a long
+    // two-party dialogue, never convict on audio alone.
+    if (twoPartyContent) {
+      console.warn(
+        `⚠️ [selfCallVoice] Suppressing ${fromVoice.reason} — transcript looks like real two-party dialogue (confidence=${fromVoice.confidence})`
+      );
+      return {
+        isFraud: false,
+        voiceAnalysis: {
+          ...(voiceAnalysis || {}),
+          suppressedReason: 'transcript_two_party_override',
+          suppressedFraudReason: fromVoice.reason,
+          suppressedConfidence: fromVoice.confidence,
+        },
+      };
+    }
+    return fromVoice;
+  }
+
+  // Audio heard two distinct voices → trust that over STT speaker labels.
+  if (typeof voiceAnalysis?.distinctVoices === 'number' && voiceAnalysis.distinctVoices >= 2) {
+    return { isFraud: false, voiceAnalysis };
+  }
+
+  // Scoring LLM already modeled a two-party outcome → do not convict on transcript alone.
+  if (scoringSuggestsTwoPartyDialogue(scores) || twoPartyContent) {
+    return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
+  }
+
+  const fromTranscript = assessSelfCallFromTranscript(cleanTranscript, durationSec);
   if (fromTranscript) return fromTranscript;
 
   return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
@@ -181,6 +330,15 @@ function applySelfCallFraudToScores(scores, fraudResult) {
     'DÉJÀ ÉQUIPÉS',
     'RDV',
     'A plus tard',
+    'called_unreachable',
+    'called_voicemail',
+    'called_wrong_number',
+    'called_callback',
+    'called_rdv',
+    'not_argumented',
+    'argued_rdv',
+    'argued_declined',
+    'argued_done',
   ];
   for (const key of TX_RUBRIC_KEYS) {
     if (scores[key] && typeof scores[key] === 'object') {
@@ -213,7 +371,10 @@ function isFraudFromScores(scores, selfCallFraud) {
 module.exports = {
   MIN_DURATION_VOICE_AI_SEC,
   SELF_CALL_CONFIDENCE_THRESHOLD,
+  MIN_DURATION_TRANSCRIPT_FRAUD_SEC,
   normalizeVoiceAnalysis,
+  sanitizeTranscriptForReanalysis,
+  transcriptSuggestsRealTwoPartyDialogue,
   resolveSelfCallFraud,
   correctTranscriptForSelfCallFraud,
   applySelfCallFraudToScores,

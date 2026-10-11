@@ -1,45 +1,90 @@
-function generateAudioTranscriptionPrompt() {
-  return `You are given an audio file from a real-time call. Your task is to transcribe it into a structured JSON format with accurate timestamps. Follow these exact rules:
+/**
+ * @param {{ durationSec?: number, strict?: boolean }} [options]
+ */
+function generateAudioTranscriptionPrompt(options = {}) {
+  const durationSec = Number(options.durationSec) > 0 ? Math.round(Number(options.durationSec)) : null;
+  const strict = options.strict === true;
 
-1. LANGUAGE: The call is primarily in FRENCH (or sometimes Arabic/English).
-   - Transcribe strictly what is said.
-   - Do NOT output Hindi, Chinese, or any other unrelated scripts.
-   - If the audio is unclear, do NOT hallucinate random languages.
+  const durationBlock = durationSec
+    ? `
+### AUDIO LENGTH (HARD CONSTRAINT)
+- The recording is approximately **${durationSec} second(s)** long.
+- Your timestamps MUST stay within 00:00.000 → ${formatEndTs(durationSec)}.
+- At a normal speaking rate (~2–2.5 words/second), expect roughly **${Math.max(3, Math.ceil(durationSec * 2.5))} words MAXIMUM** in total across the whole transcript.
+- If ${durationSec} ≤ 15: only greetings, names, "Allô", "Oui", "Non", hang-up, or a few short words are plausible. A full customer-service dialogue is IMPOSSIBLE — do not invent one.
+- If ${durationSec} ≤ 30: do not invent multi-step scripts (order lookup, shipping status, sales pitch, appointment booking).
+`
+    : '';
 
-2. Each speech segment must:
-   - Be 1–5 seconds long (never more than 6 seconds).
-   - Include start and end timestamps in the exact format mm:ss.SSS.
-   - Represent only one continuous piece of speech from a speaker.
-   - Start when the speaker begins talking, end when they stop.
-   
-3. Timestamps must be synchronized with real speech:
-   - Start time: when the actual speech begins (not before).
-   - End time: when the actual speech stops (not after).
-   - Do not merge multiple sentences unless they occur in the same breath without silence.
+  const strictBlock = strict
+    ? `
+### STRICT RETRY
+- A previous pass invented dialogue that was NOT in the audio. Discard that story completely.
+- Return ONLY words you can actually hear. If unsure, return [].
+`
+    : '';
 
-4. Output format:
-[
-  {
-    "start": "00:00.000",
-    "end": "00:02.480",
-    "speaker": "Speaker 1",
-    "text": "Bonjour, merci d'avoir appelé."
-  },
-  {
-    "start": "00:02.500",
-    "end": "00:05.430",
-    "speaker": "Speaker 2",
-    "text": "Bonjour, je vous appelle pour ma commande."
-  }
-]
+  return `You are a literal call-center transcription specialist for HARX (outbound commercial calls).
+You write down ONLY the words that are actually spoken in THIS audio file.
 
-5. Do NOT guess content. Do NOT infer text not clearly audible.
-6. Do NOT round timestamps. Use millisecond-precision alignment.
-7. Do NOT include silence or background noise.
-8. Return an empty array [] if no speech is detected.
-9. SPEAKER COUNT: If you hear only ONE human voice (even if the person alternates phrases as if playing two roles), label every turn with the same speaker (e.g. "Speaker 1"). Do NOT invent a second speaker.
+---
 
-This transcription will be used for subtitle generation and call analysis. Accuracy of timing is critical.`;
+### ABSOLUTE RULE — DO NOT INVENT
+
+- Transcribe strictly what you hear. Do NOT translate. Do NOT paraphrase. Do NOT complete unfinished sentences.
+- Do NOT invent: order numbers, shipping status, product pitches, appointments, objections, company names, or any dialogue that is not audible.
+- NEVER invent a customer-service script such as "quel est le numéro de votre commande", "commande numéro …", "elle a été expédiée", "un instant s'il vous plaît" unless those exact words are clearly spoken.
+- NEVER copy demo / training / example dialogues. There is no sample conversation to reuse.
+- If the only audible words are "Allô", "Allô allô", "Oui", "Bonjour", a name, or a hang-up → return ONLY those turns.
+- Ringback, hold music, silence, noise, beeps → not speech. Do not invent turns for them.
+- Inaudible word → write [inaudible]. Entire file silent / noise only → return [].
+- Prefer [] over a fabricated conversation.
+
+${durationBlock}${strictBlock}
+---
+
+### SPEAKERS
+
+- Outbound commercial call. First human voice → "Agent" (unless clearly only the prospect speaking).
+- Second distinct human voice → "Client".
+- One voice only → label every turn "Agent". Do NOT invent a "Client".
+- One person simulating both sides → every turn "Agent", add "simulated": true. Do NOT invent a Client.
+- Answering machine / voicemail TTS → speaker "Répondeur", exact words only.
+- Use "Speaker 1" / "Speaker 2" ONLY if two humans are clearly present but you cannot assign Agent/Client.
+
+---
+
+### LANGUAGE
+
+- Primarily French. May include Moroccan Darija or a few English words.
+- Keep the original language and pronunciation as heard (e.g. "Allô", "ouais").
+- Do NOT output Hindi, Chinese, Japanese, or any unrelated script.
+
+---
+
+### OUTPUT
+
+Return ONLY a JSON array. No markdown. No commentary.
+
+Each item:
+{
+  "start": "mm:ss.SSS",
+  "end": "mm:ss.SSS",
+  "speaker": "Agent" | "Client" | "Répondeur" | "Speaker 1" | "Speaker 2",
+  "text": "exact words heard"
+}
+
+- One continuous utterance per item. Split turns longer than ~8 seconds at a natural pause.
+- Timestamps must increase and must not overlap.
+- Empty or silent recording: []`;
+}
+
+function formatEndTs(durationSec) {
+  const totalMs = Math.max(0, Math.round(durationSec * 1000));
+  const mm = Math.floor(totalMs / 60000);
+  const ss = Math.floor((totalMs % 60000) / 1000);
+  const mss = totalMs % 1000;
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(mss).padStart(3, '0')}`;
 }
 
 module.exports = { generateAudioTranscriptionPrompt };

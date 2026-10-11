@@ -12,6 +12,7 @@ const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt
 const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
 const { generateSelfCallVoicePrompt } = require('../VertexPrompt/selfCallVoicePrompt');
 const { normalizeVoiceAnalysis } = require('../utils/selfCallVoice');
+const { correctScoresDuration } = require('../utils/correctSummaryDuration');
 const { Storage } = require('@google-cloud/storage');
 const axios = require('axios'); // Preferring axios if available or node-fetch
 const fetch = require('node-fetch');
@@ -322,17 +323,20 @@ ${transcript}`;
     }
   }
 
-  async scoreCall(transcript, gigScript = "") {
+  async scoreCall(transcript, gigScript = "", options = {}) {
     try {
       const gModel = await getJsonGenerativeModel();
-      const promptText = generateCallScoringPrompt(gigScript);
+      const promptText = generateCallScoringPrompt(gigScript, {
+        durationSec: options.durationSec,
+      });
       const prompt = `${promptText}\n\nTranscript:\n${transcript}`;
 
       console.log('🧠 [VertexAIService] Sending transcript for surgical scoring using Knowledge Base standardized prompt...');
       const result = await gModel.generateContent(prompt);
       const responseText = result.response.candidates[0].content.parts[0].text;
       const scores = this.parseJsonResponse(responseText);
-      
+      correctScoresDuration(scores, options.durationSec);
+
       console.log('✅ [VertexAIService] Precision scores generated.');
       return scores;
     } catch (error) {
@@ -477,10 +481,17 @@ ${fullTranscript}`;
     }
   }
 
-  async transcribeAudioBuffer(audioBuffer) {
+  async transcribeAudioBuffer(audioBuffer, options = {}) {
     try {
       await initializeServices();
-      const prompt = generateAudioTranscriptionPrompt();
+      const durationSec = Number(options.durationSec) > 0 ? Number(options.durationSec) : undefined;
+      const prompt = generateAudioTranscriptionPrompt({
+        durationSec,
+        strict: options.strict === true,
+      });
+      const durationHint = durationSec
+        ? `\nHARD LIMIT: audio ≈ ${Math.round(durationSec)}s. Do not invent more speech than that duration allows.`
+        : '';
 
       // Detect format
       let mimeType = "audio/wav";
@@ -514,7 +525,7 @@ ${fullTranscript}`;
                 "data": base64Audio
               }
             },
-            { "text": `${prompt}\nIMPORTANT: Identify speakers as "Agent" (company/rep) and "Customer" (lead) ONLY when you hear two distinct human voices. If a single voice simulates both sides of the dialogue, label ALL turns as "Agent" — never invent a Customer. Return ONLY the JSON array.` }
+            { "text": `${prompt}${durationHint}\nIdentify speakers as "Agent" and "Client" ONLY when you hear two distinct human voices. If one voice plays both sides, label ALL turns as "Agent" and set "simulated": true. Never invent a Client, a pitch, an order number, or a story. Prefer [] over invented dialogue. Return ONLY the JSON array.` }
           ]
         }],
       };
@@ -542,7 +553,7 @@ ${fullTranscript}`;
     }
   }
 
-  async transcribeAudioFromUrl(audioUrl) {
+  async transcribeAudioFromUrl(audioUrl, options = {}) {
     try {
       console.log(`🎙️ [VertexAIService] Fetching audio for transcription from: ${audioUrl}`);
       const response = await fetch(audioUrl);
@@ -551,7 +562,7 @@ ${fullTranscript}`;
       const audioBuffer = await response.buffer();
       console.log(`✅ [VertexAIService] Audio fetched (${audioBuffer.length} bytes). Starting transcription...`);
       
-      return await this.transcribeAudioBuffer(audioBuffer);
+      return await this.transcribeAudioBuffer(audioBuffer, options);
     } catch (error) {
       console.error('❌ [VertexAIService] Error in transcribeAudioFromUrl:', error);
       return [];

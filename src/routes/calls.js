@@ -66,6 +66,7 @@ router.route('/:id/quality-score')
 
 router.post('/:id/analyze', callController.analyzeCall);
 router.post('/:id/request-analysis-help', callController.requestAnalysisHelp);
+router.post('/:id/calibrate-score', callController.calibrateCallScore);
 
 // Route pour créer un Dialplan
 router.post('/dialplan', callController.createDialplan);
@@ -112,6 +113,13 @@ router.post('/personality-analysis', callController.getPersonalityAnalysis);
 router.post('/get-login-token', callController.getLoginToken);
 router.get('/get-login-token', callController.getLoginToken);
 
+router.post('/ai-outbound', callController.startAiOutbound);
+router.post('/ai-outbound/hangup', callController.hangupAiOutbound);
+router.post('/webhooks/telnyx/ai-outbound', express.json(), callController.handleTelnyxAiOutboundWebhook);
 router.post('/webhooks/telnyx/call-control', express.json(), callController.handleTelnyxCallControlWebhook);
+// Twilio AI outbound (form-urlencoded by default from Twilio — express.urlencoded already applied upstream)
+router.post('/webhooks/twilio/ai-outbound/voice', callController.handleTwilioAiOutboundVoice);
+router.post('/webhooks/twilio/ai-outbound/status', callController.handleTwilioAiOutboundStatus);
+router.post('/webhooks/twilio/ai-outbound/recording', callController.handleTwilioAiOutboundRecording);
 
 module.exports = router;

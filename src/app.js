@@ -5,6 +5,7 @@ const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
 const setupSpeechToTextWebSocket = require('./websocket/speechToText');
+const setupAiVoiceBridge = require('./websocket/aiVoiceBridge');
 
 // Route imports
 const auth = require('./routes/auth');
@@ -77,7 +78,7 @@ app.use(cors({
     return callback(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-agent-id', 'x-channel', 'Accept', 'Origin', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-agent-id', 'x-company-id', 'x-channel', 'Accept', 'Origin', 'X-Requested-With'],
   credentials: true
 }));
 
@@ -105,12 +106,21 @@ app.use('/api/vertex', vertex);
 // Error handler
 //app.use(errorHandler);
 
+// Probe for Telnyx / ops — confirms the public host reaches this service.
+app.get('/ai-voice-stream/health', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'ai-voice-stream',
+    hint: 'WebSocket endpoint is wss://<host>/ai-voice-stream/<token>',
+  });
+});
+
 const PORT = config.PORT;
 
 // Create HTTP server
 const server = http.createServer(app);
-//console.log("server",server);
-// Set up WebSocket handler for speech-to-text
+// AI voice upgrade MUST register before STT so /ai-voice-stream is claimed first.
+setupAiVoiceBridge(server);
 setupSpeechToTextWebSocket(server);
 
 // Listen on server instead of app
