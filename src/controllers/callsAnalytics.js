@@ -495,6 +495,60 @@ exports.outcomes = async (req, res) => {
 //    { userId, name, total, transaction, appointment, argued, refusal,
 //      validByAI, avgScore }
 // ─────────────────────────────────────────────────────────────────────────────
+function clampScore(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+/** Six REP dimensions produced from processed calls. Higher is better. */
+function scoreRepRow(row) {
+  const total = Number(row.total) || 0;
+  const attended = Number(row.attended) || 0;
+  const missed = Number(row.missed) || 0;
+  const lastMinuteCount = Number(row.lastMinuteCancellations) || 0;
+  const fraudCount = Number(row.fraudCount) || 0;
+  const validatedTransactions = Number(row.validatedTransactions) || 0;
+  const presence = attended + missed + lastMinuteCount;
+  const attendance = presence ? clampScore((attended / presence) * 100) : (total ? 0 : 100);
+  const lastMinuteCancellation = total
+    ? clampScore(100 - (lastMinuteCount / total) * 100)
+    : 100;
+  const quality = clampScore(row.avgScore || 0);
+  const fraudScore = total ? clampScore(100 - (fraudCount / total) * 100) : 100;
+  const callVolume = total;
+  const callVolumeScore = clampScore((total / 30) * 100);
+  const validatedScore = total
+    ? clampScore((validatedTransactions / total) * 500)
+    : 0;
+  const overall = total
+    ? clampScore(
+        attendance * 0.2 +
+          lastMinuteCancellation * 0.15 +
+          quality * 0.25 +
+          fraudScore * 0.15 +
+          callVolumeScore * 0.1 +
+          validatedScore * 0.15
+      )
+    : 0;
+  return {
+    ...row,
+    userId: String(row.userId),
+    agentId: row.agentId ? String(row.agentId) : null,
+    attendance,
+    lastMinuteCancellation,
+    lastMinuteCancellations: lastMinuteCount,
+    quality,
+    fraudScore,
+    fraudCount,
+    callVolume,
+    callVolumeScore,
+    validatedTransactions,
+    validatedScore,
+    overall
+  };
+}
+
 exports.reps = async (req, res) => {
   try {
     const { companyId } = req.params;
@@ -505,13 +559,53 @@ exports.reps = async (req, res) => {
     // Reps must have a userId
     match.userId = { $ne: null };
 
+    const callStatus = { $toLower: { $ifNull: ["$status", ""] } };
+    const isLastMinute = {
+      $and: [
+        { $in: [callStatus, ["canceled", "cancelled"]] },
+        { $lt: [{ $ifNull: ["$duration", 0] }, 120] }
+      ]
+    };
+    const isMissed = {
+      $and: [
+        { $not: [isLastMinute] },
+        {
+          $or: [
+            { $in: [callStatus, ["no-answer", "no_answer", "busy", "failed"]] },
+            { $in: ["$_outcome", ["no_answer", "busy"]] }
+          ]
+        }
+      ]
+    };
+    const isAttended = {
+      $and: [
+        { $not: [isLastMinute] },
+        { $not: [isMissed] },
+        { $gt: [{ $ifNull: ["$duration", 0] }, 0] }
+      ]
+    };
+    const isValidatedTx = {
+      $and: [
+        { $eq: ["$_outcome", "transaction"] },
+        { $ne: ["$flags.fraud", true] },
+        { $ne: ["$validByAI", false] },
+        { $ne: ["$companyValidation", "rejected"] }
+      ]
+    };
+
     const rows = await Call.aggregate([
       { $match: match },
       { $addFields: { _outcome: derivedOutcomeExpr() } },
       {
         $group: {
           _id: "$userId",
+          agentId: { $first: "$agent" },
           total: { $sum: 1 },
+          attended: { $sum: { $cond: [isAttended, 1, 0] } },
+          missed: { $sum: { $cond: [isMissed, 1, 0] } },
+          lastMinuteCancellations: { $sum: { $cond: [isLastMinute, 1, 0] } },
+          fraudCount: { $sum: { $cond: [{ $eq: ["$flags.fraud", true] }, 1, 0] } },
+          validatedTransactions: { $sum: { $cond: [isValidatedTx, 1, 0] } },
           transaction: { $sum: { $cond: [{ $eq: ["$_outcome", "transaction"] }, 1, 0] } },
           appointment: { $sum: { $cond: [{ $eq: ["$_outcome", "appointment"] }, 1, 0] } },
           callbacks: { $sum: { $cond: [{ $eq: ["$_outcome", "callback_requested"] }, 1, 0] } },
@@ -544,7 +638,13 @@ exports.reps = async (req, res) => {
           _id: 0,
           userId: "$_id",
           name: { $ifNull: ["$user.name", "Rep"] },
+          agentId: 1,
           total: 1,
+          attended: 1,
+          missed: 1,
+          lastMinuteCancellations: 1,
+          fraudCount: 1,
+          validatedTransactions: 1,
           transaction: 1,
           appointment: 1,
           callbacks: 1,
@@ -575,7 +675,7 @@ exports.reps = async (req, res) => {
       success: true,
       range: { from: range.from, to: range.to },
       gigId: range.gigId && range.gigId !== "all" ? range.gigId : null,
-      reps: rows.map((r) => ({ ...r, userId: String(r.userId) }))
+      reps: rows.map((r) => scoreRepRow(r))
     });
   } catch (err) {
     console.error("Error in analytics/reps:", err);
