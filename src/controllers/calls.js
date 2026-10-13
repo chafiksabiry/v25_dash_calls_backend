@@ -1035,6 +1035,10 @@ exports.getLineForLead = async (req, res) => {
   }
 };
 
+// PAY-13: terminal Twilio call statuses — anything else means the call is
+// still ringing/connected.
+const TERMINAL_CALL_STATUSES = ['completed', 'busy', 'failed', 'no-answer', 'canceled'];
+
 exports.initiateCall = async (req, res) => {
   const { to, userId, leadId, gigId, agentId } = req.body;
 
@@ -1043,6 +1047,23 @@ exports.initiateCall = async (req, res) => {
   }
 
   try {
+    // A REP can only be on one call at a time, on any number (cahier de
+    // recette PAY-13) — bounded to the last 2h so a stuck/never-finalized
+    // record can't block the rep forever.
+    if (agentId) {
+      const activeCall = await Call.findOne({
+        agent: agentId,
+        status: { $nin: TERMINAL_CALL_STATUSES },
+        createdAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      }).lean();
+      if (activeCall) {
+        return res.status(409).json({
+          message: 'Vous avez déjà un appel en cours. Terminez-le avant de lancer un nouvel appel.',
+          code: 'CALL_ALREADY_IN_PROGRESS',
+        });
+      }
+    }
+
     // Resolve the gig's purchased line so the call goes out on the right
     // number instead of silently failing with no `from` (see twilioService.makeCall).
     let fromNumber;
