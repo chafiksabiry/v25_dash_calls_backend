@@ -757,7 +757,7 @@ ${fullTranscript}`;
     }
   }
 
-  async getAIAssistance(transcription, context = []) {
+  async getAIAssistance(transcription, context = [], kbContext = '') {
     try {
       console.log('🧠 [VertexAIService] getAIAssistance - Transcription:', transcription);
       await initializeServices();
@@ -765,8 +765,23 @@ ${fullTranscript}`;
       const sanitizedHistory = this.sanitizeHistory(context);
       console.log('🧠 [VertexAIService] getAIAssistance - History length:', sanitizedHistory.length);
 
+      // ENT-14: a one-time grounding turn ahead of the real conversation —
+      // the model answers it once, then both sides are kept in history so
+      // every later suggestion can draw on these real documents instead of
+      // inventing offers/facts.
+      const groundedHistory = kbContext
+        ? [
+            {
+              role: 'user',
+              parts: [{ text: `Voici des extraits réels de la base de connaissances de l'entreprise, pertinents pour cet appel :\n\n${kbContext}\n\nUtilise uniquement ces informations (offres, tarifs, faits) quand elles sont pertinentes pour tes suggestions à venir — n'invente jamais une offre ou un fait qui n'y figure pas. Réponds simplement "Compris" pour confirmer.` }],
+            },
+            { role: 'model', parts: [{ text: 'Compris.' }] },
+            ...sanitizedHistory,
+          ]
+        : sanitizedHistory;
+
       const chat = generativeModel.startChat({
-        history: sanitizedHistory,
+        history: groundedHistory,
       });
 
       const result = await chat.sendMessage(transcription);
