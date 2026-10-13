@@ -487,7 +487,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
   }
 };
 
-const makeCall = async (to, userId, fromNumber) => {
+const makeCall = async (to, userId, fromNumber, { leadId, agentId } = {}) => {
   if (!to || !to.startsWith('+')) {
     return Promise.reject('Invalid phone number. Use international format, e.g. +1234567890');
   }
@@ -505,8 +505,18 @@ const makeCall = async (to, userId, fromNumber) => {
   try {
     const client = await getTwilioClient(userId);
 
+    // handleVoice (the /twilio-voice webhook) reads LeadId/AgentId to run
+    // validateCopilotCallEligibility (enrollment/training/slot). Twilio
+    // forwards a webhook URL's query string into that POST, so pass them
+    // through here instead of letting the guard see them as missing.
+    const voiceParams = new URLSearchParams();
+    if (leadId) voiceParams.set('LeadId', leadId);
+    if (agentId) voiceParams.set('AgentId', agentId);
+    const voiceQuery = voiceParams.toString();
+    const voiceUrl = `${process.env.BASE_URL}/api/calls/twilio-voice${voiceQuery ? `?${voiceQuery}` : ''}`;
+
     const call = await client.calls.create({
-      url: `${process.env.BASE_URL}/api/calls/twilio-voice`,
+      url: voiceUrl,
       to: to,
       from,
       record: true
