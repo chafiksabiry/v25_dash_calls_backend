@@ -77,6 +77,30 @@ async function checkCompanyMinutesBalance(companyId) {
 }
 
 /**
+ * PAY-17: a negative escrow/commission wallet (from AI-reserved call
+ * commissions outpacing the balance) must block new calls until the
+ * company tops up — nothing checked this before.
+ */
+async function checkCompanyWalletBalance(companyId) {
+  if (!companyId) return { ok: true };
+  try {
+    const response = await fetch(`${COMPORCHESTRATOR_API_URL}/internal/companies/${companyId}/wallet-balance`, {
+      timeout: 5000,
+    });
+    if (!response.ok) return { ok: true };
+    const data = await response.json();
+    const balance = data?.data?.balance;
+    if (typeof balance === 'number' && balance < 0) {
+      return { ok: false, balance };
+    }
+    return { ok: true, balance };
+  } catch (error) {
+    console.error('[calls] checkCompanyWalletBalance failed:', error.message);
+    return { ok: true };
+  }
+}
+
+/**
  * Fetch the REP's plan monthly-earnings cap. Fails open (null = unlimited)
  * so an outage in repscreationwizard_backend never blocks commission
  * calculation for calls that would otherwise be valid.
@@ -1011,6 +1035,10 @@ exports.getLineForLead = async (req, res) => {
   }
 };
 
+// PAY-13: terminal Twilio call statuses — anything else means the call is
+// still ringing/connected.
+const TERMINAL_CALL_STATUSES = ['completed', 'busy', 'failed', 'no-answer', 'canceled'];
+
 exports.initiateCall = async (req, res) => {
   const { to, userId, leadId, gigId, agentId } = req.body;
 
@@ -1019,6 +1047,23 @@ exports.initiateCall = async (req, res) => {
   }
 
   try {
+    // A REP can only be on one call at a time, on any number (cahier de
+    // recette PAY-13) — bounded to the last 2h so a stuck/never-finalized
+    // record can't block the rep forever.
+    if (agentId) {
+      const activeCall = await Call.findOne({
+        agent: agentId,
+        status: { $nin: TERMINAL_CALL_STATUSES },
+        createdAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      }).lean();
+      if (activeCall) {
+        return res.status(409).json({
+          message: 'Vous avez déjà un appel en cours. Terminez-le avant de lancer un nouvel appel.',
+          code: 'CALL_ALREADY_IN_PROGRESS',
+        });
+      }
+    }
+
     // Resolve the gig's purchased line so the call goes out on the right
     // number instead of silently failing with no `from` (see twilioService.makeCall).
     let fromNumber;
@@ -1042,6 +1087,17 @@ exports.initiateCall = async (req, res) => {
         message: "Solde de minutes épuisé. Rechargez pour pouvoir passer des appels.",
         code: 'MINUTES_BALANCE_DEPLETED',
         minutes: balanceCheck.minutes,
+      });
+    }
+
+    // A negative escrow/commission wallet (cahier de recette PAY-17) blocks
+    // new calls too, until the company tops up.
+    const walletCheck = await checkCompanyWalletBalance(lineCompanyId);
+    if (!walletCheck.ok) {
+      return res.status(402).json({
+        message: "Solde insuffisant. Rechargez votre portefeuille pour pouvoir passer des appels.",
+        code: 'WALLET_BALANCE_NEGATIVE',
+        balance: walletCheck.balance,
       });
     }
 
