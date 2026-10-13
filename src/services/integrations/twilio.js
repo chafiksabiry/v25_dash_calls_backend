@@ -487,19 +487,28 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
   }
 };
 
-const makeCall = async (to, userId) => {
+const makeCall = async (to, userId, fromNumber) => {
   if (!to || !to.startsWith('+')) {
     return Promise.reject('Invalid phone number. Use international format, e.g. +1234567890');
   }
 
+  // getTwilioCredentials() never returns a phoneNumber (it only resolves
+  // accountSid/authToken), so this used to call Twilio with `from: undefined`
+  // and always fail. Callers now resolve the gig's purchased line
+  // (resolveActiveLineForLead/Gig) and pass it in; TWILIO_PHONE_NUMBER is the
+  // last-resort fallback, matching generateTwimlResponse's callerId default.
+  const from = fromNumber || process.env.TWILIO_PHONE_NUMBER;
+  if (!from) {
+    return Promise.reject('No Twilio phone number available for this call (no active gig line and no TWILIO_PHONE_NUMBER configured).');
+  }
+
   try {
     const client = await getTwilioClient(userId);
-    const credentials = await getTwilioCredentials(userId);
 
     const call = await client.calls.create({
       url: `${process.env.BASE_URL}/api/calls/twilio-voice`,
       to: to,
-      from: credentials.phoneNumber,
+      from,
       record: true
     });
 
