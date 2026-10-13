@@ -50,6 +50,31 @@ const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingba
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
 const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 const REPSCREATIONWIZARD_API_URL = (process.env.REPSCREATIONWIZARD_API_URL || 'https://v25repscreationwizardbackend-production.up.railway.app/api').replace(/\/$/, '');
+const COMPORCHESTRATOR_API_URL = (process.env.COMPORCHESTRATOR_API_URL || 'https://v25comporchestratorback-production.up.railway.app/api').replace(/\/$/, '');
+
+/**
+ * Check a company's minutes balance before placing a call. Fails open
+ * (allows the call) on a lookup error so an outage never blocks calls —
+ * only an actual non-positive balance blocks.
+ */
+async function checkCompanyMinutesBalance(companyId) {
+  if (!companyId) return { ok: true };
+  try {
+    const response = await fetch(`${COMPORCHESTRATOR_API_URL}/internal/companies/${companyId}/minutes-balance`, {
+      timeout: 5000,
+    });
+    if (!response.ok) return { ok: true };
+    const data = await response.json();
+    const minutes = data?.data?.minutes;
+    if (typeof minutes === 'number' && minutes <= 0) {
+      return { ok: false, minutes };
+    }
+    return { ok: true, minutes };
+  } catch (error) {
+    console.error('[calls] checkCompanyMinutesBalance failed:', error.message);
+    return { ok: true };
+  }
+}
 
 /**
  * Fetch the REP's plan monthly-earnings cap. Fails open (null = unlimited)
@@ -997,13 +1022,27 @@ exports.initiateCall = async (req, res) => {
     // Resolve the gig's purchased line so the call goes out on the right
     // number instead of silently failing with no `from` (see twilioService.makeCall).
     let fromNumber;
+    let lineCompanyId;
     if (leadId) {
       const { line } = await resolveActiveLineForLead(leadId);
       fromNumber = line?.phoneNumber;
+      lineCompanyId = line?.companyId;
     } else if (gigId) {
       const { resolveActiveLineForGig } = require('../utils/resolveGigPhoneLine');
       const line = await resolveActiveLineForGig(gigId);
       fromNumber = line?.phoneNumber;
+      lineCompanyId = line?.companyId;
+    }
+
+    // Free/depleted minutes balance blocks the call entirely (cahier de
+    // recette PAY-16): nothing checked this before.
+    const balanceCheck = await checkCompanyMinutesBalance(lineCompanyId);
+    if (!balanceCheck.ok) {
+      return res.status(402).json({
+        message: "Solde de minutes épuisé. Rechargez pour pouvoir passer des appels.",
+        code: 'MINUTES_BALANCE_DEPLETED',
+        minutes: balanceCheck.minutes,
+      });
     }
 
     // agentId (the Agent/REP profile id — not the login userId) lets the
