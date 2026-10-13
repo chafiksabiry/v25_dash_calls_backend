@@ -49,6 +49,54 @@ const {
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
 const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
+const REPSCREATIONWIZARD_API_URL = (process.env.REPSCREATIONWIZARD_API_URL || 'https://v25repscreationwizardbackend-production.up.railway.app/api').replace(/\/$/, '');
+
+/**
+ * Fetch the REP's plan monthly-earnings cap. Fails open (null = unlimited)
+ * so an outage in repscreationwizard_backend never blocks commission
+ * calculation for calls that would otherwise be valid.
+ */
+async function getAgentMonthlyEarningsCap(agentId) {
+  try {
+    const response = await fetch(`${REPSCREATIONWIZARD_API_URL}/internal/agents/${agentId}/plan-limits`, {
+      timeout: 5000,
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data?.maxMonthlyEarnings === 'number' ? data.maxMonthlyEarnings : null;
+  } catch (error) {
+    console.error('[calls] getAgentMonthlyEarningsCap failed:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Sum of repCallCommission + repTransactionCommission already recorded for
+ * this agent in the current calendar month, excluding the call being scored
+ * right now (so re-analysis of the same call doesn't double-count itself).
+ */
+async function getAgentMonthToDateEarnings(agentId, excludeCallId) {
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const result = await Call.aggregate([
+    {
+      $match: {
+        agent: new mongoose.Types.ObjectId(agentId),
+        _id: { $ne: new mongoose.Types.ObjectId(excludeCallId) },
+        createdAt: { $gte: monthStart },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: {
+          $sum: { $add: [{ $ifNull: ['$repCallCommission', 0] }, { $ifNull: ['$repTransactionCommission', 0] }] },
+        },
+      },
+    },
+  ]);
+  return result[0]?.total || 0;
+}
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -2592,11 +2640,29 @@ exports.analyzeCall = async (req, res) => {
     const baseTransactionCommission =
       typeof rawTxCommission === 'number' && Number.isFinite(rawTxCommission) ? rawTxCommission : 30;
 
-    const repCallCommission = isValidByAI ? baseCallCommission * 0.7 : 0;
+    let repCallCommission = isValidByAI ? baseCallCommission * 0.7 : 0;
     const platformCallCommission = isValidByAI ? baseCallCommission * 0.3 : 0;
 
-    const repTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.7 : 0;
+    let repTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.7 : 0;
     const platformTransactionCommission = (isValidByAI && transactionDetected) ? baseTransactionCommission * 0.3 : 0;
+
+    // Free-plan monthly earnings cap (e.g. "Take a chance" = €30/month):
+    // advertised in plan copy but never enforced anywhere — clamp what the
+    // REP is paid once they've hit it this calendar month. The platform's
+    // share is unaffected; this only limits the REP's own payout.
+    if (repCallCommission > 0 || repTransactionCommission > 0) {
+      const earningsCap = await getAgentMonthlyEarningsCap(call.agent);
+      if (typeof earningsCap === 'number') {
+        const alreadyEarned = await getAgentMonthToDateEarnings(call.agent, call._id);
+        const headroom = Math.max(0, earningsCap - alreadyEarned);
+        const requestedRepTotal = repCallCommission + repTransactionCommission;
+        if (requestedRepTotal > headroom) {
+          const scale = requestedRepTotal > 0 ? headroom / requestedRepTotal : 0;
+          repCallCommission *= scale;
+          repTransactionCommission *= scale;
+        }
+      }
+    }
 
     // Compute a per-rubric Yes/No verdict next to each numeric score.
     //   passed = score >= PASS_THRESHOLD (50)
