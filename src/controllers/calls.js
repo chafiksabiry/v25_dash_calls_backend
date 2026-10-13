@@ -818,7 +818,13 @@ exports.launchOutboundCall = async (req, res) => {
 
 // Handle Twilio Voice
 exports.handleVoice = async (req, res) => {
-  const { To, LeadId, AgentId } = req.body;
+  // Twilio does not merge a webhook URL's query string into its POST body —
+  // LeadId/AgentId passed on the `url` given to calls.create() only ever
+  // arrive in req.query, so this used to always read them as undefined and
+  // the eligibility guard below always failed with "Missing agentId".
+  const To = req.body.To || req.query.To;
+  const LeadId = req.body.LeadId || req.query.LeadId;
+  const AgentId = req.body.AgentId || req.query.AgentId;
 
   console.log("📞 [TwilioVoice] Handling call - To:", To, "LeadId:", LeadId, "AgentId:", AgentId);
 
