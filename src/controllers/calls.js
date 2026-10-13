@@ -941,15 +941,27 @@ exports.getLineForLead = async (req, res) => {
 };
 
 exports.initiateCall = async (req, res) => {
-  const { to, userId } = req.body;
+  const { to, userId, leadId, gigId } = req.body;
 
   if (!userId) {
     return res.status(400).json({ message: 'User ID is required' });
   }
 
   try {
-    const callSid = await twilioService.makeCall(to, userId);
-    res.status(200).json({ message: 'Call initiated', callSid });
+    // Resolve the gig's purchased line so the call goes out on the right
+    // number instead of silently failing with no `from` (see twilioService.makeCall).
+    let fromNumber;
+    if (leadId) {
+      const { line } = await resolveActiveLineForLead(leadId);
+      fromNumber = line?.phoneNumber;
+    } else if (gigId) {
+      const { resolveActiveLineForGig } = require('../utils/resolveGigPhoneLine');
+      const line = await resolveActiveLineForGig(gigId);
+      fromNumber = line?.phoneNumber;
+    }
+
+    const callSid = await twilioService.makeCall(to, userId, fromNumber);
+    res.status(200).json({ message: 'Call initiated', callSid, from: fromNumber || null });
   } catch (err) {
     console.error('Error:', err);
     res.status(500).json({ message: 'Failed to initiate call', error: err.message });
