@@ -941,7 +941,7 @@ exports.getLineForLead = async (req, res) => {
 };
 
 exports.initiateCall = async (req, res) => {
-  const { to, userId, leadId, gigId } = req.body;
+  const { to, userId, leadId, gigId, agentId } = req.body;
 
   if (!userId) {
     return res.status(400).json({ message: 'User ID is required' });
@@ -960,7 +960,10 @@ exports.initiateCall = async (req, res) => {
       fromNumber = line?.phoneNumber;
     }
 
-    const callSid = await twilioService.makeCall(to, userId, fromNumber);
+    // agentId (the Agent/REP profile id — not the login userId) lets the
+    // /twilio-voice webhook run its enrollment/training/slot eligibility
+    // check instead of rejecting with "Missing agentId".
+    const callSid = await twilioService.makeCall(to, userId, fromNumber, { leadId, agentId });
     res.status(200).json({ message: 'Call initiated', callSid, from: fromNumber || null });
   } catch (err) {
     console.error('Error:', err);
