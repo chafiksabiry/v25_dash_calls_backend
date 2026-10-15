@@ -1708,7 +1708,11 @@ exports.getAIAssistance = async (req, res) => {
       console.warn('[calls] getAIAssistance KB grounding skipped:', kbErr.message);
     }
 
-    const suggestion = await vertexAIService.getAIAssistance(transcription, context, kbContext);
+    const rawSuggestion = await vertexAIService.getAIAssistance(transcription, context, kbContext);
+    // Palier 3: the copilot returns the literal "NONE" when it has nothing
+    // actionable to add at this point in the call — treat that as no suggestion
+    // rather than displaying it to the REP.
+    const suggestion = rawSuggestion && rawSuggestion.trim() !== 'NONE' ? rawSuggestion : '';
     res.json({ success: true, suggestion: suggestion });
   } catch (error) {
     console.error('Error getting AI assistance:', error);
