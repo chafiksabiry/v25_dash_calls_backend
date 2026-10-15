@@ -1685,12 +1685,16 @@ exports.getAIAssistance = async (req, res) => {
     let kbContext = '';
     try {
       if (callSid) {
-        const call = await Call.findOne({ sid: callSid }).select('companyId').lean();
+        const call = await Call.findOne({ sid: callSid }).select('companyId gigId').lean();
         if (call?.companyId) {
           const kbRes = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ companyId: String(call.companyId), query: transcription }),
+            body: JSON.stringify({
+              companyId: String(call.companyId),
+              gigId: call.gigId ? String(call.gigId) : undefined,
+              query: transcription,
+            }),
             timeout: 8000,
           });
           if (kbRes.ok) {
