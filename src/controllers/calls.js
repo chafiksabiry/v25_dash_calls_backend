@@ -1693,11 +1693,42 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
 // AI Assistance and DISC Analysis
 exports.getAIAssistance = async (req, res) => {
   try {
-    const { transcription, context } = req.body;
+    const { transcription, context, callSid } = req.body;
     if (!transcription) {
       return res.status(400).json({ success: false, message: 'Transcription is required' });
     }
-    const suggestion = await vertexAIService.getAIAssistance(transcription, context);
+
+    // ENT-14: ground the live in-call copilot in the company's real
+    // knowledge-base documents instead of a generic LLM continuation of
+    // the transcript. Fails open (no KB context) on any error, so a KB
+    // outage never blocks the live assist.
+    let kbContext = '';
+    try {
+      if (callSid) {
+        const call = await Call.findOne({ sid: callSid }).select('companyId gigId').lean();
+        if (call?.companyId) {
+          const kbRes = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/query`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              companyId: String(call.companyId),
+              gigId: call.gigId ? String(call.gigId) : undefined,
+              query: transcription,
+            }),
+            timeout: 8000,
+          });
+          if (kbRes.ok) {
+            const kbData = await kbRes.json();
+            const answer = kbData?.data?.answer;
+            if (answer && answer.trim()) kbContext = answer.trim();
+          }
+        }
+      }
+    } catch (kbErr) {
+      console.warn('[calls] getAIAssistance KB grounding skipped:', kbErr.message);
+    }
+
+    const suggestion = await vertexAIService.getAIAssistance(transcription, context, kbContext);
     res.json({ success: true, suggestion: suggestion });
   } catch (error) {
     console.error('Error getting AI assistance:', error);
