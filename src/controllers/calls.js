@@ -1703,16 +1703,21 @@ exports.getAIAssistance = async (req, res) => {
     // the transcript. Fails open (no KB context) on any error, so a KB
     // outage never blocks the live assist.
     let kbContext = '';
+    let callCategory = '';
     try {
       if (callSid) {
-        const call = await Call.findOne({ sid: callSid }).select('companyId gigId').lean();
+        const call = await Call.findOne({ sid: callSid })
+          .select('companyId gigId')
+          .populate({ path: 'gigId', select: 'category' })
+          .lean();
+        if (call?.gigId?.category) callCategory = String(call.gigId.category);
         if (call?.companyId) {
           const kbRes = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               companyId: String(call.companyId),
-              gigId: call.gigId ? String(call.gigId) : undefined,
+              gigId: call.gigId?._id ? String(call.gigId._id) : undefined,
               query: transcription,
             }),
             timeout: 8000,
@@ -1728,7 +1733,7 @@ exports.getAIAssistance = async (req, res) => {
       console.warn('[calls] getAIAssistance KB grounding skipped:', kbErr.message);
     }
 
-    const rawSuggestion = await vertexAIService.getAIAssistance(transcription, context, kbContext);
+    const rawSuggestion = await vertexAIService.getAIAssistance(transcription, context, kbContext, callCategory);
     // Palier 3: the copilot returns the literal "NONE" when it has nothing
     // actionable to add at this point in the call — treat that as no suggestion
     // rather than displaying it to the REP.
