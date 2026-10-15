@@ -765,27 +765,49 @@ ${fullTranscript}`;
       const sanitizedHistory = this.sanitizeHistory(context);
       console.log('🧠 [VertexAIService] getAIAssistance - History length:', sanitizedHistory.length);
 
+      // ENT-14 (Palier 3): a persona/rules turn defines the copilot's role and
+      // conversion-oriented behaviour, following standard telesales best
+      // practices (accueil/SBAM, légal, découverte, recueil des besoins,
+      // proposition de valeur, objections, conversion, prise de congé).
+      const personaHistory = [
+        {
+          role: 'user',
+          parts: [{
+            text: `Tu es le copilote IA d'un télévendeur (REP) pendant un appel en direct, pour ce GIG précis.
+Objectif unique : aider le REP à maximiser le taux de conversion de CET appel, en t'appuyant sur les meilleures pratiques de télévente : accueil (SBAM), légal & conformité, découverte, recueil des besoins, proposition de valeur, traitement des objections, conversion/closing, prise de congé.
+
+Règles :
+1. Réponds en 1 à 2 phrases maximum, actionnables immédiatement (une phrase à dire, une réponse à une objection, une offre précise, une question de découverte).
+2. N'utilise QUE les faits/offres/tarifs présents dans la base de connaissances fournie si elle est disponible. Si aucune offre pertinente n'y figure, reste générique sur les bonnes pratiques de télévente — n'invente jamais un prix ou une promotion.
+3. Si rien d'utile n'est à ajouter à ce stade de la conversation, réponds exactement "NONE", sans aucun autre texte.
+4. Réponds dans la langue du client telle qu'elle apparaît dans le transcript.
+5. Adapte ta suggestion à la phase actuelle de l'appel : si l'accueil ou le légal n'ont pas encore été faits, rappelle-le en priorité ; si une objection vient d'être formulée, traite-la avant tout le reste ; en fin d'appel, oriente vers la conversion puis la prise de congé.
+Réponds simplement "Compris" pour confirmer que tu as bien intégré ces consignes.`,
+          }],
+        },
+        { role: 'model', parts: [{ text: 'Compris.' }] },
+      ];
+
       // ENT-14: a one-time grounding turn ahead of the real conversation —
       // the model answers it once, then both sides are kept in history so
       // every later suggestion can draw on these real documents instead of
       // inventing offers/facts.
-      const groundedHistory = kbContext
+      const kbHistory = kbContext
         ? [
             {
               role: 'user',
               parts: [{ text: `Voici des extraits réels de la base de connaissances de l'entreprise, pertinents pour cet appel :\n\n${kbContext}\n\nUtilise uniquement ces informations (offres, tarifs, faits) quand elles sont pertinentes pour tes suggestions à venir — n'invente jamais une offre ou un fait qui n'y figure pas. Réponds simplement "Compris" pour confirmer.` }],
             },
             { role: 'model', parts: [{ text: 'Compris.' }] },
-            ...sanitizedHistory,
           ]
-        : sanitizedHistory;
+        : [];
 
       const chat = generativeModel.startChat({
-        history: groundedHistory,
+        history: [...personaHistory, ...kbHistory, ...sanitizedHistory],
       });
 
       const result = await chat.sendMessage(transcription);
-      const responseText = result.response.text();
+      const responseText = result.response.text().trim();
       console.log('✅ [VertexAIService] AI Assistance Response:', responseText.substring(0, 50) + '...');
       return responseText;
     } catch (error) {
