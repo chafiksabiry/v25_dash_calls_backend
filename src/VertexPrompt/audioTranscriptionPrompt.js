@@ -11,7 +11,7 @@ function generateAudioTranscriptionPrompt(options = {}) {
 - The recording is approximately **${durationSec} second(s)** long.
 - Your timestamps MUST stay within 00:00.000 → ${formatEndTs(durationSec)}.
 - At a normal speaking rate (~2–2.5 words/second), expect roughly **${Math.max(3, Math.ceil(durationSec * 2.5))} words MAXIMUM** in total across the whole transcript.
-- If ${durationSec} ≤ 15: only greetings, names, "Allô", "Oui", "Non", hang-up, or a few short words are plausible. A full customer-service dialogue is IMPOSSIBLE — do not invent one.
+- If ${durationSec} ≤ 15: only greetings, names, "Hello", "Allô", "Yes", "Oui", "No", "Non", hang-up, or a few short words are plausible. A full customer-service dialogue is IMPOSSIBLE — do not invent one.
 - If ${durationSec} ≤ 30: do not invent multi-step scripts (order lookup, shipping status, sales pitch, appointment booking).
 `
     : '';
@@ -35,7 +35,7 @@ You write down ONLY the words that are actually spoken in THIS audio file.
 - Do NOT invent: order numbers, shipping status, product pitches, appointments, objections, company names, or any dialogue that is not audible.
 - NEVER invent a customer-service script such as "quel est le numéro de votre commande", "commande numéro …", "elle a été expédiée", "un instant s'il vous plaît" unless those exact words are clearly spoken.
 - NEVER copy demo / training / example dialogues. There is no sample conversation to reuse.
-- If the only audible words are "Allô", "Allô allô", "Oui", "Bonjour", a name, or a hang-up → return ONLY those turns.
+- If the only audible words are "Hello", "Allô", "Yes", "Oui", "No", "Bonjour", a name, or a hang-up → return ONLY those turns.
 - Ringback, hold music, silence, noise, beeps → not speech. Do not invent turns for them.
 - Inaudible word → write [inaudible]. Entire file silent / noise only → return [].
 - Prefer [] over a fabricated conversation.
@@ -56,8 +56,10 @@ ${durationBlock}${strictBlock}
 
 ### LANGUAGE
 
-- Primarily French. May include Moroccan Darija or a few English words.
-- Keep the original language and pronunciation as heard (e.g. "Allô", "ouais").
+- Write each turn in the language actually spoken. Do NOT translate.
+- An English call must be transcribed in English. A French call must stay in French.
+- A mix (French, English, Moroccan Darija) stays a mix: keep each phrase in the language heard.
+- Keep the original words (e.g. "Hello", "Allô", "ouais"). Never rewrite English into French.
 - Do NOT output Hindi, Chinese, Japanese, or any unrelated script.
 
 ---
