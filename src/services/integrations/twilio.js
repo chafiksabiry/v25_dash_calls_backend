@@ -271,7 +271,10 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     }
     const machineAnswer = String(twilioAnsweredBy || '').toLowerCase();
     const answeredByMachine = machineAnswer.startsWith('machine') || machineAnswer === 'fax';
-    if (answeredByMachine && !appointmentAt && !callbackAt) {
+    // AMD is trusted only for a short pickup. A long talk is a conversation;
+    // analysis decides, so we do not wipe the transcript or the commission.
+    const shortMachinePickup = talkDuration < 60;
+    if (answeredByMachine && shortMachinePickup && !appointmentAt && !callbackAt) {
       update.validByAI = false;
       update.valid = false;
       update.ai_call_status = 'auto_refused';
@@ -281,6 +284,15 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       update.ai_refusal_reason = isVoicemail
         ? 'Appel sur messagerie vocale (déclaré par le rep) — pas de transcription'
         : `Répondeur détecté par Twilio AMD (${twilioAnsweredBy}) — pas de transcription`;
+    } else if (answeredByMachine && !shortMachinePickup && !appointmentAt && !callbackAt) {
+      // AMD often fires on "allô" and already locked the call as voicemail.
+      // The talk is long: drop that lock so analysis can transcribe it.
+      update.callOutcome = 'connected_no_sale';
+      update.callOutcomeSource = 'system';
+      update.validByAI = null;
+      update.valid = null;
+      update.ai_call_status = null;
+      update.ai_refusal_reason = null;
     }
 
     if (call.ChildCallSid) {
