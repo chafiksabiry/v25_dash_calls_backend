@@ -26,7 +26,7 @@ const {
   buildCompanyFraudMatchQuery,
   buildAgentFraudMatchQuery,
 } = require('../utils/fraudStats');
-const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
+const { isCallVoicemail, isVoicemailFromFeedback, hasRealProspectExchange, MIN_HUMAN_EXCHANGE_SECONDS } = require('../utils/voicemailDetection');
 const {
   dispositionFromCallSignals,
   syncLeadDisposition,
@@ -1404,35 +1404,47 @@ exports.amdCallback = async (req, res) => {
     return;
   }
 
-  // Mark the call document as voicemail / auto-refused
+  // AMD often fires on the greeting ("allô") and is wrong on a real conversation.
+  // Only lock a short call as voicemail. A long call keeps answeredBy and is
+  // transcribed at the end so a human exchange is not labeled messagerie.
   try {
-    const outcome = isFax ? 'voicemail' : 'voicemail';
     const reason = isFax
       ? 'Fax détecté par Twilio AMD'
       : `Répondeur détecté automatiquement par Twilio AMD (${AnsweredBy})`;
-
-    const updated = await Call.findOneAndUpdate(
-      { $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }] },
-      {
-        $set: {
+    const existing = await Call.findOne({
+      $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }],
+    }).select('duration');
+    const talkSeconds = Number(existing?.duration) || 0;
+    const stampVoicemail = !existing || talkSeconds < MIN_HUMAN_EXCHANGE_SECONDS;
+    const $set = stampVoicemail
+      ? {
           answeredBy: AnsweredBy,
-          callOutcome: outcome,
+          callOutcome: 'voicemail',
           callOutcomeSource: 'system',
           validByAI: false,
           valid: false,
-          transcript: [], // AMD / répondeur — jamais de transcription
+          transcript: [],
           ai_call_status: 'auto_refused',
           ai_refusal_reason: reason,
           updatedAt: new Date(),
         }
-      },
+      : {
+          answeredBy: AnsweredBy,
+          updatedAt: new Date(),
+        };
+
+    const updated = await Call.findOneAndUpdate(
+      { $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }] },
+      { $set },
       { new: true }
     );
 
-    if (updated) {
+    if (updated && stampVoicemail) {
       console.log(`✅ [AMD] Call ${CallSid} auto-marked as voicemail (doc _id=${updated._id})`);
       const leadId = updated.lead && updated.lead._id ? updated.lead._id : updated.lead;
       await syncLeadDisposition(leadId, 'called_voicemail');
+    } else if (updated) {
+      console.log(`ℹ️ [AMD] Call ${CallSid} kept as a conversation (${talkSeconds}s, answeredBy=${AnsweredBy})`);
     } else {
       // Document may not exist yet if store-call hasn't fired — that's fine,
       // saveCallToDB will pick up isVoicemail from the AMD flag later.
@@ -1855,6 +1867,10 @@ function isUnreachableTelephonyCall(call) {
 
 function isAmdVoicemailCall(call) {
   if (!call) return false;
+  // A long recording is transcribed even if AMD said "machine". Analysis then
+  // decides. A 4-minute human call must not be skipped as messagerie.
+  const duration = Number(call.duration) || 0;
+  if (duration >= MIN_HUMAN_EXCHANGE_SECONDS) return false;
   if (typeof isCallVoicemail === 'function' && isCallVoicemail(call)) return true;
   const answeredBy = String(call.answeredBy || '').toLowerCase();
   if (answeredBy.startsWith('machine') || answeredBy === 'fax' || answeredBy.includes('amd')) {
@@ -2434,10 +2450,15 @@ exports.analyzeCall = async (req, res) => {
     //   When the trigger fires we strip all rubric cards later via
     //   `applyVoicemailAnalysisShape` and force `callOutcome` to 'voicemail'.
     const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
+    const prospectSpoke = hasRealProspectExchange({
+      duration: callDurationSec,
+      transcript: transcriptData,
+    });
     const isNonProductiveCall =
-      isVoicemailFromFeedback(overallFeedback) ||
-      isVoicemailFromFeedback(scores?.overall?.feedback_fr || '') ||
-      isVoicemailFromFeedback(scores?.overall?.feedback_en || '');
+      !prospectSpoke &&
+      (isVoicemailFromFeedback(overallFeedback) ||
+        isVoicemailFromFeedback(scores?.overall?.feedback_fr || '') ||
+        isVoicemailFromFeedback(scores?.overall?.feedback_en || ''));
 
     if (isNonProductiveCall) {
       console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail).`);
