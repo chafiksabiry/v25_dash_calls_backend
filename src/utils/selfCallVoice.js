@@ -124,6 +124,19 @@ function transcriptSuggestsRealTwoPartyDialogue(transcript) {
   return false;
 }
 
+/** A few real Client turns are enough: phone audio is one mixed channel. */
+function transcriptHasProspectReply(transcript) {
+  const turns = sanitizeTranscriptForReanalysis(transcript).filter(
+    (t) => t && String(t.text || '').trim()
+  );
+  const customerTurns = turns.filter((t) => isCustomerSpeaker(t.speaker) && !isAgentSpeaker(t.speaker));
+  const wordCount = customerTurns.reduce(
+    (sum, t) => sum + String(t.text || '').trim().split(/\s+/).filter(Boolean).length,
+    0
+  );
+  return customerTurns.length >= 2 && wordCount >= 12;
+}
+
 /**
  * True when the scoring LLM already saw a two-party interaction
  * (refusal / transaction / clean fraud rubric) — do not convict on transcript alone.
@@ -251,9 +264,8 @@ function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores }
   const fromVoice = isSelfCallFraudFromVoice(voiceAnalysis, durationSec);
   if (fromVoice) {
     // Twilio/Cloudinary mono mixes often make Gemini report "1 voice" even on
-    // real Agent↔Customer calls. If the transcript already shows a long
-    // two-party dialogue, never convict on audio alone.
-    if (twoPartyContent) {
+    // real Agent↔Customer calls. A prospect reply on a long call is enough.
+    if (twoPartyContent || (durationSec >= 60 && transcriptHasProspectReply(cleanTranscript))) {
       console.warn(
         `⚠️ [selfCallVoice] Suppressing ${fromVoice.reason} — transcript looks like real two-party dialogue (confidence=${fromVoice.confidence})`
       );
@@ -275,8 +287,12 @@ function resolveSelfCallFraud({ voiceAnalysis, transcript, durationSec, scores }
     return { isFraud: false, voiceAnalysis };
   }
 
-  // Scoring LLM already modeled a two-party outcome → do not convict on transcript alone.
-  if (scoringSuggestsTwoPartyDialogue(scores) || twoPartyContent) {
+  // Scoring LLM already modeled a two-party outcome, or the prospect actually replied.
+  if (
+    scoringSuggestsTwoPartyDialogue(scores) ||
+    twoPartyContent ||
+    (durationSec >= 60 && transcriptHasProspectReply(cleanTranscript))
+  ) {
     return { isFraud: false, voiceAnalysis: voiceAnalysis || null };
   }
 
