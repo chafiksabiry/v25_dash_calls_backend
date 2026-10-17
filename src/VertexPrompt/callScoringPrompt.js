@@ -239,6 +239,8 @@ ${scriptInstructions}
         "feedback_fr": "<idem en français>",
         "feedback_en": "<same in english — factual call summary then 1-line quality verdict>"
       },
+      "status_comment_fr": "<UNE phrase normale, 30 mots maximum, qui explique ce qui s'est passé sur CET appel pour un lecteur non technique. Exemple : « Le prospect a décroché, l'échange est resté sur des salutations, aucun rendez-vous ni vente. » Interdit : codes (connected_no_sale, not_argumented), noms de champs, jargon interne.>",
+      "status_comment_en": "<ONE plain sentence, 30 words max, explaining what happened on THIS call. No status codes, no field names.>",
       "transaction_detected": <true|false>,
       "refusal_detected": <true|false>,
       "suggested_disposition": "<une seule valeur parmi : to_call | called_unreachable | called_voicemail | called_wrong_number | called_callback | called_rdv | not_argumented | argued_rdv | argued_declined | argued_done>",
@@ -282,6 +284,7 @@ ${scriptInstructions}
     3. **Validation Fraude :** Si "Fraud detection" < 50, le score "overall" doit être < 40.
     4. **Résumé de l'appel (overall.feedback) :** résumé factuel de CE QUI S'EST PASSÉ — pas un "résumé exécutif" marketing. Faits d'abord, verdict qualité en 1–2 phrases ensuite.
     5. **Durée — INTERDIT ABSOLU :** ne mentionne JAMAIS la durée de l'appel dans overall.feedback / feedback_fr / feedback_en ni dans aucun feedback (pas de « L'appel a duré X minutes », « The call lasted… », « 12 minutes et 10 secondes », etc.). La durée est affichée ailleurs dans l'UI ; tu n'as pas à la détecter ni à l'estimer.
+    6. **status_comment_fr / status_comment_en :** phrase affichée au survol du statut. Elle dépend uniquement de ce qui a été dit dans CET appel. Une seule phrase, ton neutre, sans code technique.
     `;
 };
 
