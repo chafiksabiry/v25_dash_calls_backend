@@ -402,6 +402,9 @@ const callSchema = new mongoose.Schema({
   ai_summary: { type: String, default: null },
   ai_summary_fr: { type: String, default: null },
   ai_summary_en: { type: String, default: null },
+  /** One plain sentence shown when hovering the call status. Written by the analysis. */
+  statusComment_fr: { type: String, default: null },
+  statusComment_en: { type: String, default: null },
 
   /** Denormalised boolean flags for fast aggregation. Single source of truth
    *  for "fraude" / "sérieux" KPIs across the company dashboard — replaces

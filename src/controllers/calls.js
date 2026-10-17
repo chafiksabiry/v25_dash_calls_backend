@@ -52,6 +52,14 @@ const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** One human sentence for the status hover. Never a status code. */
+function plainStatusComment(text, fallback) {
+  const raw = String(text || fallback || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const sentence = raw.split(/(?<=[.!?])\s+/)[0] || raw;
+  return sentence.slice(0, 320);
+}
+
 // A call stuck in `processing` longer than this is considered dead (the worker
 // hung or the process restarted mid-analysis). Such locks may be reclaimed so
 // the analysis can be retried instead of spinning forever in the UI.
@@ -2005,6 +2013,8 @@ exports.analyzeCall = async (req, res) => {
           ai_summary: null,
           ai_summary_fr: null,
           ai_summary_en: null,
+          statusComment_fr: null,
+          statusComment_en: null,
           ai_refusal_reason: null,
           callOutcome: null,
           callOutcomeSource: null,
@@ -2253,6 +2263,12 @@ exports.analyzeCall = async (req, res) => {
             ai_summary_en: keepVoicemail
               ? 'Voicemail — no exchange with the prospect. No commission is due.'
               : shortMsgEn,
+            statusComment_fr: keepVoicemail
+              ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
+              : plainStatusComment(shortMsgFr),
+            statusComment_en: keepVoicemail
+              ? 'Voicemail — no exchange with the prospect. No commission is due.'
+              : plainStatusComment(shortMsgEn),
             ai_call_score: {},
             callOutcome: shortCallOutcome,
             callOutcomeSource: 'system',
@@ -2777,6 +2793,18 @@ exports.analyzeCall = async (req, res) => {
         'en'
       );
     }
+    const commentSourceFr = isNonProductiveCall
+      ? VOICEMAIL_SUMMARY_FR
+      : isFraudDetected
+        ? (call.ai_call_score?.overall?.feedback_fr || scores?.overall?.feedback_fr)
+        : (scores?.status_comment_fr || scores?.overall?.feedback_fr || call.ai_summary_fr);
+    const commentSourceEn = isNonProductiveCall
+      ? VOICEMAIL_SUMMARY_EN
+      : isFraudDetected
+        ? (call.ai_call_score?.overall?.feedback_en || scores?.overall?.feedback_en)
+        : (scores?.status_comment_en || scores?.overall?.feedback_en || call.ai_summary_en);
+    call.statusComment_fr = plainStatusComment(commentSourceFr, call.ai_summary_fr);
+    call.statusComment_en = plainStatusComment(commentSourceEn, call.ai_summary_en);
     call.flags = {
       fraud:               isNonProductiveCall ? false : isFraudDetected,
       selfCall:            isNonProductiveCall ? false : selfCallFraud.isFraud === true,
@@ -2822,6 +2850,8 @@ exports.analyzeCall = async (req, res) => {
       ai_summary: call.ai_summary || null,
       ai_summary_fr: call.ai_summary_fr || null,
       ai_summary_en: call.ai_summary_en || null,
+      statusComment_fr: call.statusComment_fr || null,
+      statusComment_en: call.statusComment_en || null,
       suggestedDisposition: suggestedDisposition || null,
     };
     if (Array.isArray(transcriptData)) {
