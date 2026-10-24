@@ -50,6 +50,7 @@ const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingba
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
 const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 const REPSCREATIONWIZARD_API_URL = (process.env.REPSCREATIONWIZARD_API_URL || 'https://v25repscreationwizardbackend-production.up.railway.app/api').replace(/\/$/, '');
+const { notifyCompanyOfFraud } = require('../services/companyNotificationClient');
 const COMPORCHESTRATOR_API_URL = (process.env.COMPORCHESTRATOR_API_URL || 'https://v25comporchestratorback-production.up.railway.app/api').replace(/\/$/, '');
 
 /**
@@ -2713,6 +2714,7 @@ exports.analyzeCall = async (req, res) => {
       duration > 30;
 
     if (isFraudDetected) {
+      void notifyCompanyOfFraud({ call, callId: id, fraudScore });
       transactionDetected = false;
       scores.transaction_detected = false;
       if (scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
