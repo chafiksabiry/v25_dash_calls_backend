@@ -579,6 +579,46 @@ exports.getAgentFraudStats = async (req, res) => {
   }
 };
 
+// @desc    Company overturns an AI fraud flag as a false positive. Clears
+//          flags.fraud so the call stops counting toward the rep's fraud
+//          total / blacklist-risk warnings (company + rep side alike, since
+//          both read the same flag), while keeping an audit trail of the
+//          original flag and the override decision.
+// @route   PATCH /api/calls/:id/fraud-review
+exports.overturnCallFraud = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reviewedBy, reason } = req.body || {};
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Valid call id is required' });
+    }
+
+    const call = await Call.findById(id);
+    if (!call) {
+      return res.status(404).json({ success: false, message: 'Call not found' });
+    }
+
+    if (!call.flags?.fraud) {
+      return res.status(400).json({ success: false, message: 'This call is not currently flagged as fraud' });
+    }
+
+    call.flags.fraud = false;
+    call.fraudReview = {
+      overturned: true,
+      reviewedBy: reviewedBy && mongoose.Types.ObjectId.isValid(reviewedBy) ? reviewedBy : null,
+      reviewedAt: new Date(),
+      reason: reason ? String(reason).slice(0, 500) : null,
+    };
+    await call.save();
+
+    res.status(200).json({ success: true, data: call });
+  } catch (error) {
+    console.error('Error in overturnCallFraud:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
 // @desc    Get single call
 // @route   GET /api/calls/:id
 // @access  Private

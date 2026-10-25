@@ -415,6 +415,18 @@ const callSchema = new mongoose.Schema({
     refusalDetected:     { type: Boolean, default: false },
   },
 
+  /** Audit trail when a company reviewer overturns an AI fraud flag as a
+   *  false positive. Overturning clears `flags.fraud` (so the call stops
+   *  counting toward the rep's fraud total / blacklist-risk warnings) but
+   *  keeps this record so the original AI call and the override decision
+   *  are never silently lost. */
+  fraudReview: {
+    overturned:  { type: Boolean, default: false },
+    reviewedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    reviewedAt:  { type: Date, default: null },
+    reason:      { type: String, default: null },
+  },
+
   /** Workflow validations — harmonised with v25_dashboard_backend so both
    *  services read/write the same fields and we stop drifting. */
   companyValidation: {
