@@ -19,6 +19,13 @@ function isCallFraudDetected(call) {
   return typeof fraudScore === 'number' && fraudScore < 50;
 }
 
+/** Review state of a flagged call: confirmed / overturned by the company, otherwise waiting for review. */
+function fraudReviewState(call) {
+  if (call?.fraudReview?.overturned === true) return 'overturned';
+  if (call?.fraudReview?.confirmed === true) return 'confirmed';
+  return 'pending';
+}
+
 function resolveAgentId(call) {
   const agent = call?.agent;
   if (agent && typeof agent === 'object') {
@@ -182,8 +189,14 @@ function buildCompanyFraudStatsFromCalls(calls) {
   const agentStats = computeAgentFraudStatsFromCalls(calls);
   const totalFraudCount = fraudCalls.length;
 
+  const confirmedCount = fraudCalls.filter((call) => fraudReviewState(call) === 'confirmed').length;
+  const overturnedCount = calls.filter((call) => call?.fraudReview?.overturned === true).length;
+
   return {
     totalFraudCount,
+    confirmedCount,
+    pendingReviewCount: totalFraudCount - confirmedCount,
+    overturnedCount,
     agentStats,
     warnings: buildWarningsBundle({ totalFraudCount, audience: 'company' }),
   };
@@ -206,6 +219,8 @@ function buildFraudOrConditions() {
     { 'flags.selfCall': true },
     { callOutcome: 'fraud' },
     { 'ai_call_score.Fraud detection.score': { $lt: 50 } },
+    // Reviewed calls stay listed (as overturned) even though they no longer count as fraud.
+    { 'fraudReview.overturned': true },
   ];
 }
 
@@ -233,6 +248,7 @@ function buildAgentFraudMatchQuery(agentId) {
 
 module.exports = {
   isCallFraudDetected,
+  fraudReviewState,
   resolveAgentId,
   resolveAgentName,
   buildCompanyFraudStatsFromCalls,

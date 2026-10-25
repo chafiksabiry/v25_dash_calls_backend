@@ -415,13 +415,15 @@ const callSchema = new mongoose.Schema({
     refusalDetected:     { type: Boolean, default: false },
   },
 
-  /** Audit trail when a company reviewer overturns an AI fraud flag as a
-   *  false positive. Overturning clears `flags.fraud` (so the call stops
+  /** Audit trail of the company's review of an AI fraud flag: overturned as a
+   *  false positive, or confirmed as real fraud. Overturning clears `flags.fraud` (so the call stops
    *  counting toward the rep's fraud total / blacklist-risk warnings) but
    *  keeps this record so the original AI call and the override decision
    *  are never silently lost. */
   fraudReview: {
     overturned:  { type: Boolean, default: false },
+    /** The reviewer checked the call and confirmed the AI's fraud verdict. */
+    confirmed:   { type: Boolean, default: false },
     reviewedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reviewedAt:  { type: Date, default: null },
     reason:      { type: String, default: null },
