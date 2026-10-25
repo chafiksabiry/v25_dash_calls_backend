@@ -77,7 +77,7 @@ app.use(cors({
     }
     return callback(null, true);
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-agent-id', 'x-company-id', 'x-channel', 'Accept', 'Origin', 'X-Requested-With'],
   credentials: true
 }));
