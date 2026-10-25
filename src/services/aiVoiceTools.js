@@ -11,6 +11,20 @@ function buildRealtimeTools() {
   return [
     {
       type: 'function',
+      name: 'search_knowledge',
+      description:
+        "Search the company's knowledge base (offers, prices, conditions, objection handling, legal mentions) for the gig of this call. " +
+        'Call it BEFORE answering any factual question about the product, price, conditions or rules. If nothing is found, say you will have an advisor call back — never invent.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: "The lead's question, in the lead's words (short)" },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      type: 'function',
       name: 'lookup_lead',
       description: 'Lookup the current lead profile by leadId (phone, email, stage, notes).',
       parameters: {
@@ -76,8 +90,44 @@ function buildRealtimeTools() {
   ];
 }
 
-async function executeVoiceTool(name, args, { defaultLeadId, defaultCallId } = {}) {
+const KNOWLEDGEBASE_API_URL = (
+  process.env.KNOWLEDGEBASE_API_URL ||
+  'https://v25knowledgebasebackend-production.up.railway.app/api'
+).replace(/\/$/, '');
+/** A live call cannot wait: beyond this the agent answers without the knowledge base. */
+const KNOWLEDGE_SEARCH_TIMEOUT_MS = 4000;
+
+async function searchKnowledge(query, { gigId, companyId }) {
+  const q = String(query || '').trim();
+  if (!q) return { ok: false, error: 'query required' };
+  if (!companyId) return { ok: false, error: 'no company context for this call' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), KNOWLEDGE_SEARCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/agent-search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companyId: String(companyId), gigId: gigId ? String(gigId) : undefined, query: q, topK: 3 }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false, error: `knowledge base unavailable (${res.status})` };
+    const payload = await res.json();
+    const passages = (payload?.data?.passages || []).map((p) => ({ source: p.title, text: p.content }));
+    if (passages.length === 0) {
+      return { ok: true, found: false, note: 'Nothing in the knowledge base about this. Do not answer from memory: offer an advisor callback.' };
+    }
+    return { ok: true, found: true, passages, note: 'Answer only from these passages, in one or two short sentences.' };
+  } catch (err) {
+    return { ok: false, error: err?.name === 'AbortError' ? 'knowledge base timeout' : String(err?.message || err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function executeVoiceTool(name, args, { defaultLeadId, defaultCallId, gigId, companyId } = {}) {
   switch (name) {
+    case 'search_knowledge':
+      return searchKnowledge(args && args.query, { gigId, companyId });
     case 'lookup_lead': {
       const leadId = args.leadId || defaultLeadId;
       if (!leadId || !mongoose.Types.ObjectId.isValid(leadId)) {
