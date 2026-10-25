@@ -24,6 +24,7 @@ router.route('/')
   .post(createCall);
 
 router.get('/company/:companyId/fraud-stats', callController.getCompanyFraudStats);
+router.get('/company/:companyId/fraud-calls', callController.getCompanyFraudCalls);
 router.get('/agent/:agentId/fraud-stats', callController.getAgentFraudStats);
 router.patch('/:id/fraud-review', callController.overturnCallFraud);
 router.get('/agent/:agentId', callController.getCallsByAgent);

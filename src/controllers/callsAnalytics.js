@@ -333,6 +333,21 @@ exports.overview = async (req, res) => {
                 fraud: {
                   $sum: { $cond: [{ $eq: [{ $ifNull: ["$flags.fraud", false] }, true] }, 1, 0] }
                 },
+                // Flagged calls the company has not confirmed yet ("à examiner").
+                fraudToReview: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: [{ $ifNull: ["$flags.fraud", false] }, true] },
+                          { $ne: [{ $ifNull: ["$fraudReview.confirmed", false] }, true] }
+                        ]
+                      },
+                      1,
+                      0
+                    ]
+                  }
+                },
                 voicemail: {
                   $sum: { $cond: [{ $eq: ["$_outcome", "voicemail"] }, 1, 0] }
                 },
@@ -408,6 +423,7 @@ exports.overview = async (req, res) => {
       total: 0,
       serious: 0,
       fraud: 0,
+      fraudToReview: 0,
       voicemail: 0,
       unreachable: 0,
       sumDurationSerious: 0
@@ -435,6 +451,7 @@ exports.overview = async (req, res) => {
         total: totals.total,
         serious: totals.serious,
         fraud: totals.fraud,
+        fraudToReview: totals.fraudToReview ?? 0,
         voicemail: totals.voicemail,
         unreachable: totals.unreachable,
         avgDuration
