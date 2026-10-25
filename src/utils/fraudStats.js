@@ -9,6 +9,10 @@ function isEnglishLanguage(language) {
 function isCallFraudDetected(call) {
   if (!call || typeof call !== 'object') return false;
   if (isCallVoicemail(call)) return false;
+  // A company reviewer overturned the AI flag as a false positive — this
+  // must win over every other signal (callOutcome, raw AI score) so the
+  // call stops counting against the rep in every stat that uses this check.
+  if (call.fraudReview?.overturned === true) return false;
   if (call.flags?.fraud === true || call.flags?.selfCall === true) return true;
   if (call.callOutcome === 'fraud') return true;
   const fraudScore = readFraudScore(call.ai_call_score);
