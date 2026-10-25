@@ -292,6 +292,7 @@ function buildInstructions(voiceAssistant, lead, gig, callScript) {
     '3. Never invent compliance claims, legal guarantees, or discounts not in the script.',
     '4. If the lead refuses or asks to stop, close politely and end.',
     '5. Use tools (notes, callback, appointment, stage) when the lead intent or script requires it.',
+    '6. For ANY factual question (product, price, conditions, delays, legal rules) call search_knowledge first and answer ONLY from what it returns. If it returns nothing, say an advisor will call back — never answer from memory.',
     '',
     custom,
     scriptBlock,
@@ -655,6 +656,8 @@ async function startMediaStream(callControlId) {
     executeVoiceTool(name, args, {
       defaultLeadId: ctx.leadId,
       defaultCallId: ctx.callMongoId,
+      gigId: ctx.gigId,
+      companyId: ctx.companyId || ctx.gig?.companyId || null,
     })
   );
 
