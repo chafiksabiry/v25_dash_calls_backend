@@ -25,6 +25,7 @@ const {
   buildAgentFraudStatsFromCalls,
   buildCompanyFraudMatchQuery,
   buildAgentFraudMatchQuery,
+  isCallFraudDetected,
 } = require('../utils/fraudStats');
 const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
 const {
@@ -599,10 +600,11 @@ exports.overturnCallFraud = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
 
-    if (!call.flags?.fraud) {
+    if (!isCallFraudDetected(call)) {
       return res.status(400).json({ success: false, message: 'This call is not currently flagged as fraud' });
     }
 
+    call.flags = call.flags || {};
     call.flags.fraud = false;
     call.fraudReview = {
       overturned: true,
