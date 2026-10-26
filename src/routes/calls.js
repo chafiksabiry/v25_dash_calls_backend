@@ -1,5 +1,6 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
+const { authenticateUser } = require('../middleware/companyScope');
 const callController = require('../controllers/calls');
 const {
   getCalls,
@@ -24,9 +25,9 @@ router.route('/')
   .post(createCall);
 
 router.get('/company/:companyId/fraud-stats', callController.getCompanyFraudStats);
-router.get('/company/:companyId/fraud-calls', callController.getCompanyFraudCalls);
+router.get('/company/:companyId/fraud-calls', authenticateUser, callController.getCompanyFraudCalls);
 router.get('/agent/:agentId/fraud-stats', callController.getAgentFraudStats);
-router.patch('/:id/fraud-review', callController.overturnCallFraud);
+router.patch('/:id/fraud-review', authenticateUser, callController.overturnCallFraud);
 router.get('/agent/:agentId', callController.getCallsByAgent);
 
 

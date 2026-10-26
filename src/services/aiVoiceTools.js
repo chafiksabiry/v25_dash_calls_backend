@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const { Lead } = require('../models/Lead');
 const { Call } = require('../models/Call');
 
@@ -97,6 +98,11 @@ const KNOWLEDGEBASE_API_URL = (
 /** A live call cannot wait: beyond this the agent answers without the knowledge base. */
 const KNOWLEDGE_SEARCH_TIMEOUT_MS = 4000;
 
+/** Short-lived token proving the request comes from this backend (the knowledge base checks its scope). */
+function serviceToken() {
+  return jwt.sign({ scope: 'kb-agent-search' }, process.env.JWT_SECRET, { expiresIn: '2m' });
+}
+
 async function searchKnowledge(query, { gigId, companyId }) {
   const q = String(query || '').trim();
   if (!q) return { ok: false, error: 'query required' };
@@ -106,7 +112,7 @@ async function searchKnowledge(query, { gigId, companyId }) {
   try {
     const res = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/agent-search`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${serviceToken()}` },
       body: JSON.stringify({ companyId: String(companyId), gigId: gigId ? String(gigId) : undefined, query: q, topK: 3 }),
       signal: controller.signal,
     });

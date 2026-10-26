@@ -1,6 +1,8 @@
 jest.mock('../models/Lead', () => ({ Lead: {} }));
 jest.mock('../models/Call', () => ({ Call: {} }));
 
+process.env.JWT_SECRET = 'test-secret';
+const jwt = require('jsonwebtoken');
 const { buildRealtimeTools, executeVoiceTool } = require('../services/aiVoiceTools');
 
 const ctx = { gigId: '64b0000000000000000000a1', companyId: '64b000000000000000000001' };
@@ -21,6 +23,9 @@ describe('search_knowledge voice tool', () => {
     const out = await executeVoiceTool('search_knowledge', { query: 'combien ça coûte ?' }, ctx);
     const [url, init] = global.fetch.mock.calls[0];
     expect(url).toMatch(/\/rag\/agent-search$/);
+    const sent = jwt.verify(init.headers.Authorization.replace('Bearer ', ''), 'test-secret');
+    expect(sent.scope).toBe('kb-agent-search');
+    expect(sent.exp - sent.iat).toBeLessThanOrEqual(120);
     expect(JSON.parse(init.body)).toMatchObject({ companyId: ctx.companyId, gigId: ctx.gigId, query: 'combien ça coûte ?', topK: 3 });
     expect(out).toMatchObject({ ok: true, found: true, passages: [{ source: 'Tarifs', text: 'Prime : 12 € / mois' }] });
   });
