@@ -20,10 +20,17 @@ function signServiceToken(secret = process.env.JWT_SECRET) {
   return `${header}.${payload}.${signature}`;
 }
 
-const idOf = (value) => {
+/**
+ * Id of a value that may be a string, an ObjectId or a populated document. An ObjectId must be read with
+ * toHexString(): Mongoose gives it an `_id` getter that returns itself, so following `_id` never ends.
+ */
+const idOf = (value, depth = 0) => {
   if (value == null) return '';
-  if (typeof value === 'object') return idOf(value._id || value.id || value.$oid);
-  return String(value);
+  if (typeof value !== 'object') return String(value);
+  if (typeof value.toHexString === 'function') return value.toHexString();
+  if (value.$oid) return String(value.$oid);
+  const inner = value._id ?? value.id;
+  return inner && inner !== value && depth < 3 ? idOf(inner, depth + 1) : '';
 };
 
 /** @param {{ call: object, callId: string, fraudScore?: number }} input */
@@ -32,7 +39,10 @@ async function notifyCompanyOfFraud({ call, callId, fraudScore }) {
     const companyId = idOf(call?.companyId) || idOf(call?.lead?.gigId?.companyId) || idOf(call?.lead?.companyId);
     const gigId = idOf(call?.gigId) || idOf(call?.lead?.gigId);
     const token = signServiceToken();
-    if (!companyId || !callId || !token) return null;
+    if (!companyId || !callId || !token) {
+      console.warn(`[CompanyNotification] fraud skipped (companyId=${companyId || 'none'}, callId=${callId || 'none'}, token=${token ? 'ok' : 'missing JWT_SECRET'})`);
+      return null;
+    }
     const res = await fetch(`${COMPORCHESTRATOR_API_URL}/internal/company-notifications`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -49,6 +59,7 @@ async function notifyCompanyOfFraud({ call, callId, fraudScore }) {
       }),
       signal: AbortSignal.timeout(8000),
     });
+    if (!res.ok) console.error(`[CompanyNotification] fraud rejected by the orchestrator: HTTP ${res.status}`);
     return res.ok;
   } catch (err) {
     console.error('[CompanyNotification] fraud push failed', err?.message || err);
