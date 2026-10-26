@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const { Call } = require('../models/Call');
 const { readFraudScore } = require('../utils/selfCallVoice');
+const { assertCompanyAccess } = require('../middleware/companyScope');
 const {
   buildCompanyFraudMatchQuery,
   isCallFraudDetected,
@@ -19,7 +20,9 @@ const {
 const overturnCallFraud = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reviewedBy, reason } = req.body || {};
+    const { reason } = req.body || {};
+    // The reviewer is the authenticated user, never a value sent by the client.
+    const reviewedBy = req.auth && req.auth.userId;
     const decision = String(req.body?.decision || 'overturn').toLowerCase();
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
@@ -33,6 +36,8 @@ const overturnCallFraud = async (req, res) => {
     if (!call) {
       return res.status(404).json({ success: false, message: 'Call not found' });
     }
+
+    await assertCompanyAccess(req, call.companyId);
 
     // A reviewer can change their mind: a call already overturned may be confirmed afterwards.
     const wasOverturned = call.fraudReview?.overturned === true;
@@ -53,6 +58,7 @@ const overturnCallFraud = async (req, res) => {
 
     res.status(200).json({ success: true, data: call });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ success: false, message: error.message });
     console.error('Error in overturnCallFraud:', error);
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
@@ -70,6 +76,7 @@ const getCompanyFraudCalls = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ success: false, message: 'companyId is required' });
     }
+    await assertCompanyAccess(req, companyId);
     const status = String(req.query.status || 'pending').toLowerCase();
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
 
@@ -132,6 +139,7 @@ const getCompanyFraudCalls = async (req, res) => {
       data: { counts, calls: rows, truncated: calls.length >= FRAUD_REVIEW_SCAN_LIMIT },
     });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ success: false, message: error.message });
     console.error('Error in getCompanyFraudCalls:', error);
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
