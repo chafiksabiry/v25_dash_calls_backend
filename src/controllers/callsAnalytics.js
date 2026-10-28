@@ -1043,6 +1043,7 @@ exports.operationMeasures = async (req, res) => {
     const isAnswered = { $not: [{ $in: ["$_outcome", UNREACHED] }] };
     const count = (cond) => ({ $sum: { $cond: [cond, 1, 0] } });
     const scriptScore = { $ifNull: ["$ai_call_score.Script adherence.score", "$ai_call_score.Script coherence.score"] };
+    const sentimentScore = "$ai_call_score.Sentiment analysis.score";
 
     const [agg] = await Call.aggregate([
       { $match: match },
@@ -1072,6 +1073,8 @@ exports.operationMeasures = async (req, res) => {
                 qualityN: count({ $ne: [{ $ifNull: ["$quality_score", null] }, null] }),
                 scriptSum: { $sum: { $ifNull: [scriptScore, 0] } },
                 scriptN: count({ $ne: [scriptScore, null] }),
+                sentimentSum: { $sum: { $ifNull: [sentimentScore, 0] } },
+                sentimentN: count({ $ne: [sentimentScore, null] }),
               },
             },
           ],

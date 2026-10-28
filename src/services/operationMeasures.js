@@ -29,6 +29,8 @@ function computeOperationMeasures(facts, days) {
     refusal_rate: round(ratio(f.refused || 0, answered, 100)),
     quality_score: round(ratio(f.qualitySum || 0, f.qualityN || 0)),
     script_compliance: round(ratio(f.scriptSum || 0, f.scriptN || 0)),
+    // Satisfaction estimée par l'IA : score de sentiment (0-100) des appels analysés ramené sur 5.
+    csat: round(ratio(f.sentimentSum || 0, f.sentimentN || 0, 1 / 20)),
     calls_reviewed: round(ratio(f.scored || 0, answered, 100)),
     fraud_rate: round(ratio(f.fraud || 0, total, 100), 2),
     voicemail_rate: round(ratio(f.voicemail || 0, total, 100)),
