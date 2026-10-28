@@ -6,7 +6,7 @@ const m = computeOperationMeasures(
   {
     total: 100, answered: 60, transactions: 6, appointments: 9, callbacks: 3, interested: 24, refused: 18,
     voicemail: 10, wrongNumber: 5, fraud: 1, scored: 45, sumAnsweredDuration: 7200, answeredWithDuration: 60,
-    sumDuration: 7200, qualitySum: 3200, qualityN: 40, scriptSum: 2800, scriptN: 40, agentHours: 20,
+    sumDuration: 7200, qualitySum: 3200, qualityN: 40, scriptSum: 2800, scriptN: 40, sentimentSum: 3000, sentimentN: 40, agentHours: 20,
     leads: 80, attempts: 100, qualifiedLeads: 20, billedMinutes: 190,
     agents: [{ qualitySum: 1600, qualityN: 20, transactions: 4 }, { qualitySum: 1600, qualityN: 20, transactions: 2 }],
   },
@@ -26,6 +26,7 @@ assert.equal(m.refusal_rate, 30);
 assert.equal(m.callback_rate, 5);
 assert.equal(m.quality_score, 80);
 assert.equal(m.script_compliance, 70);
+assert.equal(m.csat, 3.8); // sentiment moyen 75/100 = 3,75/5
 assert.equal(m.calls_reviewed, 75);
 assert.equal(m.fraud_rate, 1);
 assert.equal(m.voicemail_rate, 10);
@@ -40,6 +41,7 @@ assert.equal(m.agent_productivity, 0.3);
 // aucun appel : rien n'est inventé
 const none = computeOperationMeasures({}, 30);
 assert.equal(none.contact_rate, null);
+assert.equal(none.csat, null);
 assert.equal(none.calls_per_day, 0);
 assert.equal(none.qualified_leads, null);
 assert.equal(none.active_agents, null);
