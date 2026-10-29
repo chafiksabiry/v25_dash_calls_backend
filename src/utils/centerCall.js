@@ -19,15 +19,17 @@ function buildCenterCall(body = {}) {
   const companyId = objectId(body.companyId);
   if (!companyId) throw new Error('companyId invalide');
   const isTest = body.isTest === true;
+  // Appel entrant que personne n'a pris (sonnerie sans réponse, répondeur) : aucun conseiller, donc pas de `handledBy`.
+  const unanswered = body.unanswered === true;
   const handler = body.handledBy || {};
   const handlerId = objectId(handler.userId);
   const handlerName = String(handler.name || '').trim();
-  if (!handlerId || !handlerName) throw new Error('handledBy (userId, name) requis');
-  const direction = String(body.direction || '').toLowerCase() === 'inbound' ? 'inbound' : 'outbound';
-  const status = STATUSES.has(String(body.status)) ? String(body.status) : 'completed';
+  if (!unanswered && (!handlerId || !handlerName)) throw new Error('handledBy (userId, name) requis');
+  const direction = unanswered || String(body.direction || '').toLowerCase() === 'inbound' ? 'inbound' : 'outbound';
+  const status = unanswered ? 'no-answer' : STATUSES.has(String(body.status)) ? String(body.status) : 'completed';
   const endTime = dateOr(body.endTime, new Date());
   const startTime = dateOr(body.startTime, endTime);
-  const duration = Math.max(0, Math.round(Number(body.duration) || 0));
+  const duration = unanswered ? 0 : Math.max(0, Math.round(Number(body.duration) || 0));
 
   const doc = {
     sid,
@@ -41,12 +43,17 @@ function buildCenterCall(body = {}) {
     endTime,
     companyId,
     gigId: objectId(body.gigId) || undefined,
-    userId: handlerId,
-    handledBy: { userId: handlerId, name: handlerName, role: ROLES.has(handler.role) ? handler.role : 'member' },
     isTest,
     source: 'center_portal',
   };
-  if (status !== 'completed' || duration === 0) {
+  if (!unanswered) {
+    doc.userId = handlerId;
+    doc.handledBy = { userId: handlerId, name: handlerName, role: ROLES.has(handler.role) ? handler.role : 'member' };
+  }
+  if (unanswered && body.outcome === 'voicemail') {
+    doc.callOutcome = 'voicemail';
+    doc.callOutcomeSource = 'system';
+  } else if (status !== 'completed' || duration === 0) {
     doc.callOutcome = 'no_answer';
     doc.callOutcomeSource = 'system';
   }

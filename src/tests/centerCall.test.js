@@ -20,6 +20,15 @@ describe('buildCenterCall', () => {
     expect(buildCenterCall({ ...base, status: 'no-answer', duration: 0 }).callOutcome).toBe('no_answer');
     expect(buildCenterCall({ ...base, duration: 0 }).callOutcome).toBe('no_answer');
   });
+  it('un appel entrant non décroché n’a pas de conseiller et n’est pas facturé', () => {
+    const d = buildCenterCall({ sid: 'CA9', companyId: OID, unanswered: true, outcome: 'voicemail', from: '+33612345678', to: '+33219122061', duration: 19 });
+    expect(d.handledBy).toBeUndefined();
+    expect(d.direction).toBe('inbound');
+    expect(d.status).toBe('no-answer');
+    expect(d.duration).toBe(0);
+    expect(d.callOutcome).toBe('voicemail');
+    expect(buildCenterCall({ sid: 'CA8', companyId: OID, unanswered: true }).callOutcome).toBe('no_answer');
+  });
   it('refuse un corps inexploitable', () => {
     expect(() => buildCenterCall({ ...base, sid: '' })).toThrow('sid');
     expect(() => buildCenterCall({ ...base, companyId: 'x' })).toThrow('companyId');
