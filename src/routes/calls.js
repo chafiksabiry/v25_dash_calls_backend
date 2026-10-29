@@ -44,6 +44,7 @@ router.get('/token', (req, res, next) => {
 
 
 router.post('/store-call', callController.saveCallToDB);
+router.post('/center-call', callController.saveCenterCall);
 
 // Resolve active gig phone line (provider + E.164) before Workspace dial.
 // Must be registered before `/:id` so "line-for-lead" is not captured as an id.

@@ -6,6 +6,7 @@ const twilioService = require('../services/integrations/twilio');
 const twilio = require('twilio');
 const fetch = require('node-fetch');
 const mongoose = require('mongoose');
+const { buildCenterCall } = require('../utils/centerCall');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
@@ -1160,6 +1161,28 @@ exports.getTwilioToken = async (req, res) => {
   } catch (error) {
     console.error('Error generating token:', error);
     res.status(500).json({ error: 'Failed to generate token' });
+  }
+};
+
+/**
+ * POST /calls/center-call : enregistre dans le journal un appel pris (ou passé) depuis le portail du centre par un membre
+ * ou un agent, ou un appel de test. Pas d'analyse IA ni de commission : ce ne sont pas des appels de rep HARX.
+ * Idempotent sur le SID de l'appel.
+ */
+exports.saveCenterCall = async (req, res) => {
+  let doc;
+  try {
+    doc = buildCenterCall(req.body);
+  } catch (e) {
+    return res.status(400).json({ success: false, message: e.message });
+  }
+  try {
+    const { sid, ...fields } = doc;
+    const saved = await Call.findOneAndUpdate({ sid }, { $set: fields, $setOnInsert: { sid } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    res.status(200).json({ success: true, data: saved });
+  } catch (error) {
+    console.error('Error in saveCenterCall:', error);
+    res.status(500).json({ success: false, message: 'Failed to save center call', error: error.message });
   }
 };
 
