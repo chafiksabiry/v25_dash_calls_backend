@@ -545,7 +545,9 @@ exports.reps = async (req, res) => {
           sumScore: { $sum: { $ifNull: ["$ai_call_score.overall.score", 0] } },
           scoredCount: {
             $sum: { $cond: [{ $gt: [{ $ifNull: ["$ai_call_score.overall.score", 0] }, 0] }, 1, 0] }
-          }
+          },
+          // Appels pris depuis le portail du centre : le nom de la personne est porté par l'appel.
+          handledName: { $max: "$handledBy.name" }
         }
       },
       {
@@ -561,7 +563,7 @@ exports.reps = async (req, res) => {
         $project: {
           _id: 0,
           userId: "$_id",
-          name: { $ifNull: ["$user.name", "Rep"] },
+          name: { $ifNull: ["$user.name", "$user.fullName", "$handledName", "Rep"] },
           total: 1,
           transaction: 1,
           appointment: 1,
@@ -664,9 +666,18 @@ exports.recent = async (req, res) => {
           aiVoiceEnabled: { $ifNull: ["$aiVoice.enabled", false] },
           repName: {
             $ifNull: [
+              "$handledBy.name",
               "$user.name",
+              "$user.fullName",
               "$agentDoc.personalInfo.name",
-              null
+              // Appel entrant que personne n'a pris : répondeur ou sonnerie sans réponse.
+              {
+                $cond: [
+                  { $eq: ["$source", "center_portal"] },
+                  { $cond: [{ $eq: ["$_outcome", "voicemail"] }, "Répondeur", "Non décroché"] },
+                  null
+                ]
+              }
             ]
           },
           leadName: {
@@ -687,7 +698,33 @@ exports.recent = async (req, res) => {
             }
           },
           to: 1,
-          from: 1
+          from: 1,
+          source: 1,
+          direction: 1,
+          isTest: { $ifNull: ["$isTest", false] }
+        }
+      },
+      {
+        // Sans lead (appels du portail du centre) : l'interlocuteur est le numéro appelant (entrant) ou appelé (sortant).
+        $addFields: {
+          leadName: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ["$leadName", ""] },
+                  { $eq: ["$source", "center_portal"] }
+                ]
+              },
+              {
+                $cond: [
+                  { $regexMatch: { input: { $toLower: { $ifNull: ["$direction", ""] } }, regex: "^inbound" } },
+                  { $ifNull: ["$from", "$to"] },
+                  { $ifNull: ["$to", "$from"] }
+                ]
+              },
+              "$leadName"
+            ]
+          }
         }
       }
     ];
