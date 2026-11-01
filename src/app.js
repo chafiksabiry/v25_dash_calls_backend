@@ -21,6 +21,7 @@ const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
 const vertex = require('./routes/vertex');
 const voiceMenu = require('./routes/voiceMenu');
+const clientPortal = require('./routes/clientPortal');
 
 // Ensure models are registered
 require('./models/Call');
@@ -104,6 +105,7 @@ app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
 app.use('/api/vertex', vertex);
 app.use('/api/voice-menu', voiceMenu);
+app.use('/api/client-portal', clientPortal);
 
 // Error handler
 //app.use(errorHandler);
