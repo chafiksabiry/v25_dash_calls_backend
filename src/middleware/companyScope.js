@@ -96,4 +96,39 @@ function clearCompanyCache() {
   companyByUser.clear();
 }
 
-module.exports = { authenticateUser, assertCompanyAccess, ScopeError, clearCompanyCache };
+/**
+ * Portée d'un contact client (portail en lecture seule). Lue chez le service d'inscription (source de vérité) avec le
+ * jeton de la personne, à chaque requête, sans cache : un accès retiré cesse de fonctionner aussitôt. Fermé par défaut :
+ * tout ce qui n'est pas explicitement un accès client actif renvoie 403. L'identité vient du jeton, jamais de la requête.
+ */
+async function clientScope(auth) {
+  const origin = registrationOrigin();
+  if (!origin) throw new ScopeError(503, 'Client lookup is not configured');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOOKUP_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${origin}/api/company-members/me?userId=${encodeURIComponent(auth.userId)}`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new ScopeError(503, 'Client lookup failed');
+    const payload = await res.json();
+    const data = payload && payload.data;
+    const client = data && data.isClient === true && data.isOwner !== true ? data.client : null;
+    if (!client || !client.id || !Array.isArray(client.gigIds)) throw new ScopeError(403, 'Not a client portal account');
+    return {
+      clientId: String(client.id),
+      clientName: String(client.name || ''),
+      gigIds: client.gigIds.map(String).filter((id) => /^[a-f0-9]{24}$/i.test(id)),
+      allowRecordings: client.allowRecordings === true && data.permissions && data.permissions['calls.listen'] === true,
+      branding: client.branding || null,
+    };
+  } catch (error) {
+    if (error instanceof ScopeError) throw error;
+    throw new ScopeError(503, 'Client lookup failed');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = { authenticateUser, assertCompanyAccess, clientScope, ScopeError, clearCompanyCache };
