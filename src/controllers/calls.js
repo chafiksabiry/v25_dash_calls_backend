@@ -1180,6 +1180,8 @@ exports.saveCenterCall = async (req, res) => {
     const { sid, ...fields } = doc;
     const saved = await Call.findOneAndUpdate({ sid }, { $set: fields, $setOnInsert: { sid } }, { upsert: true, new: true, setDefaultsOnInsert: true });
     res.status(200).json({ success: true, data: saved });
+    // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
+    require('../services/callEndedNotifier').notifyCallEndedInBackground(saved);
   } catch (error) {
     console.error('Error in saveCenterCall:', error);
     res.status(500).json({ success: false, message: 'Failed to save center call', error: error.message });
@@ -1277,6 +1279,8 @@ exports.saveCallToDB = async (req, res) => {
     }
 
     res.json(callDetails);
+    // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
+    if (callDetails && callDetails._id) require('../services/callEndedNotifier').notifyCallEndedInBackground(callDetails);
   } catch (error) {
     console.error('Error in saveCallToDB controller:', error);
     res.status(500).json({

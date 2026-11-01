@@ -21,6 +21,7 @@ const analytics = require('./routes/analytics');
 const dashboard = require('./routes/dashboard');
 const vertex = require('./routes/vertex');
 const voiceMenu = require('./routes/voiceMenu');
+const internalCenter = require('./routes/internalCenter');
 
 // Ensure models are registered
 require('./models/Call');
@@ -104,6 +105,8 @@ app.use('/api/analytics', analytics);
 app.use('/api/dashboard', dashboard);
 app.use('/api/vertex', vertex);
 app.use('/api/voice-menu', voiceMenu);
+// Service-à-service (jeton de portée center-data) : appels et contacts d'un centre pour l'orchestrateur.
+app.use('/api/internal-center', internalCenter);
 
 // Error handler
 //app.use(errorHandler);
