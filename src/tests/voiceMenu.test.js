@@ -262,3 +262,66 @@ describe('POST /analyze-voicemail', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+describe('POST /action-plan', () => {
+  const plan = { actions: [
+    { model: 'voicemail_callback', title: 'Rappeler Mme Durand', note: 'Elle attend une réponse sur son devis.', contactName: 'Mme Durand', dueInHours: 4 },
+    { model: 'appointment', title: 'Planifier un rendez-vous', note: '', contactName: null, dueInHours: null },
+    { model: 'appointment', title: 'Planifier un rendez-vous', note: 'doublon', contactName: null, dueInHours: null },
+    { model: 'envoyer_un_email', title: 'Modèle inconnu écarté', note: '', contactName: null, dueInHours: null },
+  ] };
+  const body = { companyId: 'c1', summary: 'Mme Durand demande un rendez-vous pour son devis.', transcript: 'Bonjour, c’est Mme Durand…', intent: 'rendez_vous', urgency: 'medium' };
+  beforeEach(() => mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify(plan) } }] }));
+
+  test('propose des actions validées (modèles connus, sans doublon) et débite action-plan-', async () => {
+    const res = makeRes();
+    await controller.actionPlan(userReq(body), res);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.actions).toHaveLength(2);
+    expect(res.body.data.actions[0]).toEqual({ model: 'voicemail_callback', title: 'Rappeler Mme Durand', note: 'Elle attend une réponse sur son devis.', contactName: 'Mme Durand', dueInHours: 4 });
+    expect(res.body.data.actions[1].dueInHours).toBeNull();
+    const [, init] = chargeCalls()[0];
+    expect(JSON.parse(init.body)).toMatchObject({ companyId: 'c1', tokensUsed: 1000, tool: 'voice-menu-action-plan' });
+  });
+
+  test('au plus 5 actions', async () => {
+    const many = { actions: Array.from({ length: 9 }, (_, i) => ({ model: 'transfer', title: `Action ${i}`, note: '', contactName: null, dueInHours: 999 })) };
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify(many) } }] });
+    const res = makeRes();
+    await controller.actionPlan(userReq(body), res);
+    expect(res.body.data.actions).toHaveLength(5);
+    expect(res.body.data.actions[0].dueInHours).toBe(336);
+  });
+
+  test('sans résumé ni transcription => 400, sans appel IA', async () => {
+    const res = makeRes();
+    await controller.actionPlan(userReq({ companyId: 'c1' }), res);
+    expect(res.statusCode).toBe(400);
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+
+  test('solde insuffisant => 402 sans appel IA ni débit', async () => {
+    mockFetch({ balance: { status: 200, tokens: 10 } });
+    const res = makeRes();
+    await controller.actionPlan(userReq(body), res);
+    expect(res.statusCode).toBe(402);
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(chargeCalls()).toHaveLength(0);
+  });
+
+  test('réponse sans action exploitable => 502 et aucun débit', async () => {
+    mockChat.mockResolvedValue({ choices: [{ message: { content: '{"actions":[{"model":"x","title":"y"}]}' } }] });
+    const res = makeRes();
+    await controller.actionPlan(userReq(body), res);
+    expect(res.statusCode).toBe(502);
+    expect(chargeCalls()).toHaveLength(0);
+  });
+
+  test('accès à l’entreprise refusé => 403', async () => {
+    mockAssertAccess.mockRejectedValue(new ScopeError(403, 'Not allowed for this company'));
+    const res = makeRes();
+    await controller.actionPlan(userReq(body), res);
+    expect(res.statusCode).toBe(403);
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+});

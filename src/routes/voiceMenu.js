@@ -7,6 +7,7 @@ const router = express.Router();
 // Appelées depuis le front avec le JWT utilisateur.
 router.post('/suggest', authenticateUser, controller.suggest);
 router.post('/tts', authenticateUser, controller.tts);
+router.post('/action-plan', authenticateUser, controller.actionPlan);
 
 // Appelée par l'orchestrateur (jeton de service). Le corps brut n'est parsé que sur CETTE route
 // (le express.json() global reste limité à 100 ko).

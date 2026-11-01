@@ -10,6 +10,7 @@ const OpenAI = require('openai');
 const TOKEN_COST_SUGGEST = 1000;
 const TOKEN_COST_TTS = 600;
 const TOKEN_COST_ANALYZE = 3000;
+const TOKEN_COST_ACTION_PLAN = 1000;
 
 const VOICES = ['nova', 'shimmer', 'coral', 'onyx', 'echo', 'ash'];
 const KINDS = ['greeting', 'voicemail'];
@@ -266,7 +267,86 @@ async function analyzeVoicemail({ companyId, usageId, audio, contentType, from }
   return { transcript: transcript || '', ...analysis, tokensCharged: TOKEN_COST_ANALYZE };
 }
 
+// --- Plan d'action : l'IA PROPOSE 2 à 5 actions, une personne les valide avant toute création (l'IA n'agit jamais seule).
+const PLAN_MODELS = ['voicemail_callback', 'missed_callback', 'appointment', 'transfer'];
+const PLAN_MAX = 5;
+
+const PLAN_SYSTEM = `Tu aides le secrétariat d'un centre d'appels. À partir du résumé et de la transcription d'un message vocal laissé par un appelant, tu PROPOSES entre 2 et 5 actions concrètes, que l'équipe validera avant toute création. Tu n'exécutes rien.
+N'invente aucune information absente du message (nom, numéro, date, lieu). Si une date ou un horaire n'est pas dit, laisse dueInHours à null.
+Réponds par un objet JSON unique : { "actions": [ { "model", "title", "note", "contactName", "dueInHours" } ] } où :
+- model vaut exactement l'un de : voicemail_callback (rappeler la personne), missed_callback (rappel à planifier à une date précise), appointment (rendez-vous à planifier), transfer (confier à un collaborateur pour traitement) ;
+- title : intitulé court à l'impératif en français (90 caractères max) ;
+- note : précision utile pour la personne qui traitera (280 caractères max) ;
+- contactName : nom de l'appelant s'il est connu, sinon null ;
+- dueInHours : entier de 1 à 336 si le message indique un délai, sinon null.
+Les actions doivent être différentes les unes des autres.`;
+
+function normalizePlan(raw) {
+  const list = Array.isArray(raw?.actions) ? raw.actions : [];
+  const seen = new Set();
+  const out = [];
+  for (const a of list) {
+    if (!a || typeof a !== 'object' || !PLAN_MODELS.includes(a.model)) continue;
+    const title = clip(a.title, 90);
+    if (!title) continue;
+    const key = `${a.model}|${title.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const hours = Math.round(Number(a.dueInHours));
+    const name = clip(a.contactName, 80);
+    out.push({
+      model: a.model,
+      title,
+      note: clip(a.note, 280),
+      contactName: name && name.toLowerCase() !== 'null' ? name : null,
+      dueInHours: a.dueInHours !== null && a.dueInHours !== undefined && Number.isFinite(hours) ? Math.min(336, Math.max(1, hours)) : null,
+    });
+    if (out.length === PLAN_MAX) break;
+  }
+  return out;
+}
+
+async function proposeActionPlan({ companyId, summary, transcript, intent, urgency, callerName, callbackNumber }) {
+  const openai = getOpenAI();
+  await assertSufficientBalance(companyId, TOKEN_COST_ACTION_PLAN);
+  const lines = [
+    `Résumé : ${clip(summary, 600) || 'non fourni'}`,
+    `Motif détecté : ${clip(intent, 60) || 'non précisé'} · Urgence : ${clip(urgency, 10) || 'non précisée'}`,
+    callerName ? `Appelant : ${clip(callerName, 80)}` : 'Appelant : nom non connu',
+    callbackNumber ? `Numéro laissé : ${clip(callbackNumber, 30)}` : '',
+    `Transcription :\n${String(transcript || '').slice(0, 6000) || '(absente)'}`,
+  ].filter(Boolean);
+  const completion = await openai.chat.completions.create({
+    model: models().llm,
+    temperature: 0.3,
+    max_tokens: 700,
+    response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: PLAN_SYSTEM }, { role: 'user', content: lines.join('\n') }],
+  });
+  let parsed = null;
+  try {
+    parsed = JSON.parse(completion?.choices?.[0]?.message?.content || '{}');
+  } catch (_err) {
+    throw new VoiceMenuError(502, 'invalid_plan', "L'IA a renvoyé une réponse illisible. Réessayez.");
+  }
+  const actions = normalizePlan(parsed);
+  if (actions.length === 0) throw new VoiceMenuError(502, 'empty_plan', "L'IA n'a proposé aucune action exploitable. Réessayez.");
+  await chargeTokens({
+    companyId,
+    usageId: `action-plan-${crypto.randomUUID()}`,
+    tokensUsed: TOKEN_COST_ACTION_PLAN,
+    tool: 'voice-menu-action-plan',
+    meta: { actions: actions.length, model: models().llm },
+  });
+  return { actions, tokensCharged: TOKEN_COST_ACTION_PLAN };
+}
+
 module.exports = {
+  TOKEN_COST_ACTION_PLAN,
+  PLAN_MODELS,
+  PLAN_MAX,
+  normalizePlan,
+  proposeActionPlan,
   TOKEN_COST_SUGGEST,
   TOKEN_COST_TTS,
   TOKEN_COST_ANALYZE,

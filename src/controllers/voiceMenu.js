@@ -95,6 +95,30 @@ async function tts(req, res) {
   }
 }
 
+/** Plan d'action proposé par l'IA à partir de l'analyse d'un message vocal : propositions seulement, rien n'est créé ici. */
+async function actionPlan(req, res) {
+  const body = req.body || {};
+  if (!(await checkCompany(req, res, body.companyId))) return;
+  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const summary = text(body.summary, 2000);
+  const transcript = text(body.transcript, 20000);
+  if (!summary.trim() && !transcript.trim()) return fail(res, 400, 'invalid_source', "Le résumé ou la transcription du message est nécessaire pour proposer un plan d'action.");
+  try {
+    const data = await ai.proposeActionPlan({
+      companyId: body.companyId,
+      summary,
+      transcript,
+      intent: text(body.intent, 60),
+      urgency: text(body.urgency, 10),
+      callerName: text(body.callerName, 80),
+      callbackNumber: text(body.callbackNumber, 30),
+    });
+    return res.json({ success: true, data });
+  } catch (err) {
+    return handleError(res, err, 'action-plan');
+  }
+}
+
 /** Jeton de service HS256 (scope voicemail-analyze, expiration obligatoire) — pas un jeton utilisateur. */
 function authenticateService(req, res, next) {
   const secret = process.env.JWT_SECRET;
@@ -137,4 +161,4 @@ async function analyzeVoicemail(req, res) {
   }
 }
 
-module.exports = { suggest, tts, authenticateService, analyzeVoicemail, resetRateLimit, SERVICE_SCOPE, TTS_LIMIT };
+module.exports = { suggest, tts, actionPlan, authenticateService, analyzeVoicemail, resetRateLimit, SERVICE_SCOPE, TTS_LIMIT };
