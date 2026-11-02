@@ -506,7 +506,7 @@ exports.getCallsByAgent = async (req, res) => {
       });
     }
 
-    const calls = await Call.find({ agent: agentId })
+    const calls = await Call.find({ agent: agentId, ...(req.callsCompanyScope ? { companyId: req.callsCompanyScope } : {}) })
       .populate('agent')
       .populate({
         path: 'lead',

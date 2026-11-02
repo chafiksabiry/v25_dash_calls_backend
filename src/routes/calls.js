@@ -1,6 +1,7 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
 const { authenticateUser } = require('../middleware/companyScope');
+const access = require('../middleware/callsAccess');
 const callController = require('../controllers/calls');
 const {
   getCalls,
@@ -20,15 +21,16 @@ const router = express.Router();
 
 //@twilio logic
 
+// Contrôle d'accès : voir middleware/callsAccess.js (strict = jeton exigé ; compat = jeton contrôlé, anonyme toléré avec périmètre).
 router.route('/')
-  .get(getCalls)
-  .post(createCall);
+  .get(access.compatAuth, access.guardCallsList, getCalls)
+  .post(access.compatAuth, access.guardCreateCall, createCall);
 
-router.get('/company/:companyId/fraud-stats', callController.getCompanyFraudStats);
+router.get('/company/:companyId/fraud-stats', access.compatAuth, access.guardCompanyParam(), callController.getCompanyFraudStats);
 router.get('/company/:companyId/fraud-calls', authenticateUser, callController.getCompanyFraudCalls);
-router.get('/agent/:agentId/fraud-stats', callController.getAgentFraudStats);
+router.get('/agent/:agentId/fraud-stats', access.compatAuth, access.guardAgentParam(), callController.getAgentFraudStats);
 router.patch('/:id/fraud-review', authenticateUser, callController.overturnCallFraud);
-router.get('/agent/:agentId', callController.getCallsByAgent);
+router.get('/agent/:agentId', access.compatAuth, access.guardAgentParam({ restrictToCompany: true }), callController.getCallsByAgent);
 
 
 router.post('/token', (req, res, next) => {
@@ -44,7 +46,7 @@ router.get('/token', (req, res, next) => {
 
 
 router.post('/store-call', callController.saveCallToDB);
-router.post('/center-call', callController.saveCenterCall);
+router.post('/center-call', access.userOrServiceAuth, access.guardCenterCallBody, callController.saveCenterCall);
 
 // Resolve active gig phone line (provider + E.164) before Workspace dial.
 // Must be registered before `/:id` so "line-for-lead" is not captured as an id.
@@ -56,21 +58,22 @@ router.route('/initiate')
   .post(initiateCall);
 
 router.route('/:id')
-  .get(getCall)
-  .put(updateCall);
+  .get(access.compatAuth, access.guardCallId(), getCall)
+  .put(access.compatAuth, access.guardCallId(), updateCall);
 
 router.route('/:id/end')
-  .post(endCall);
+  .post(access.compatAuth, access.guardCallId(), endCall);
 
 router.route('/:id/notes')
-  .post(addNote);
+  .post(access.compatAuth, access.guardCallId(), addNote);
 
 router.route('/:id/quality-score')
-  .put(updateQualityScore);
+  .put(access.compatAuth, access.guardCallId(), updateQualityScore);
 
-router.post('/:id/analyze', callController.analyzeCall);
-router.post('/:id/request-analysis-help', callController.requestAnalysisHelp);
-router.post('/:id/calibrate-score', callController.calibrateCallScore);
+// Analyse IA et calibrage : tous les appelants connus envoient le jeton -> groupe strict.
+router.post('/:id/analyze', access.strictAuth, access.guardCallId(), callController.analyzeCall);
+router.post('/:id/request-analysis-help', access.strictAuth, access.guardCallId(), callController.requestAnalysisHelp);
+router.post('/:id/calibrate-score', access.strictAuth, access.guardCallId(), callController.calibrateCallScore);
 
 // Route pour créer un Dialplan
 router.post('/dialplan', callController.createDialplan);

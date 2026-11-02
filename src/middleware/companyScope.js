@@ -131,4 +131,4 @@ async function clientScope(auth) {
   }
 }
 
-module.exports = { authenticateUser, assertCompanyAccess, clientScope, ScopeError, clearCompanyCache };
+module.exports = { authenticateUser, assertCompanyAccess, callerCompanyId, clientScope, ScopeError, clearCompanyCache };
