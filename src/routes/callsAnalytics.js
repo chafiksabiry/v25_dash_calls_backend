@@ -9,7 +9,11 @@ const {
   operationMeasures
 } = require("../controllers/callsAnalytics");
 
+const access = require("../middleware/callsAccess");
+
 const router = express.Router();
+// Jeton contrôlé (403 autre centre) ; anonyme toléré en mode compatibilité (CALLS_LEGACY_ANON), voir callsAccess.js.
+router.use("/company/:companyId/analytics", access.compatAuth, access.guardCompanyParam());
 
 /**
  * All routes are scoped to a company. Optional query params:
