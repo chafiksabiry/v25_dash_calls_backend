@@ -77,6 +77,24 @@ describe('POST /suggest', () => {
     expect(body.usageId).toMatch(/^voice-suggest-/);
   });
 
+  test('audience personne (Nomad Solo) : message personnel, sans centre', async () => {
+    const res = makeRes();
+    mockChat.mockClear();
+    await controller.suggest(userReq({ companyId: 'c1', kind: 'voicemail', audience: 'person', personName: 'Chafik Sabiry', companyName: 'Chafik Sabiry' }), res);
+    expect(res.statusCode).toBe(200);
+    const prompt = mockChat.mock.calls[0][0].messages[1].content;
+    expect(prompt).toMatch(/première personne/);
+    expect(prompt).toMatch(/Nom de la personne: Chafik Sabiry/);
+    expect(prompt).toMatch(/Ne parle jamais de centre/);
+    expect(prompt).not.toMatch(/Nom du centre/);
+  });
+
+  test('audience inconnue : 400', async () => {
+    const res = makeRes();
+    await controller.suggest(userReq({ companyId: 'c1', kind: 'voicemail', audience: 'robot' }), res);
+    expect(res.statusCode).toBe(400);
+  });
+
   test('nettoie markdown, guillemets, émojis et tronque', async () => {
     mockChat.mockResolvedValue({ choices: [{ message: { content: '**"Bonjour"** 😀 ' + 'mot '.repeat(100) } }] });
     const res = makeRes();

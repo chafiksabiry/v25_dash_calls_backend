@@ -113,8 +113,23 @@ function cleanSpokenText(text, max) {
   return out;
 }
 
-function buildSuggestPrompt({ kind, companyName, operationName, tone, language }) {
+const AUDIENCES = ['center', 'person'];
+
+function buildSuggestPrompt({ kind, companyName, operationName, tone, language, audience = 'center', personName }) {
   const max = MAX_TEXT[kind];
+  // Nomad Solo : le titulaire est une personne, pas un centre. Le message parle à la première personne et ne cite aucun centre.
+  if (audience === 'person') {
+    const lines = [
+      `Langue: ${language}.`,
+      `Ton: ${tone}.`,
+      personName ? `Nom de la personne: ${personName}.` : 'Nom de la personne: non fourni, ne pas en inventer.',
+    ];
+    const task =
+      kind === 'greeting'
+        ? `Rédige un message d'accueil téléphonique personnel de 1 à 3 phrases, ${max} caractères maximum, à la première personne. Ne parle jamais de centre, d'équipe, de conseillers ni d'entreprise.`
+        : `Rédige le message du répondeur personnel d'une personne indépendante, ${max} caractères maximum, à la première personne : dis que tu n'es pas disponible pour le moment (formule du type « vous êtes bien sur la messagerie de ${personName || 'la personne'} » si le nom est fourni), demande de laisser son nom, son numéro et le motif de l'appel après le bip, et annonce le bip sonore. Ne parle jamais de centre, d'équipe, de conseillers ni d'entreprise. Ne promets aucun délai de rappel précis.`;
+    return `${task}\n${lines.join('\n')}\nRéponds uniquement par le texte à dire, sans markdown, sans guillemets, sans émojis, avec une ponctuation adaptée à la synthèse vocale.`;
+  }
   const lines = [
     `Langue: ${language}.`,
     `Ton: ${tone}.`,
@@ -128,7 +143,7 @@ function buildSuggestPrompt({ kind, companyName, operationName, tone, language }
   return `${task}\n${lines.filter(Boolean).join('\n')}\nRéponds uniquement par le texte à dire, sans markdown, sans guillemets, sans émojis, avec une ponctuation adaptée à la synthèse vocale.`;
 }
 
-async function suggestText({ companyId, kind, companyName, operationName, tone, language }) {
+async function suggestText({ companyId, kind, companyName, operationName, tone, language, audience, personName }) {
   const openai = getOpenAI();
   await assertSufficientBalance(companyId, TOKEN_COST_SUGGEST);
   const completion = await openai.chat.completions.create({
@@ -137,7 +152,7 @@ async function suggestText({ companyId, kind, companyName, operationName, tone, 
     max_tokens: 200,
     messages: [
       { role: 'system', content: 'Tu écris des textes courts prêts à être dits au téléphone par une voix de synthèse.' },
-      { role: 'user', content: buildSuggestPrompt({ kind, companyName, operationName, tone, language }) },
+      { role: 'user', content: buildSuggestPrompt({ kind, companyName, operationName, tone, language, audience, personName }) },
     ],
   });
   const text = cleanSpokenText(completion?.choices?.[0]?.message?.content, MAX_TEXT[kind]);
@@ -352,6 +367,8 @@ module.exports = {
   TOKEN_COST_ANALYZE,
   VOICES,
   KINDS,
+  AUDIENCES,
+  buildSuggestPrompt,
   TONES,
   MAX_TEXT,
   INSUFFICIENT_MESSAGE,

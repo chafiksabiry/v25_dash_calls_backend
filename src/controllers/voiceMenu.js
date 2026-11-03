@@ -60,8 +60,12 @@ async function suggest(req, res) {
   const language = body.language === undefined ? 'fr' : body.language;
   if (typeof language !== 'string' || !LANGUAGE_RE.test(language)) return fail(res, 400, 'invalid_language', 'Langue invalide.');
   const optional = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : undefined);
+  const audience = body.audience === undefined ? 'center' : body.audience;
+  if (!ai.AUDIENCES.includes(audience)) return fail(res, 400, 'invalid_audience', "L'audience doit être 'center' ou 'person'.");
   try {
     const data = await ai.suggestText({
+      audience,
+      personName: optional(body.personName),
       companyId: body.companyId,
       kind: body.kind,
       companyName: optional(body.companyName),
