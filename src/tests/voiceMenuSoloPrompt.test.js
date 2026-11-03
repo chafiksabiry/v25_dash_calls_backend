@@ -28,4 +28,9 @@ describe('buildSuggestPrompt - audience person (Nomad Solo)', () => {
     const p = buildSuggestPrompt({ ...base, kind: 'greeting' });
     expect(p).toMatch(/Nom du centre: Centre X/);
   });
+
+  test.each(['person', 'center'])('répondeur (%s) : mention obligatoire de l\'enregistrement du message', (audience) => {
+    const p = buildSuggestPrompt({ ...base, kind: 'voicemail', audience });
+    expect(p).toMatch(/message sera enregistré/);
+  });
 });

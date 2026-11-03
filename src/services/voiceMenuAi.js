@@ -127,7 +127,7 @@ function buildSuggestPrompt({ kind, companyName, operationName, tone, language, 
     const task =
       kind === 'greeting'
         ? `Rédige un message d'accueil téléphonique personnel de 1 à 3 phrases, ${max} caractères maximum, à la première personne. Ne parle jamais de centre, d'équipe, de conseillers ni d'entreprise.`
-        : `Rédige le message du répondeur personnel d'une personne indépendante, ${max} caractères maximum, à la première personne : dis que tu n'es pas disponible pour le moment (formule du type « vous êtes bien sur la messagerie de ${personName || 'la personne'} » si le nom est fourni), demande de laisser son nom, son numéro et le motif de l'appel après le bip, et annonce le bip sonore. Ne parle jamais de centre, d'équipe, de conseillers ni d'entreprise. Ne promets aucun délai de rappel précis.`;
+        : `Rédige le message du répondeur personnel d'une personne indépendante, ${max} caractères maximum, à la première personne : dis que tu n'es pas disponible pour le moment (formule du type « vous êtes bien sur la messagerie de ${personName || 'la personne'} » si le nom est fourni), demande de laisser son nom, son numéro et le motif de l'appel après le bip, annonce le bip sonore et précise que le message sera enregistré (mention obligatoire). Ne parle jamais de centre, d'équipe, de conseillers ni d'entreprise. Ne promets aucun délai de rappel précis.`;
     return `${task}\n${lines.join('\n')}\nRéponds uniquement par le texte à dire, sans markdown, sans guillemets, sans émojis, avec une ponctuation adaptée à la synthèse vocale.`;
   }
   const lines = [
@@ -139,7 +139,7 @@ function buildSuggestPrompt({ kind, companyName, operationName, tone, language, 
   const task =
     kind === 'greeting'
       ? `Rédige un message d'accueil téléphonique de 1 à 3 phrases, ${max} caractères maximum. Cite le nom du centre s'il est fourni. N'annonce PAS que la conversation peut être enregistrée (information non fournie, ne pas l'inventer).`
-      : `Rédige une invitation à laisser un message vocal, ${max} caractères maximum : dis que personne n'est disponible, demande le nom, le numéro et le motif de l'appel, et annonce le bip sonore.`;
+      : `Rédige une invitation à laisser un message vocal, ${max} caractères maximum : dis que personne n'est disponible, demande le nom, le numéro et le motif de l'appel, annonce le bip sonore et précise que le message sera enregistré (mention obligatoire).`;
   return `${task}\n${lines.filter(Boolean).join('\n')}\nRéponds uniquement par le texte à dire, sans markdown, sans guillemets, sans émojis, avec une ponctuation adaptée à la synthèse vocale.`;
 }
 
