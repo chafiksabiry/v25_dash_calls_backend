@@ -343,3 +343,104 @@ describe('POST /action-plan', () => {
     expect(mockChat).not.toHaveBeenCalled();
   });
 });
+
+describe('langue des textes de l’entreprise (fr, en, es, ar)', () => {
+  const FRENCH_META = /Rédige|Réponds|Langue:|Tu écris|Nom du centre/;
+
+  test.each([['en', 'English'], ['es', 'Spanish'], ['ar', 'Arabic']])('suggest %s : consignes dans la langue demandée, aucune consigne française', async (language, label) => {
+    const res = makeRes();
+    await controller.suggest(userReq({ companyId: 'c1', kind: 'greeting', companyName: 'Acme', language }), res);
+    expect(res.statusCode).toBe(200);
+    const [system, user] = mockChat.mock.calls[0][0].messages;
+    expect(system.content).toContain(label);
+    expect(system.content).not.toMatch(FRENCH_META);
+    expect(user.content).toContain(`written ONLY in ${label}`);
+    expect(user.content).toContain('Name of the business: Acme.');
+    expect(user.content).not.toMatch(FRENCH_META);
+  });
+
+  test('suggest fr : consignes françaises d’origine inchangées', async () => {
+    const res = makeRes();
+    await controller.suggest(userReq({ companyId: 'c1', kind: 'voicemail', companyName: 'Acme', language: 'fr' }), res);
+    const [system, user] = mockChat.mock.calls[0][0].messages;
+    expect(system.content).toMatch(/Tu écris des textes courts/);
+    expect(user.content).toMatch(/Langue: fr\./);
+    expect(user.content).toMatch(/message sera enregistré/);
+  });
+
+  test.each([['greeting', 'center'], ['voicemail', 'center'], ['greeting', 'person'], ['voicemail', 'person']])('prompt anglais (%s, %s) : bip, enregistrement, ton, pas d’invention', (kind, audience) => {
+    const { buildSuggestPrompt } = require('../services/voiceMenuAi');
+    const p = buildSuggestPrompt({ kind, audience, tone: 'professionnel', language: 'en', personName: 'Sam Lee', companyName: 'Acme' });
+    expect(p).toMatch(/Tone: professional\./);
+    if (kind === 'voicemail') { expect(p).toMatch(/beep/); expect(p).toMatch(/will be recorded/); }
+    if (audience === 'person') { expect(p).toMatch(/first person/); expect(p).toMatch(/Never mention a call center/); expect(p).not.toMatch(/Name of the business/); }
+  });
+
+  test.each([['en', /English/], ['es', /Spanish/], ['ar', /Arabic/], ['fr', /en français naturel/]])('tts %s : instruction de diction dans la langue', async (language, re) => {
+    const res = makeRes();
+    await controller.tts(userReq({ companyId: 'c1', text: 'Hello', voice: 'coral', language }), res);
+    expect(res.statusCode).toBe(200);
+    expect(mockSpeech.mock.calls[0][0].instructions).toMatch(re);
+    expect(mockSpeech.mock.calls[0][0].instructions).not.toMatch(language === 'fr' ? /never translate/ : /Parle en/);
+  });
+
+  test('tts : langue invalide => 400', async () => {
+    const res = makeRes();
+    await controller.tts(userReq({ companyId: 'c1', text: 'Hello', voice: 'nova', language: 'English' }), res);
+    expect(res.statusCode).toBe(400);
+  });
+
+  const analyzeReq = (query) => ({ query: { companyId: 'c1', usageId: 'vm-9', ...query }, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('x') });
+
+  test('analyse : sans langue, indice de transcription « fr » et consigne française (comportement d’avant)', async () => {
+    mockTranscribe.mockResolvedValue({ text: 'Bonjour, rappelez-moi.' });
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ summary: 'Demande de rappel.', intent: 'rappel', language: 'fr' }) } }] });
+    const res = makeRes();
+    await controller.analyzeVoicemail(analyzeReq({}), res);
+    expect(mockTranscribe).toHaveBeenCalledWith(expect.objectContaining({ language: 'fr' }));
+    expect(mockChat.mock.calls[0][0].messages[0].content).toMatch(/summary \(français/);
+  });
+
+  test.each([['en', 'English'], ['es', 'Spanish'], ['ar', 'Arabic']])('analyse %s : transcription et résumé suivent la langue de la société', async (language, label) => {
+    mockTranscribe.mockResolvedValue({ text: 'Hello, please call me back about my order.' });
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ summary: 'Callback request.', intent: 'rappel', language: 'en', suggestedFollowUp: { action: 'Call back', message: 'We will call you back.', dueInHours: 4 } }) } }] });
+    const res = makeRes();
+    await controller.analyzeVoicemail(analyzeReq({ language }), res);
+    expect(res.statusCode).toBe(200);
+    expect(mockTranscribe).toHaveBeenCalledWith(expect.objectContaining({ language }));
+    const system = mockChat.mock.calls[0][0].messages[0].content;
+    expect(system).toContain(`summary (written in ${label}`);
+    expect(system).not.toMatch(/français/);
+    expect(res.body.data.language).toBe('en');
+  });
+
+  test('analyse : message vide dans la langue de la société, langue reprise comme valeur par défaut', async () => {
+    mockTranscribe.mockResolvedValue({ text: ' ' });
+    const res = makeRes();
+    await controller.analyzeVoicemail(analyzeReq({ language: 'en' }), res);
+    expect(res.body.data).toMatchObject({ summary: 'Inaudible or empty message.', language: 'en' });
+    expect(res.body.data.suggestedFollowUp.action).toBe('Check whether a callback is useful');
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+
+  test('analyse : langue invalide => 400 sans OpenAI', async () => {
+    const res = makeRes();
+    await controller.analyzeVoicemail(analyzeReq({ language: 'english' }), res);
+    expect(res.statusCode).toBe(400);
+    expect(mockTranscribe).not.toHaveBeenCalled();
+  });
+
+  test('plan d’action : titres et notes dans la langue de la société', async () => {
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ actions: [{ model: 'transfer', title: 'Hand over to Sam', note: '', contactName: null, dueInHours: null }] }) } }] });
+    const res = makeRes();
+    await controller.actionPlan(userReq({ companyId: 'c1', summary: 'Needs a quote.', language: 'en' }), res);
+    expect(res.statusCode).toBe(200);
+    expect(mockChat.mock.calls[0][0].messages[0].content).toMatch(/title: short imperative title written in English/);
+    const fr = makeRes();
+    await controller.actionPlan(userReq({ companyId: 'c1', summary: 'Needs a quote.' }), fr);
+    expect(mockChat.mock.calls[1][0].messages[0].content).toMatch(/intitulé court à l'impératif en français/);
+    const bad = makeRes();
+    await controller.actionPlan(userReq({ companyId: 'c1', summary: 'x', language: 'xx-yyy' }), bad);
+    expect(bad.statusCode).toBe(400);
+  });
+});

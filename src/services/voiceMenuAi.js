@@ -115,7 +115,57 @@ function cleanSpokenText(text, max) {
 
 const AUDIENCES = ['center', 'person'];
 
+/**
+ * Langue des textes de l'entreprise (pays de la société, voir `languageForCountry` côté front et orchestrateur) : fr, en, es, ar ;
+ * tout autre code ISO valide est accepté et nommé en anglais. Le français garde les consignes d'origine (en français) ; les autres
+ * langues reçoivent des consignes en anglais qui exigent un texte écrit UNIQUEMENT dans la langue demandée.
+ */
+const LANGUAGE_LABELS = { fr: 'French', en: 'English', es: 'Spanish', ar: 'Arabic' };
+const baseLanguage = (code) => String(code || 'fr').slice(0, 2).toLowerCase();
+function languageLabel(code) {
+  const base = baseLanguage(code);
+  if (LANGUAGE_LABELS[base]) return base === 'ar' ? 'Arabic (Modern Standard Arabic, written in Arabic script)' : LANGUAGE_LABELS[base];
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(base) || base;
+  } catch (_err) {
+    return base;
+  }
+}
+const TONE_EN = { chaleureux: 'warm and friendly', professionnel: 'professional', direct: 'direct and concise' };
+
+/** Même consigne que `buildSuggestPrompt` pour une langue autre que le français : consignes en anglais, texte dans la langue demandée. */
+function buildSuggestPromptIn({ kind, companyName, operationName, tone, language, audience = 'center', personName }) {
+  const max = MAX_TEXT[kind];
+  const label = languageLabel(language);
+  const toneEn = TONE_EN[tone] || tone;
+  const closing = `Reply only with the text to be spoken, written ONLY in ${label}, with no markdown, no quotation marks, no emojis, and punctuation suited to speech synthesis.`;
+  if (audience === 'person') {
+    const lines = [
+      `Language: ${label}.`,
+      `Tone: ${toneEn}.`,
+      personName ? `Person's name: ${personName}.` : "Person's name: not provided, do not invent one.",
+    ];
+    const task =
+      kind === 'greeting'
+        ? `Write a personal telephone greeting of 1 to 3 sentences, ${max} characters maximum, in the first person. Never mention a call center, a team, advisors or a company.`
+        : `Write the voicemail message of a self-employed person, ${max} characters maximum, in the first person: say that you are not available right now (something like "you have reached the voicemail of ${personName || 'the person'}" if the name is provided), ask the caller to leave their name, number and reason for calling after the beep, announce the beep and say that the message will be recorded (mandatory notice). Never mention a call center, a team, advisors or a company. Do not promise a specific callback time.`;
+    return `${task}\n${lines.join('\n')}\n${closing}`;
+  }
+  const lines = [
+    `Language: ${label}.`,
+    `Tone: ${toneEn}.`,
+    companyName ? `Name of the business: ${companyName}.` : 'Name of the business: not provided, do not invent one.',
+    operationName ? `Operation: ${operationName}.` : '',
+  ];
+  const task =
+    kind === 'greeting'
+      ? `Write a telephone greeting of 1 to 3 sentences, ${max} characters maximum. Mention the name of the business if it is provided. Do NOT say that the conversation may be recorded (information not provided, do not invent it).`
+      : `Write an invitation to leave a voice message, ${max} characters maximum: say that nobody is available, ask for the caller's name, number and reason for calling, announce the beep and say that the message will be recorded (mandatory notice).`;
+  return `${task}\n${lines.filter(Boolean).join('\n')}\n${closing}`;
+}
+
 function buildSuggestPrompt({ kind, companyName, operationName, tone, language, audience = 'center', personName }) {
+  if (baseLanguage(language) !== 'fr') return buildSuggestPromptIn({ kind, companyName, operationName, tone, language, audience, personName });
   const max = MAX_TEXT[kind];
   // Nomad Solo : le titulaire est une personne, pas un centre. Le message parle à la première personne et ne cite aucun centre.
   if (audience === 'person') {
@@ -143,6 +193,12 @@ function buildSuggestPrompt({ kind, companyName, operationName, tone, language, 
   return `${task}\n${lines.filter(Boolean).join('\n')}\nRéponds uniquement par le texte à dire, sans markdown, sans guillemets, sans émojis, avec une ponctuation adaptée à la synthèse vocale.`;
 }
 
+/** Rôle donné à l'IA, dans la langue du texte à produire. */
+const suggestSystem = (language) =>
+  baseLanguage(language) === 'fr'
+    ? 'Tu écris des textes courts prêts à être dits au téléphone par une voix de synthèse.'
+    : `You write short texts ready to be spoken on the phone by a speech synthesis voice. You write only in ${languageLabel(language)}.`;
+
 async function suggestText({ companyId, kind, companyName, operationName, tone, language, audience, personName }) {
   const openai = getOpenAI();
   await assertSufficientBalance(companyId, TOKEN_COST_SUGGEST);
@@ -151,7 +207,7 @@ async function suggestText({ companyId, kind, companyName, operationName, tone, 
     temperature: 0.7,
     max_tokens: 200,
     messages: [
-      { role: 'system', content: 'Tu écris des textes courts prêts à être dits au téléphone par une voix de synthèse.' },
+      { role: 'system', content: suggestSystem(language) },
       { role: 'user', content: buildSuggestPrompt({ kind, companyName, operationName, tone, language, audience, personName }) },
     ],
   });
@@ -167,6 +223,17 @@ async function suggestText({ companyId, kind, companyName, operationName, tone, 
   return { text, tokensCharged: TOKEN_COST_SUGGEST };
 }
 
+/**
+ * Consigne de diction transmise à la synthèse vocale, selon la langue du texte lu. Les six voix proposées (OpenAI) sont multilingues :
+ * c'est cette consigne qui fixe la langue et la prononciation (accent natif, pas de français lu avec un accent anglais).
+ */
+function speechInstructions(language) {
+  const base = baseLanguage(language);
+  if (base === 'fr') return 'Parle en français naturel, sur un ton chaleureux et professionnel, avec un débit posé adapté au téléphone.';
+  const label = languageLabel(language);
+  return `Speak natural ${label} with a native accent and correct local pronunciation, in a warm and professional tone, at a calm pace suited to telephone audio. Read the text exactly as written; never translate it.`;
+}
+
 async function synthesizeSpeech({ companyId, text, voice, language }) {
   const openai = getOpenAI();
   await assertSufficientBalance(companyId, TOKEN_COST_TTS);
@@ -174,10 +241,7 @@ async function synthesizeSpeech({ companyId, text, voice, language }) {
     model: models().tts,
     voice,
     input: text,
-    instructions:
-      language === 'fr'
-        ? 'Parle en français naturel, sur un ton chaleureux et professionnel, avec un débit posé adapté au téléphone.'
-        : `Speak natural ${language}, in a warm and professional tone, at a calm pace suited to telephone audio.`,
+    instructions: speechInstructions(language),
     response_format: 'mp3',
   });
   const audio = Buffer.from(await speech.arrayBuffer());
@@ -197,20 +261,26 @@ const extensionFor = (contentType) => AUDIO_EXT[String(contentType || '').split(
 const clip = (value, max) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, max);
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback);
 
-function emptyAnalysis() {
+/** Texte « message inaudible » dans la langue de la société (français par défaut). */
+const EMPTY_SUMMARY = { fr: 'Message inaudible ou vide.', en: 'Inaudible or empty message.', es: 'Mensaje inaudible o vacío.', ar: 'رسالة غير مسموعة أو فارغة.' };
+const EMPTY_ACTION = { fr: 'Vérifier si un rappel est utile', en: 'Check whether a callback is useful', es: 'Comprobar si una llamada de vuelta es útil', ar: 'التحقق مما إذا كانت معاودة الاتصال مفيدة' };
+const emptySummary = (language) => EMPTY_SUMMARY[baseLanguage(language)] || EMPTY_SUMMARY.en;
+
+function emptyAnalysis(language = 'fr') {
+  const base = baseLanguage(language);
   return {
-    summary: 'Message inaudible ou vide.',
+    summary: emptySummary(base),
     intent: 'autre',
     urgency: 'low',
     sentiment: 'neutre',
-    language: 'fr',
+    language: base,
     callerName: null,
     callbackNumber: null,
-    suggestedFollowUp: { action: 'Vérifier si un rappel est utile', message: '', dueInHours: 24 },
+    suggestedFollowUp: { action: EMPTY_ACTION[base] || EMPTY_ACTION.en, message: '', dueInHours: 24 },
   };
 }
 
-function normalizeAnalysis(raw) {
+function normalizeAnalysis(raw, language = 'fr') {
   const r = raw && typeof raw === 'object' ? raw : {};
   const f = r.suggestedFollowUp && typeof r.suggestedFollowUp === 'object' ? r.suggestedFollowUp : {};
   const hours = Math.round(Number(f.dueInHours));
@@ -219,11 +289,11 @@ function normalizeAnalysis(raw) {
     return s && s.toLowerCase() !== 'null' ? s : null;
   };
   return {
-    summary: clip(r.summary, 280) || 'Message inaudible ou vide.',
+    summary: clip(r.summary, 280) || emptySummary(language),
     intent: pick(r.intent, INTENTS, 'autre'),
     urgency: pick(r.urgency, URGENCIES, 'low'),
     sentiment: pick(r.sentiment, SENTIMENTS, 'neutre'),
-    language: clip(r.language, 10) || 'fr',
+    language: clip(r.language, 10) || baseLanguage(language),
     callerName: nullable(r.callerName, 80),
     callbackNumber: nullable(r.callbackNumber, 30),
     suggestedFollowUp: {
@@ -234,24 +304,43 @@ function normalizeAnalysis(raw) {
   };
 }
 
-const ANALYSIS_SYSTEM = `Tu analyses la transcription d'un message laissé sur une messagerie vocale d'un centre d'appels.
+/**
+ * Consigne d'analyse. Le résumé, l'action et le message de relance (texte de l'entreprise, envoyé à un tiers) sont écrits dans la langue de
+ * la société ; `language` du résultat reste la langue PARLÉE par l'appelant (code ISO), lue dans la transcription. Français : consigne d'origine.
+ */
+function analysisSystem(language) {
+  if (baseLanguage(language) === 'fr') {
+    return `Tu analyses la transcription d'un message laissé sur une messagerie vocale d'un centre d'appels.
 N'invente aucune information absente de la transcription. Réponds par un objet JSON unique avec exactement ces clés :
 summary (français, 280 caractères max), intent (${INTENTS.join('|')}), urgency (low|medium|high), sentiment (positif|neutre|negatif), language (code ISO de la langue parlée),
 callerName (string ou null), callbackNumber (numéro dit par l'appelant, sinon null),
 suggestedFollowUp: { action (phrase courte à l'impératif), message (SMS ou e-mail de relance poli, prêt à envoyer, 300 caractères max), dueInHours (entier entre 1 et 72) }.`;
+  }
+  const label = languageLabel(language);
+  return `You analyse the transcript of a message left on the voicemail of a call center.
+Do not invent any information that is not in the transcript. Reply with a single JSON object with exactly these keys:
+summary (written in ${label}, 280 characters max), intent (${INTENTS.join('|')}), urgency (low|medium|high), sentiment (positif|neutre|negatif), language (ISO code of the language the caller SPOKE, read from the transcript),
+callerName (string or null), callbackNumber (number said by the caller, otherwise null),
+suggestedFollowUp: { action (short imperative sentence, written in ${label}), message (polite follow-up SMS or e-mail, ready to send, written in ${label}, 300 characters max), dueInHours (integer between 1 and 72) }.
+The values of intent, urgency and sentiment must be exactly one of the listed keywords (they are not translated).`;
+}
 
-async function analyzeVoicemail({ companyId, usageId, audio, contentType, from }) {
+/**
+ * `language` : langue de la société (indice de transcription et langue du résumé). Absente, elle vaut 'fr' (comportement d'avant :
+ * un appelant historique de ce service n'envoie pas encore la langue).
+ */
+async function analyzeVoicemail({ companyId, usageId, audio, contentType, from, language = 'fr' }) {
   const openai = getOpenAI();
   await assertSufficientBalance(companyId, TOKEN_COST_ANALYZE);
   const m = models();
 
   const file = await OpenAI.toFile(audio, `voicemail.${extensionFor(contentType)}`, { type: contentType || 'audio/mpeg' });
-  const stt = await openai.audio.transcriptions.create({ file, model: m.stt, language: 'fr' });
+  const stt = await openai.audio.transcriptions.create({ file, model: m.stt, language: baseLanguage(language) });
   const transcript = String(stt?.text || '').trim();
 
   let analysis;
   if (transcript.replace(/[^\p{L}\p{N}]/gu, '').length < 2) {
-    analysis = emptyAnalysis();
+    analysis = emptyAnalysis(language);
   } else {
     const completion = await openai.chat.completions.create({
       model: m.llm,
@@ -259,7 +348,7 @@ async function analyzeVoicemail({ companyId, usageId, audio, contentType, from }
       max_tokens: 600,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: ANALYSIS_SYSTEM },
+        { role: 'system', content: analysisSystem(language) },
         { role: 'user', content: `Transcription du message :\n${transcript}` },
       ],
     });
@@ -269,7 +358,7 @@ async function analyzeVoicemail({ companyId, usageId, audio, contentType, from }
     } catch (_err) {
       throw new VoiceMenuError(502, 'invalid_analysis', "L'analyse IA a renvoyé une réponse illisible. Réessayez.");
     }
-    analysis = normalizeAnalysis(parsed);
+    analysis = normalizeAnalysis(parsed, language);
   }
 
   await chargeTokens({
@@ -286,7 +375,7 @@ async function analyzeVoicemail({ companyId, usageId, audio, contentType, from }
 const PLAN_MODELS = ['voicemail_callback', 'missed_callback', 'appointment', 'transfer'];
 const PLAN_MAX = 5;
 
-const PLAN_SYSTEM = `Tu aides le secrétariat d'un centre d'appels. À partir du résumé et de la transcription d'un message vocal laissé par un appelant, tu PROPOSES entre 2 et 5 actions concrètes, que l'équipe validera avant toute création. Tu n'exécutes rien.
+const PLAN_SYSTEM_FR = `Tu aides le secrétariat d'un centre d'appels. À partir du résumé et de la transcription d'un message vocal laissé par un appelant, tu PROPOSES entre 2 et 5 actions concrètes, que l'équipe validera avant toute création. Tu n'exécutes rien.
 N'invente aucune information absente du message (nom, numéro, date, lieu). Si une date ou un horaire n'est pas dit, laisse dueInHours à null.
 Réponds par un objet JSON unique : { "actions": [ { "model", "title", "note", "contactName", "dueInHours" } ] } où :
 - model vaut exactement l'un de : voicemail_callback (rappeler la personne), missed_callback (rappel à planifier à une date précise), appointment (rendez-vous à planifier), transfer (confier à un collaborateur pour traitement) ;
@@ -295,6 +384,21 @@ Réponds par un objet JSON unique : { "actions": [ { "model", "title", "note", "
 - contactName : nom de l'appelant s'il est connu, sinon null ;
 - dueInHours : entier de 1 à 336 si le message indique un délai, sinon null.
 Les actions doivent être différentes les unes des autres.`;
+
+/** Consigne du plan d'action : titres et notes dans la langue de la société (ils entrent dans l'agenda de l'entreprise). Français : d'origine. */
+function planSystem(language) {
+  if (baseLanguage(language) === 'fr') return PLAN_SYSTEM_FR;
+  const label = languageLabel(language);
+  return `You help the secretarial team of a call center. From the summary and transcript of a voice message left by a caller, you SUGGEST between 2 and 5 concrete actions, which the team will validate before anything is created. You execute nothing.
+Do not invent any information that is not in the message (name, number, date, place). If a date or time is not stated, leave dueInHours as null.
+Reply with a single JSON object: { "actions": [ { "model", "title", "note", "contactName", "dueInHours" } ] } where:
+- model is exactly one of: voicemail_callback (call the person back), missed_callback (callback to schedule at a precise date), appointment (appointment to schedule), transfer (hand over to a colleague to handle);
+- title: short imperative title written in ${label} (90 characters max);
+- note: useful detail for the person who will handle it, written in ${label} (280 characters max);
+- contactName: the caller's name if known, otherwise null;
+- dueInHours: integer from 1 to 336 if the message states a delay, otherwise null.
+The actions must differ from one another.`;
+}
 
 function normalizePlan(raw) {
   const list = Array.isArray(raw?.actions) ? raw.actions : [];
@@ -321,7 +425,7 @@ function normalizePlan(raw) {
   return out;
 }
 
-async function proposeActionPlan({ companyId, summary, transcript, intent, urgency, callerName, callbackNumber }) {
+async function proposeActionPlan({ companyId, summary, transcript, intent, urgency, callerName, callbackNumber, language = 'fr' }) {
   const openai = getOpenAI();
   await assertSufficientBalance(companyId, TOKEN_COST_ACTION_PLAN);
   const lines = [
@@ -336,7 +440,7 @@ async function proposeActionPlan({ companyId, summary, transcript, intent, urgen
     temperature: 0.3,
     max_tokens: 700,
     response_format: { type: 'json_object' },
-    messages: [{ role: 'system', content: PLAN_SYSTEM }, { role: 'user', content: lines.join('\n') }],
+    messages: [{ role: 'system', content: planSystem(language) }, { role: 'user', content: lines.join('\n') }],
   });
   let parsed = null;
   try {
@@ -369,6 +473,11 @@ module.exports = {
   KINDS,
   AUDIENCES,
   buildSuggestPrompt,
+  speechInstructions,
+  analysisSystem,
+  planSystem,
+  emptyAnalysis,
+  baseLanguage,
   TONES,
   MAX_TEXT,
   INSUFFICIENT_MESSAGE,

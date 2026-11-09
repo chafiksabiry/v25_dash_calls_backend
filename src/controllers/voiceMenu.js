@@ -104,6 +104,8 @@ async function actionPlan(req, res) {
   const body = req.body || {};
   if (!(await checkCompany(req, res, body.companyId))) return;
   const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const language = body.language === undefined ? 'fr' : body.language;
+  if (typeof language !== 'string' || !LANGUAGE_RE.test(language)) return fail(res, 400, 'invalid_language', 'Langue invalide.');
   const summary = text(body.summary, 2000);
   const transcript = text(body.transcript, 20000);
   if (!summary.trim() && !transcript.trim()) return fail(res, 400, 'invalid_source', "Le résumé ou la transcription du message est nécessaire pour proposer un plan d'action.");
@@ -116,6 +118,7 @@ async function actionPlan(req, res) {
       urgency: text(body.urgency, 10),
       callerName: text(body.callerName, 80),
       callbackNumber: text(body.callbackNumber, 30),
+      language,
     });
     return res.json({ success: true, data });
   } catch (err) {
@@ -143,6 +146,9 @@ function authenticateService(req, res, next) {
 
 async function analyzeVoicemail(req, res) {
   const { companyId, from, usageId } = req.query || {};
+  // Langue de la société (indice de transcription, langue du résumé) ; absente : français, comme avant.
+  const language = (req.query || {}).language === undefined ? 'fr' : (req.query || {}).language;
+  if (typeof language !== 'string' || !LANGUAGE_RE.test(language)) return fail(res, 400, 'invalid_language', 'Langue invalide.');
   if (typeof companyId !== 'string' || !COMPANY_ID_RE.test(companyId)) return fail(res, 400, 'invalid_company', 'companyId invalide.');
   if (usageId !== undefined && (typeof usageId !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(usageId))) {
     return fail(res, 400, 'invalid_usage_id', 'usageId invalide.');
@@ -158,6 +164,7 @@ async function analyzeVoicemail(req, res) {
       audio,
       contentType: req.headers['content-type'],
       from: typeof from === 'string' ? from : undefined,
+      language,
     });
     return res.json({ success: true, data });
   } catch (err) {
