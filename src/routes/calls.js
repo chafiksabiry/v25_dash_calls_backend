@@ -47,6 +47,8 @@ router.get('/token', (req, res, next) => {
 
 router.post('/store-call', callController.saveCallToDB);
 router.post('/center-call', access.userOrServiceAuth, access.guardCenterCallBody, callController.saveCenterCall);
+// Enregistrement d'un appel (offres Full Scope / Multi-clients / TaaS) : l'orchestrateur rattache l'URL au document d'appel, par CallSid.
+router.post('/recording', access.callRecordingServiceAuth, callController.attachCallRecording);
 
 // Resolve active gig phone line (provider + E.164) before Workspace dial.
 // Must be registered before `/:id` so "line-for-lead" is not captured as an id.

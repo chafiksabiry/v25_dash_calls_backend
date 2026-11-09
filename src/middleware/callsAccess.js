@@ -87,6 +87,26 @@ function userOrServiceAuth(req, res, next) {
   }
 }
 
+/**
+ * Jeton de SERVICE uniquement, scope `call-recording` : rattachement de l'enregistrement d'un appel (orchestrateur).
+ * Toujours exigé, même si CALLS_REQUIRE_AUTH=false : cette route écrit sur un appel et n'a aucun appelant historique anonyme.
+ */
+function callRecordingServiceAuth(req, res, next) {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return deny(res, 500, 'Authentication is not configured');
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (!token) return deny(res, 401, 'Authentication required');
+  try {
+    const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
+    if (decoded.scope !== 'call-recording' || typeof decoded.exp !== 'number') throw new Error('bad scope');
+    req.callsService = { scope: decoded.scope, iss: decoded.iss };
+    return next();
+  } catch (error) {
+    return deny(res, 401, 'Authentication failed');
+  }
+}
+
 /** Le profil agent du porteur du jeton (le jeton de l'agent porte l'identifiant utilisateur). */
 async function ownAgentId(req) {
   if (!req.auth) return null;
@@ -239,6 +259,7 @@ module.exports = {
   strictAuth,
   compatAuth,
   userOrServiceAuth,
+  callRecordingServiceAuth,
   guardCompanyParam,
   guardCallsList,
   guardAgentParam,
