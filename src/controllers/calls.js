@@ -1188,6 +1188,17 @@ exports.saveCenterCall = async (req, res) => {
   }
 };
 
+exports.attachCallRecording = async (req, res) => {
+  try {
+    const { attachRecording } = require('../utils/callRecording');
+    const out = await attachRecording({ Call, archive: (url) => twilioService.fetchTwilioRecording(url, null) }, req.body);
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error in attachCallRecording:', error);
+    return res.status(500).json({ success: false, message: 'Failed to attach recording' });
+  }
+};
+
 exports.saveCallToDB = async (req, res) => {
   const {
     CallSid,
