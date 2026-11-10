@@ -460,7 +460,74 @@ async function proposeActionPlan({ companyId, summary, transcript, intent, urgen
   return { actions, tokensCharged: TOKEN_COST_ACTION_PLAN };
 }
 
+/** Champs libres d'une fiche d'annuaire pour lesquels l'IA propose des formulations. */
+const DIRECTORY_FIELDS = {
+  routing: 'which callers or topics the receptionist should put through to this person',
+  absent: 'what the receptionist should say or do when this person is absent (take a message, suggest someone else, give a number)',
+  priority: 'the call reasons that must never be kept waiting or left without follow-up for this person',
+};
+const DIRECTORY_MAX = 3;
+
+const directorySystem = (language, field) =>
+  `You help configure the reception desk of a company. You SUGGEST ${DIRECTORY_MAX} different short options (280 characters max each) for the following field of a directory entry: ${DIRECTORY_FIELDS[field]}.
+Write in ${languageLabel(language)}, in the imperative or neutral style of an instruction given to a receptionist.
+Base yourself only on the role and type given; never invent names, numbers, addresses or schedules.
+Reply with a single JSON object: { "options": [ "…", "…", "…" ] }.`;
+
+function normalizeDirectoryOptions(raw) {
+  const list = Array.isArray(raw?.options) ? raw.options : [];
+  const seen = new Set();
+  const out = [];
+  for (const o of list) {
+    const text = clip(typeof o === 'string' ? o : o?.text, 280);
+    if (!text || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    out.push(text);
+    if (out.length === DIRECTORY_MAX) break;
+  }
+  return out;
+}
+
+async function proposeDirectoryOptions({ companyId, field, language = 'fr', companyName, personName, role, kind, current }) {
+  if (!DIRECTORY_FIELDS[field]) throw new VoiceMenuError(400, 'invalid_field', 'Champ inconnu.');
+  const openai = getOpenAI();
+  await assertSufficientBalance(companyId, TOKEN_COST_SUGGEST);
+  const lines = [
+    companyName ? `Company: ${clip(companyName, 120)}` : '',
+    role ? `Role of the person: ${clip(role, 120)}` : 'Role of the person: not specified',
+    kind ? `Type: ${clip(kind, 30)}` : '',
+    personName ? `Name: ${clip(personName, 120)}` : '',
+    current ? `Text already written (improve or propose alternatives): ${clip(current, 400)}` : '',
+  ].filter(Boolean);
+  const completion = await openai.chat.completions.create({
+    model: models().llm,
+    temperature: 0.6,
+    max_tokens: 500,
+    response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: directorySystem(language, field) }, { role: 'user', content: lines.join('\n') }],
+  });
+  let parsed = null;
+  try {
+    parsed = JSON.parse(completion?.choices?.[0]?.message?.content || '{}');
+  } catch (_err) {
+    throw new VoiceMenuError(502, 'invalid_options', "L'IA a renvoyé une réponse illisible. Réessayez.");
+  }
+  const options = normalizeDirectoryOptions(parsed);
+  if (options.length === 0) throw new VoiceMenuError(502, 'empty_options', "L'IA n'a proposé aucune formulation. Réessayez.");
+  await chargeTokens({
+    companyId,
+    usageId: `directory-suggest-${crypto.randomUUID()}`,
+    tokensUsed: TOKEN_COST_SUGGEST,
+    tool: 'directory-suggest',
+    meta: { field, model: models().llm },
+  });
+  return { options, tokensCharged: TOKEN_COST_SUGGEST };
+}
+
 module.exports = {
+  DIRECTORY_FIELDS,
+  normalizeDirectoryOptions,
+  proposeDirectoryOptions,
   TOKEN_COST_ACTION_PLAN,
   PLAN_MODELS,
   PLAN_MAX,

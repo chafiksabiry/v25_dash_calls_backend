@@ -444,3 +444,26 @@ describe('langue des textes de l’entreprise (fr, en, es, ar)', () => {
     expect(bad.statusCode).toBe(400);
   });
 });
+
+describe('POST /directory-suggest', () => {
+  const body = { companyId: 'c1', field: 'absent', role: 'Avocate associée', kind: 'colleague', language: 'fr' };
+  beforeEach(() => {
+    mockFetch();
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ options: ['Prendre un message.', 'Prendre un message.', 'Proposer un collègue.', { text: 'Donner son mobile.' }, 'Quatrième écartée'] }) } }] });
+  });
+
+  test('propose jusqu’à 3 formulations distinctes et débite directory-suggest-', async () => {
+    const res = makeRes();
+    await controller.directorySuggest(userReq(body), res);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.options).toEqual(['Prendre un message.', 'Proposer un collègue.', 'Donner son mobile.']);
+    expect(JSON.parse(chargeCalls()[0][1].body)).toMatchObject({ companyId: 'c1', tool: 'directory-suggest' });
+  });
+
+  test('champ inconnu refusé, sans appel à l’IA', async () => {
+    const res = makeRes();
+    await controller.directorySuggest(userReq({ ...body, field: 'autre' }), res);
+    expect(res.statusCode).toBe(400);
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+});
