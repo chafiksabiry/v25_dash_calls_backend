@@ -126,6 +126,31 @@ async function actionPlan(req, res) {
   }
 }
 
+/** Propositions de l'IA pour un champ libre de l'annuaire (propositions seulement : rien n'est enregistré ici). */
+async function directorySuggest(req, res) {
+  const body = req.body || {};
+  if (!(await checkCompany(req, res, body.companyId))) return;
+  if (!Object.keys(ai.DIRECTORY_FIELDS).includes(body.field)) return fail(res, 400, 'invalid_field', "Le champ doit être 'routing', 'absent' ou 'priority'.");
+  const language = body.language === undefined ? 'fr' : body.language;
+  if (typeof language !== 'string' || !LANGUAGE_RE.test(language)) return fail(res, 400, 'invalid_language', 'Langue invalide.');
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  try {
+    const data = await ai.proposeDirectoryOptions({
+      companyId: body.companyId,
+      field: body.field,
+      language,
+      companyName: text(body.companyName, 120),
+      personName: text(body.personName, 120),
+      role: text(body.role, 120),
+      kind: text(body.kind, 30),
+      current: text(body.current, 400),
+    });
+    return res.json({ success: true, data });
+  } catch (err) {
+    return handleError(res, err, 'directory-suggest');
+  }
+}
+
 /** Jeton de service HS256 (scope voicemail-analyze, expiration obligatoire) — pas un jeton utilisateur. */
 function authenticateService(req, res, next) {
   const secret = process.env.JWT_SECRET;
@@ -172,4 +197,4 @@ async function analyzeVoicemail(req, res) {
   }
 }
 
-module.exports = { suggest, tts, actionPlan, authenticateService, analyzeVoicemail, resetRateLimit, SERVICE_SCOPE, TTS_LIMIT };
+module.exports = { suggest, tts, actionPlan, directorySuggest, authenticateService, analyzeVoicemail, resetRateLimit, SERVICE_SCOPE, TTS_LIMIT };

@@ -8,6 +8,7 @@ const router = express.Router();
 router.post('/suggest', authenticateUser, controller.suggest);
 router.post('/tts', authenticateUser, controller.tts);
 router.post('/action-plan', authenticateUser, controller.actionPlan);
+router.post('/directory-suggest', authenticateUser, controller.directorySuggest);
 
 // Appelée par l'orchestrateur (jeton de service). Le corps brut n'est parsé que sur CETTE route
 // (le express.json() global reste limité à 100 ko).
