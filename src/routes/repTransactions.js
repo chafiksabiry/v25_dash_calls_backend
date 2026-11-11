@@ -10,6 +10,8 @@
 const express = require("express");
 const { repPayouts } = require("../controllers/callsAnalytics");
 
+const access = require("../middleware/callsAccess");
+
 const router = express.Router();
 
 /**
@@ -20,6 +22,6 @@ const router = express.Router();
  *   gigId  — optional, "all" or omitted = whole company
  *   status — "validated" | "refused" | "all" (default: "all")
  */
-router.get("/company/:companyId", repPayouts);
+router.get("/company/:companyId", access.compatAuth, access.guardCompanyParam(), repPayouts);
 
 module.exports = router;
