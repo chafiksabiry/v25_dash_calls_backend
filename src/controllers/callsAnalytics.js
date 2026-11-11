@@ -16,6 +16,7 @@
 
 const mongoose = require("mongoose");
 const { Call } = require("../models/Call");
+const { computeOperationMeasures } = require("../services/operationMeasures");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mongo expression: derive `callOutcome` for calls that don't have one yet.
@@ -333,6 +334,21 @@ exports.overview = async (req, res) => {
                 fraud: {
                   $sum: { $cond: [{ $eq: [{ $ifNull: ["$flags.fraud", false] }, true] }, 1, 0] }
                 },
+                // Flagged calls the company has not confirmed yet ("à examiner").
+                fraudToReview: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: [{ $ifNull: ["$flags.fraud", false] }, true] },
+                          { $ne: [{ $ifNull: ["$fraudReview.confirmed", false] }, true] }
+                        ]
+                      },
+                      1,
+                      0
+                    ]
+                  }
+                },
                 voicemail: {
                   $sum: { $cond: [{ $eq: ["$_outcome", "voicemail"] }, 1, 0] }
                 },
@@ -408,6 +424,7 @@ exports.overview = async (req, res) => {
       total: 0,
       serious: 0,
       fraud: 0,
+      fraudToReview: 0,
       voicemail: 0,
       unreachable: 0,
       sumDurationSerious: 0
@@ -435,6 +452,7 @@ exports.overview = async (req, res) => {
         total: totals.total,
         serious: totals.serious,
         fraud: totals.fraud,
+        fraudToReview: totals.fraudToReview ?? 0,
         voicemail: totals.voicemail,
         unreachable: totals.unreachable,
         avgDuration
@@ -621,7 +639,9 @@ exports.reps = async (req, res) => {
           sumScore: { $sum: { $ifNull: ["$ai_call_score.overall.score", 0] } },
           scoredCount: {
             $sum: { $cond: [{ $gt: [{ $ifNull: ["$ai_call_score.overall.score", 0] }, 0] }, 1, 0] }
-          }
+          },
+          // Appels pris depuis le portail du centre : le nom de la personne est porté par l'appel.
+          handledName: { $max: "$handledBy.name" }
         }
       },
       {
@@ -637,7 +657,7 @@ exports.reps = async (req, res) => {
         $project: {
           _id: 0,
           userId: "$_id",
-          name: { $ifNull: ["$user.name", "Rep"] },
+          name: { $ifNull: ["$user.name", "$user.fullName", "$handledName", "Rep"] },
           agentId: 1,
           total: 1,
           attended: 1,
@@ -746,9 +766,18 @@ exports.recent = async (req, res) => {
           aiVoiceEnabled: { $ifNull: ["$aiVoice.enabled", false] },
           repName: {
             $ifNull: [
+              "$handledBy.name",
               "$user.name",
+              "$user.fullName",
               "$agentDoc.personalInfo.name",
-              null
+              // Appel entrant que personne n'a pris : répondeur ou sonnerie sans réponse.
+              {
+                $cond: [
+                  { $eq: ["$source", "center_portal"] },
+                  { $cond: [{ $eq: ["$_outcome", "voicemail"] }, "Répondeur", "Non décroché"] },
+                  null
+                ]
+              }
             ]
           },
           leadName: {
@@ -769,7 +798,33 @@ exports.recent = async (req, res) => {
             }
           },
           to: 1,
-          from: 1
+          from: 1,
+          source: 1,
+          direction: 1,
+          isTest: { $ifNull: ["$isTest", false] }
+        }
+      },
+      {
+        // Sans lead (appels du portail du centre) : l'interlocuteur est le numéro appelant (entrant) ou appelé (sortant).
+        $addFields: {
+          leadName: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ["$leadName", ""] },
+                  { $eq: ["$source", "center_portal"] }
+                ]
+              },
+              {
+                $cond: [
+                  { $regexMatch: { input: { $toLower: { $ifNull: ["$direction", ""] } }, regex: "^inbound" } },
+                  { $ifNull: ["$from", "$to"] },
+                  { $ifNull: ["$to", "$from"] }
+                ]
+              },
+              "$leadName"
+            ]
+          }
         }
       }
     ];
@@ -1101,6 +1156,110 @@ exports.callbacks = async (req, res) => {
     });
   } catch (err) {
     console.error("Error in analytics/callbacks:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/calls/company/:companyId/analytics/operation-measures?gigId=&from=&to=
+//
+//  Indicateurs de pilotage d'une opération (centre d'appels) calculés depuis ses appels : activité, commercial,
+//  qualité, base de contacts et équipe. Voir services/operationMeasures.js pour les formules.
+// ─────────────────────────────────────────────────────────────────────────────
+const UNREACHED = ["no_answer", "busy", "voicemail", "wrong_number"];
+const INTERESTED = ["argued_interested", "appointment", "callback_requested", "transaction"];
+const REFUSED = ["refusal", "not_interested", "already_equipped"];
+
+exports.operationMeasures = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    if (!validateCompanyId(companyId, res)) return;
+    const range = parseRange(req);
+    const match = buildCompanyMatch(companyId, { gigId: range.gigId, from: range.from, to: range.to });
+    const dur = { $ifNull: ["$duration", 0] };
+    const isAnswered = { $not: [{ $in: ["$_outcome", UNREACHED] }] };
+    const count = (cond) => ({ $sum: { $cond: [cond, 1, 0] } });
+    const scriptScore = { $ifNull: ["$ai_call_score.Script adherence.score", "$ai_call_score.Script coherence.score"] };
+    const sentimentScore = "$ai_call_score.Sentiment analysis.score";
+
+    const [agg] = await Call.aggregate([
+      { $match: match },
+      { $addFields: { _outcome: derivedOutcomeExpr() } },
+      {
+        $facet: {
+          totals: [
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 },
+                answered: count(isAnswered),
+                transactions: count({ $eq: ["$_outcome", "transaction"] }),
+                appointments: count({ $or: [{ $eq: ["$_outcome", "appointment"] }, { $ne: [{ $ifNull: ["$appointmentAt", null] }, null] }] }),
+                callbacks: count({ $or: [{ $eq: ["$_outcome", "callback_requested"] }, { $ne: [{ $ifNull: ["$callbackAt", null] }, null] }] }),
+                interested: count({ $in: ["$_outcome", INTERESTED] }),
+                refused: count({ $in: ["$_outcome", REFUSED] }),
+                voicemail: count({ $eq: ["$_outcome", "voicemail"] }),
+                wrongNumber: count({ $eq: ["$_outcome", "wrong_number"] }),
+                fraud: count({ $eq: [{ $ifNull: ["$flags.fraud", false] }, true] }),
+                scored: count({ $eq: ["$ai_call_status", "scored"] }),
+                sumDuration: { $sum: dur },
+                sumAnsweredDuration: { $sum: { $cond: [{ $and: [isAnswered, { $gt: [dur, 0] }] }, dur, 0] } },
+                answeredWithDuration: count({ $and: [isAnswered, { $gt: [dur, 0] }] }),
+                billedMinutes: { $sum: { $ceil: { $divide: [dur, 60] } } },
+                qualitySum: { $sum: { $ifNull: ["$quality_score", 0] } },
+                qualityN: count({ $ne: [{ $ifNull: ["$quality_score", null] }, null] }),
+                scriptSum: { $sum: { $ifNull: [scriptScore, 0] } },
+                scriptN: count({ $ne: [scriptScore, null] }),
+                sentimentSum: { $sum: { $ifNull: [sentimentScore, 0] } },
+                sentimentN: count({ $ne: [sentimentScore, null] }),
+              },
+            },
+          ],
+          leads: [
+            { $match: { lead: { $ne: null } } },
+            { $group: { _id: "$lead", calls: { $sum: 1 }, qualified: { $max: { $cond: [{ $in: ["$_outcome", INTERESTED] }, 1, 0] } } } },
+            { $group: { _id: null, leads: { $sum: 1 }, attempts: { $sum: "$calls" }, qualifiedLeads: { $sum: "$qualified" } } },
+          ],
+          agentHours: [
+            { $match: { agent: { $ne: null } } },
+            { $group: { _id: { agent: "$agent", hour: { $dateToString: { format: "%Y-%m-%dT%H", date: { $ifNull: ["$startTime", "$createdAt"] } } } } } },
+            { $count: "agentHours" },
+          ],
+          agents: [
+            { $match: { agent: { $ne: null } } },
+            {
+              $group: {
+                _id: "$agent",
+                qualitySum: { $sum: { $ifNull: ["$quality_score", 0] } },
+                qualityN: count({ $ne: [{ $ifNull: ["$quality_score", null] }, null] }),
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const t = (agg.totals && agg.totals[0]) || {};
+    const l = (agg.leads && agg.leads[0]) || {};
+    const facts = {
+      ...t,
+      leads: l.leads || 0,
+      attempts: l.attempts || 0,
+      qualifiedLeads: l.qualifiedLeads || 0,
+      agentHours: (agg.agentHours && agg.agentHours[0] && agg.agentHours[0].agentHours) || 0,
+      agents: agg.agents || [],
+    };
+    const days = Math.max(1, (range.to.getTime() - range.from.getTime()) / 86400000);
+    res.json({
+      success: true,
+      range: { from: range.from, to: range.to },
+      days: Math.round(days * 10) / 10,
+      gigId: range.gigId && range.gigId !== "all" ? range.gigId : null,
+      sample: { calls: facts.total || 0, answered: facts.answered || 0 },
+      measures: computeOperationMeasures(facts, days),
+    });
+  } catch (err) {
+    console.error("Error in analytics/operation-measures:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 };

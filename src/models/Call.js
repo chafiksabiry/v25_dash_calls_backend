@@ -17,8 +17,19 @@ const callSchema = new mongoose.Schema({
   agent: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Agent",
-    required: true,
+    // Un appel écrit par le portail du centre (test, pris par un membre, ou non décroché) n'a pas d'agent HARX.
+    required: function () { return this.source !== 'center_portal' && !this.isTest && !(this.handledBy && this.handledBy.userId); },
   },
+  // Appels pris depuis le portail du centre (membre ou agent) ou appels de test : pas forcément un « rep » HARX.
+  handledBy: {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: undefined },
+    name: { type: String, default: undefined },
+    role: { type: String, enum: ["member", "agent"], default: undefined },
+  },
+  isTest: { type: Boolean, default: false, index: true },
+  /** Provenance de l'enregistrement : `center_portal` = écrit par le portail Call Centre. */
+  source: { type: String, default: null },
+
   lead: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Lead",
@@ -416,6 +427,20 @@ const callSchema = new mongoose.Schema({
     serious:             { type: Boolean, default: false, index: true },
     transactionDetected: { type: Boolean, default: false },
     refusalDetected:     { type: Boolean, default: false },
+  },
+
+  /** Audit trail of the company's review of an AI fraud flag: overturned as a
+   *  false positive, or confirmed as real fraud. Overturning clears `flags.fraud` (so the call stops
+   *  counting toward the rep's fraud total / blacklist-risk warnings) but
+   *  keeps this record so the original AI call and the override decision
+   *  are never silently lost. */
+  fraudReview: {
+    overturned:  { type: Boolean, default: false },
+    /** The reviewer checked the call and confirmed the AI's fraud verdict. */
+    confirmed:   { type: Boolean, default: false },
+    reviewedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    reviewedAt:  { type: Date, default: null },
+    reason:      { type: String, default: null },
   },
 
   /** Workflow validations — harmonised with v25_dashboard_backend so both

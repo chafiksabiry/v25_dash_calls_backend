@@ -6,6 +6,7 @@ const twilioService = require('../services/integrations/twilio');
 const twilio = require('twilio');
 const fetch = require('node-fetch');
 const mongoose = require('mongoose');
+const { buildCenterCall } = require('../utils/centerCall');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
@@ -25,7 +26,10 @@ const {
   buildAgentFraudStatsFromCalls,
   buildCompanyFraudMatchQuery,
   buildAgentFraudMatchQuery,
+  isCallFraudDetected,
+  fraudReviewState,
 } = require('../utils/fraudStats');
+const fraudReviewController = require('./fraudReview');
 const { isCallVoicemail, isVoicemailFromFeedback, hasRealProspectExchange, MIN_HUMAN_EXCHANGE_SECONDS } = require('../utils/voicemailDetection');
 const {
   dispositionFromCallSignals,
@@ -50,6 +54,7 @@ const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingba
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
 const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 const REPSCREATIONWIZARD_API_URL = (process.env.REPSCREATIONWIZARD_API_URL || 'https://v25repscreationwizardbackend-production.up.railway.app/api').replace(/\/$/, '');
+const { notifyCompanyOfFraud } = require('../services/companyNotificationClient');
 const COMPORCHESTRATOR_API_URL = (process.env.COMPORCHESTRATOR_API_URL || 'https://v25comporchestratorback-production.up.railway.app/api').replace(/\/$/, '');
 
 /**
@@ -509,7 +514,7 @@ exports.getCallsByAgent = async (req, res) => {
       });
     }
 
-    const calls = await Call.find({ agent: agentId })
+    const calls = await Call.find({ agent: agentId, ...(req.callsCompanyScope ? { companyId: req.callsCompanyScope } : {}) })
       .populate('agent')
       .populate({
         path: 'lead',
@@ -585,6 +590,9 @@ exports.getAgentFraudStats = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
+
+exports.overturnCallFraud = fraudReviewController.overturnCallFraud;
+exports.getCompanyFraudCalls = fraudReviewController.getCompanyFraudCalls;
 
 // @desc    Get single call
 // @route   GET /api/calls/:id
@@ -1164,6 +1172,41 @@ exports.getTwilioToken = async (req, res) => {
   }
 };
 
+/**
+ * POST /calls/center-call : enregistre dans le journal un appel pris (ou passé) depuis le portail du centre par un membre
+ * ou un agent, ou un appel de test. Pas d'analyse IA ni de commission : ce ne sont pas des appels de rep HARX.
+ * Idempotent sur le SID de l'appel.
+ */
+exports.saveCenterCall = async (req, res) => {
+  let doc;
+  try {
+    doc = buildCenterCall(req.body);
+  } catch (e) {
+    return res.status(400).json({ success: false, message: e.message });
+  }
+  try {
+    const { sid, ...fields } = doc;
+    const saved = await Call.findOneAndUpdate({ sid }, { $set: fields, $setOnInsert: { sid } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    res.status(200).json({ success: true, data: saved });
+    // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
+    require('../services/callEndedNotifier').notifyCallEndedInBackground(saved);
+  } catch (error) {
+    console.error('Error in saveCenterCall:', error);
+    res.status(500).json({ success: false, message: 'Failed to save center call', error: error.message });
+  }
+};
+
+exports.attachCallRecording = async (req, res) => {
+  try {
+    const { attachRecording } = require('../utils/callRecording');
+    const out = await attachRecording({ Call, archive: (url) => twilioService.fetchTwilioRecording(url, null) }, req.body);
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error in attachCallRecording:', error);
+    return res.status(500).json({ success: false, message: 'Failed to attach recording' });
+  }
+};
+
 exports.saveCallToDB = async (req, res) => {
   const {
     CallSid,
@@ -1255,6 +1298,8 @@ exports.saveCallToDB = async (req, res) => {
     }
 
     res.json(callDetails);
+    // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
+    if (callDetails && callDetails._id) require('../services/callEndedNotifier').notifyCallEndedInBackground(callDetails);
   } catch (error) {
     console.error('Error in saveCallToDB controller:', error);
     res.status(500).json({
@@ -2646,6 +2691,11 @@ exports.analyzeCall = async (req, res) => {
       durationSec: callDurationSec,
       scores,
     });
+    // The company's review wins over the AI verdict, also when the call is analysed again.
+    const fraudReviewVerdict = fraudReviewState(call);
+    if (fraudReviewVerdict === 'overturned' && selfCallFraud.isFraud) {
+      selfCallFraud = { isFraud: false, voiceAnalysis: selfCallFraud.voiceAnalysis || voiceAnalysis };
+    }
     if (selfCallFraud.isFraud) {
       console.warn(
         `🚨 [CallController] Self-call voice fraud on call ${id}: ${selfCallFraud.reason} (confidence=${selfCallFraud.confidence})`
@@ -2691,8 +2741,10 @@ exports.analyzeCall = async (req, res) => {
     const scriptCoherence = scores["Script coherence"]?.score || 0;
     const argumentationScore = scores["Argumentation"]?.score || 0;
     const fraudScore = readFraudScore(scores);
-    const isFraudDetected = isNonProductiveCall
+    const isFraudDetected = isNonProductiveCall || fraudReviewVerdict === 'overturned'
       ? false
+      : fraudReviewVerdict === 'confirmed'
+      ? true
       : isFraudFromScores(scores, selfCallFraud);
     let transactionDetected = isFraudDetected ? false : (scores.transaction_detected || false);
     let refusalDetected = scores.refusal_detected || false;
@@ -2750,6 +2802,7 @@ exports.analyzeCall = async (req, res) => {
       duration > 30;
 
     if (isFraudDetected) {
+      void notifyCompanyOfFraud({ call, callId: id, fraudScore });
       transactionDetected = false;
       scores.transaction_detected = false;
       if (scores['Fraud detection'] && typeof scores['Fraud detection'] === 'object') {
