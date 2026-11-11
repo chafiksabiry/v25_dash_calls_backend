@@ -400,6 +400,11 @@ Reply with a single JSON object: { "actions": [ { "model", "title", "note", "con
 The actions must differ from one another.`;
 }
 
+/** E-mail reçu (canal « email ») : même plan d'actions, avec en plus un résumé et une urgence. */
+const EMAIL_PLAN_NOTE_FR = `\nLe contenu à analyser est un E-MAIL reçu par l'entreprise (et non un message vocal) : « Appelant » désigne l'expéditeur. Ajoute à l'objet JSON deux champs : "summary" (résumé en une ou deux phrases, 280 caractères max) et "urgency" valant exactement low, medium ou high.`;
+const EMAIL_PLAN_NOTE = (label) => `\nThe content to analyse is an E-MAIL received by the company (not a voice message): "caller" means the sender. Add two fields to the JSON object: "summary" (one or two sentences written in ${label}, 280 characters max) and "urgency" being exactly low, medium or high.`;
+const planSystemFor = (language, channel) => planSystem(language) + (channel === 'email' ? (baseLanguage(language) === 'fr' ? EMAIL_PLAN_NOTE_FR : EMAIL_PLAN_NOTE(languageLabel(language))) : '');
+
 function normalizePlan(raw) {
   const list = Array.isArray(raw?.actions) ? raw.actions : [];
   const seen = new Set();
@@ -425,7 +430,7 @@ function normalizePlan(raw) {
   return out;
 }
 
-async function proposeActionPlan({ companyId, summary, transcript, intent, urgency, callerName, callbackNumber, language = 'fr' }) {
+async function proposeActionPlan({ companyId, summary, transcript, intent, urgency, callerName, callbackNumber, language = 'fr', channel = 'voicemail' }) {
   const openai = getOpenAI();
   await assertSufficientBalance(companyId, TOKEN_COST_ACTION_PLAN);
   const lines = [
@@ -440,7 +445,7 @@ async function proposeActionPlan({ companyId, summary, transcript, intent, urgen
     temperature: 0.3,
     max_tokens: 700,
     response_format: { type: 'json_object' },
-    messages: [{ role: 'system', content: planSystem(language) }, { role: 'user', content: lines.join('\n') }],
+    messages: [{ role: 'system', content: planSystemFor(language, channel) }, { role: 'user', content: lines.join('\n') }],
   });
   let parsed = null;
   try {
@@ -457,7 +462,8 @@ async function proposeActionPlan({ companyId, summary, transcript, intent, urgen
     tool: 'voice-menu-action-plan',
     meta: { actions: actions.length, model: models().llm },
   });
-  return { actions, tokensCharged: TOKEN_COST_ACTION_PLAN };
+  const extra = channel === 'email' ? { summary: clip(parsed?.summary, 280), urgency: URGENCIES.includes(parsed?.urgency) ? parsed.urgency : 'medium' } : {};
+  return { actions, ...extra, tokensCharged: TOKEN_COST_ACTION_PLAN };
 }
 
 /** Champs libres d'une fiche d'annuaire pour lesquels l'IA propose des formulations. */

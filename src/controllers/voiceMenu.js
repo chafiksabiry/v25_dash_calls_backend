@@ -106,6 +106,8 @@ async function actionPlan(req, res) {
   const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
   const language = body.language === undefined ? 'fr' : body.language;
   if (typeof language !== 'string' || !LANGUAGE_RE.test(language)) return fail(res, 400, 'invalid_language', 'Langue invalide.');
+  const channel = body.channel === undefined ? 'voicemail' : body.channel;
+  if (channel !== 'voicemail' && channel !== 'email') return fail(res, 400, 'invalid_channel', "Le canal doit être 'voicemail' ou 'email'.");
   const summary = text(body.summary, 2000);
   const transcript = text(body.transcript, 20000);
   if (!summary.trim() && !transcript.trim()) return fail(res, 400, 'invalid_source', "Le résumé ou la transcription du message est nécessaire pour proposer un plan d'action.");
@@ -119,6 +121,7 @@ async function actionPlan(req, res) {
       callerName: text(body.callerName, 80),
       callbackNumber: text(body.callbackNumber, 30),
       language,
+      channel,
     });
     return res.json({ success: true, data });
   } catch (err) {
