@@ -302,6 +302,33 @@ describe('POST /action-plan', () => {
     expect(JSON.parse(init.body)).toMatchObject({ companyId: 'c1', tokensUsed: 1000, tool: 'voice-menu-action-plan' });
   });
 
+  test('canal e-mail : consigne dédiée, résumé et urgence renvoyés (urgence inconnue => medium)', async () => {
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...plan, summary: 'Demande de devis.', urgency: 'high' }) } }] });
+    const res = makeRes();
+    await controller.actionPlan(userReq({ ...body, channel: 'email' }), res);
+    expect(res.body.data.summary).toBe('Demande de devis.');
+    expect(res.body.data.urgency).toBe('high');
+    expect(mockChat.mock.calls[0][0].messages[0].content).toMatch(/E-MAIL/);
+    mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...plan, summary: 'x', urgency: 'bof' }) } }] });
+    const res2 = makeRes();
+    await controller.actionPlan(userReq({ ...body, channel: 'email' }), res2);
+    expect(res2.body.data.urgency).toBe('medium');
+  });
+
+  test('le canal par défaut (message vocal) ne change pas : pas de résumé ni d’urgence ajoutés', async () => {
+    const res = makeRes();
+    await controller.actionPlan(userReq(body), res);
+    expect(res.body.data.summary).toBeUndefined();
+    expect(mockChat.mock.calls[0][0].messages[0].content).not.toMatch(/E-MAIL/);
+  });
+
+  test('canal inconnu => 400 sans appel à l’IA', async () => {
+    const res = makeRes();
+    await controller.actionPlan(userReq({ ...body, channel: 'sms' }), res);
+    expect(res.statusCode).toBe(400);
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+
   test('au plus 5 actions', async () => {
     const many = { actions: Array.from({ length: 9 }, (_, i) => ({ model: 'transfer', title: `Action ${i}`, note: '', contactName: null, dueInHours: 999 })) };
     mockChat.mockResolvedValue({ choices: [{ message: { content: JSON.stringify(many) } }] });
