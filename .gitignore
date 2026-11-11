@@ -3,3 +3,5 @@ node_modules/
 recordings/
 # Environment variables
 .env
+
+/node_modules

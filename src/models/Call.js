@@ -17,8 +17,19 @@ const callSchema = new mongoose.Schema({
   agent: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Agent",
-    required: true,
+    // Un appel écrit par le portail du centre (test, pris par un membre, ou non décroché) n'a pas d'agent HARX.
+    required: function () { return this.source !== 'center_portal' && !this.isTest && !(this.handledBy && this.handledBy.userId); },
   },
+  // Appels pris depuis le portail du centre (membre ou agent) ou appels de test : pas forcément un « rep » HARX.
+  handledBy: {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: undefined },
+    name: { type: String, default: undefined },
+    role: { type: String, enum: ["member", "agent"], default: undefined },
+  },
+  isTest: { type: Boolean, default: false, index: true },
+  /** Provenance de l'enregistrement : `center_portal` = écrit par le portail Call Centre. */
+  source: { type: String, default: null },
+
   lead: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Lead",
@@ -170,6 +181,63 @@ const callSchema = new mongoose.Schema({
       feedback_en: { type: String },
       passed:   { type: Boolean, default: false }
     },
+    // HARX prospect ladder (remplace les libellés legacy ci-dessus pour les nouvelles analyses)
+    called_unreachable: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_voicemail: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_wrong_number: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_callback: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    called_rdv: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    argued_rdv: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    argued_declined: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
+    argued_done: {
+      score: { type: Number, min: 0, max: 100 },
+      feedback: { type: String },
+      feedback_fr: { type: String },
+      feedback_en: { type: String },
+      passed: { type: Boolean, default: false }
+    },
     "overall": {
       score:    { type: Number, min: 0, max: 100 },
       feedback: { type: String },
@@ -235,7 +303,7 @@ const callSchema = new mongoose.Schema({
 
   // ──────────────────────────────────────────────────────────────────────────
   //  Unified call-analysis layer (powers the company OperationsDashboard:
-  //  Vue globale / Appels / Résultats / Équipe + the Leads "Rappels"
+  //  Vue globale / transactions /Résultats / Équipe + the Leads "Rappels"
   //  block). All fields below are denormalised at analyze-time so dashboards
   //  can group/filter without re-scanning transcripts or nested AI rubrics.
   // ──────────────────────────────────────────────────────────────────────────
@@ -258,24 +326,27 @@ const callSchema = new mongoose.Schema({
       'busy',                // occupé
       'wrong_number',        // numéro invalide
       'fraud',               // fraude détectée
-      'too_short',           // <X sec, indécidable
-      'connected_no_sale',   // connecté sans issue claire (fallback)
+      'too_short',           // ≤30s, indécidable (pas d'analyse IA)
+      'connected_no_sale',   // legacy connecté sans issue claire
+      'not_argumented',      // >30s analysé : connecté mais non argumenté (invalide)
     ],
     default: null,
     index: true,
   },
   /** Who set callOutcome. "ai" by default, "rep" if a rep overrode it from
-   *  the rep frontend, "system" for deterministic non-AI paths (auto-refus,
-   *  voicemail detection, wrong-number from Twilio status, ...). */
+   *  the rep frontend, "company" when the company signs a sale, "system" for
+   *  deterministic non-AI paths (auto-refus, voicemail, wrong-number, ...). */
   callOutcomeSource: {
     type: String,
-    enum: ['ai', 'rep', 'system'],
+    enum: ['ai', 'rep', 'company', 'system'],
     default: null,
   },
   /** Twilio error code returned when status is "failed" (e.g. 21211 = invalid
    *  number, 21214 = unreachable, 13224 = cannot dial). Used alongside
    *  status="failed" to classify the call as wrong_number. */
   twilioErrorCode: { type: Number, default: null, index: true },
+  /** Twilio AMD AnsweredBy: human, machine_start, machine_end_beep, fax, unknown. */
+  answeredBy: { type: String, default: null },
 
   /** Scheduled callback if the lead asked to be re-called. Drives the
    *  Leads view "À rappeler aujourd'hui / Cette semaine" KPI. */
@@ -289,6 +360,8 @@ const callSchema = new mongoose.Schema({
   /** OpenAI Realtime outbound voice session metadata. */
   aiVoice: {
     enabled: { type: Boolean, default: false },
+    /** Discriminator for UI badges (`voicebot`). */
+    source: { type: String, default: null },
     voice: { type: String, default: null },
     model: { type: String, default: null },
   },
@@ -297,9 +370,34 @@ const callSchema = new mongoose.Schema({
    *  "Analyse en cours" state instead of inferring from validByAI == null. */
   ai_call_status: {
     type: String,
-    enum: ['pending', 'processing', 'scored', 'auto_refused', 'error'],
+    enum: ['pending', 'processing', 'scored', 'auto_refused', 'too_short', 'error'],
     default: 'pending',
     index: true,
+  },
+  /**
+   * Disposition suggérée par l'IA après analyse du transcript.
+   * Correspond aux 9 statuts HARX de la liste convenue.
+   */
+  suggestedDisposition: {
+    type: String,
+    enum: ['to_call', 'called_unreachable', 'called_voicemail', 'called_wrong_number',
+           'called_callback', 'called_rdv', 'not_argumented', 'argued_rdv', 'argued_declined',
+           'argued_done', null],
+    default: null,
+    index: true,
+  },
+
+  /** Rep / confirmer calibrates the AI overall score (thumbs up/down + gap note). */
+  scoreCalibration: {
+    verdict: {
+      type: String,
+      enum: ['up', 'down', null],
+      default: null,
+    },
+    explanation: { type: String, default: null },
+    calibratedAt: { type: Date, default: null },
+    calibratedByAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent', default: null },
+    calibratedByCompanyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
   },
   /** Rep signale une analyse bloquée — alerte la company en temps réel. */
   analysisCompanyAlert: {
@@ -326,6 +424,20 @@ const callSchema = new mongoose.Schema({
     serious:             { type: Boolean, default: false, index: true },
     transactionDetected: { type: Boolean, default: false },
     refusalDetected:     { type: Boolean, default: false },
+  },
+
+  /** Audit trail of the company's review of an AI fraud flag: overturned as a
+   *  false positive, or confirmed as real fraud. Overturning clears `flags.fraud` (so the call stops
+   *  counting toward the rep's fraud total / blacklist-risk warnings) but
+   *  keeps this record so the original AI call and the override decision
+   *  are never silently lost. */
+  fraudReview: {
+    overturned:  { type: Boolean, default: false },
+    /** The reviewer checked the call and confirmed the AI's fraud verdict. */
+    confirmed:   { type: Boolean, default: false },
+    reviewedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    reviewedAt:  { type: Date, default: null },
+    reason:      { type: String, default: null },
   },
 
   /** Workflow validations — harmonised with v25_dashboard_backend so both

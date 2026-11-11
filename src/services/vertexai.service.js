@@ -12,6 +12,7 @@ const { generateCallScoringPrompt } = require('../VertexPrompt/callScoringPrompt
 const { generateAudioSummaryPrompt } = require('../VertexPrompt/audioSummaryPrompt');
 const { generateSelfCallVoicePrompt } = require('../VertexPrompt/selfCallVoicePrompt');
 const { normalizeVoiceAnalysis } = require('../utils/selfCallVoice');
+const { correctScoresDuration } = require('../utils/correctSummaryDuration');
 const { Storage } = require('@google-cloud/storage');
 const axios = require('axios'); // Preferring axios if available or node-fetch
 const fetch = require('node-fetch');
@@ -322,17 +323,20 @@ ${transcript}`;
     }
   }
 
-  async scoreCall(transcript, gigScript = "") {
+  async scoreCall(transcript, gigScript = "", options = {}) {
     try {
       const gModel = await getJsonGenerativeModel();
-      const promptText = generateCallScoringPrompt(gigScript);
+      const promptText = generateCallScoringPrompt(gigScript, {
+        durationSec: options.durationSec,
+      });
       const prompt = `${promptText}\n\nTranscript:\n${transcript}`;
 
       console.log('🧠 [VertexAIService] Sending transcript for surgical scoring using Knowledge Base standardized prompt...');
       const result = await gModel.generateContent(prompt);
       const responseText = result.response.candidates[0].content.parts[0].text;
       const scores = this.parseJsonResponse(responseText);
-      
+      correctScoresDuration(scores, options.durationSec);
+
       console.log('✅ [VertexAIService] Precision scores generated.');
       return scores;
     } catch (error) {
@@ -477,10 +481,17 @@ ${fullTranscript}`;
     }
   }
 
-  async transcribeAudioBuffer(audioBuffer) {
+  async transcribeAudioBuffer(audioBuffer, options = {}) {
     try {
       await initializeServices();
-      const prompt = generateAudioTranscriptionPrompt();
+      const durationSec = Number(options.durationSec) > 0 ? Number(options.durationSec) : undefined;
+      const prompt = generateAudioTranscriptionPrompt({
+        durationSec,
+        strict: options.strict === true,
+      });
+      const durationHint = durationSec
+        ? `\nHARD LIMIT: audio ≈ ${Math.round(durationSec)}s. Do not invent more speech than that duration allows.`
+        : '';
 
       // Detect format
       let mimeType = "audio/wav";
@@ -514,7 +525,7 @@ ${fullTranscript}`;
                 "data": base64Audio
               }
             },
-            { "text": `${prompt}\nIMPORTANT: Identify speakers as "Agent" (company/rep) and "Customer" (lead) ONLY when you hear two distinct human voices. If a single voice simulates both sides of the dialogue, label ALL turns as "Agent" — never invent a Customer. Return ONLY the JSON array.` }
+            { "text": `${prompt}${durationHint}\nIdentify speakers as "Agent" and "Client" ONLY when you hear two distinct human voices. If one voice plays both sides, label ALL turns as "Agent" and set "simulated": true. Never invent a Client, a pitch, an order number, or a story. Prefer [] over invented dialogue. Return ONLY the JSON array.` }
           ]
         }],
       };
@@ -542,7 +553,7 @@ ${fullTranscript}`;
     }
   }
 
-  async transcribeAudioFromUrl(audioUrl) {
+  async transcribeAudioFromUrl(audioUrl, options = {}) {
     try {
       console.log(`🎙️ [VertexAIService] Fetching audio for transcription from: ${audioUrl}`);
       const response = await fetch(audioUrl);
@@ -551,7 +562,7 @@ ${fullTranscript}`;
       const audioBuffer = await response.buffer();
       console.log(`✅ [VertexAIService] Audio fetched (${audioBuffer.length} bytes). Starting transcription...`);
       
-      return await this.transcribeAudioBuffer(audioBuffer);
+      return await this.transcribeAudioBuffer(audioBuffer, options);
     } catch (error) {
       console.error('❌ [VertexAIService] Error in transcribeAudioFromUrl:', error);
       return [];
@@ -746,7 +757,7 @@ ${fullTranscript}`;
     }
   }
 
-  async getAIAssistance(transcription, context = []) {
+  async getAIAssistance(transcription, context = [], kbContext = '', callCategory = '') {
     try {
       console.log('🧠 [VertexAIService] getAIAssistance - Transcription:', transcription);
       await initializeServices();
@@ -754,12 +765,59 @@ ${fullTranscript}`;
       const sanitizedHistory = this.sanitizeHistory(context);
       console.log('🧠 [VertexAIService] getAIAssistance - History length:', sanitizedHistory.length);
 
+      // ENT-14 (Palier 3): a persona/rules turn defines the copilot's role.
+      // Best practices differ by call type (sales, collections, survey,
+      // welcome/service...), so the flow is derived from the GIG's category
+      // instead of assuming a sales/conversion script for every call.
+      const personaHistory = [
+        {
+          role: 'user',
+          parts: [{
+            text: `Tu es le copilote IA d'un agent (REP) pendant un appel en direct, pour ce GIG précis.
+Type de campagne (catégorie du GIG) : ${callCategory || 'non précisé'}.
+
+Adapte les meilleures pratiques d'appel au TYPE de campagne ci-dessus, par exemple :
+- Vente (Outbound/Inbound Sales, Lead Generation, Appointment Setting, Order Processing, Customer Retention) : accueil, légal/conformité, découverte des besoins, proposition de valeur, traitement des objections, conversion/closing, prise de congé.
+- Recouvrement (Collections) : accueil, légal, rappel factuel et neutre de la situation, écoute de la situation du client, proposition d'un plan/solution, obtention d'un engagement clair, prise de congé.
+- Sondage/enquête (Survey Calls, Market Research) : accueil, explication neutre de l'objectif, questions sans induire de biais ni suggérer de réponse, remerciement, prise de congé.
+- Welcome call / suivi (Welcome Calls, Follow-up Calls) : accueil chaleureux, présentation du service, vérification des besoins/questions du client, informations utiles, prise de congé.
+- Information/renseignement/support (Customer Service, Help Desk, Technical/Billing/Product Support, Complaint Resolution) : accueil, identification précise du besoin, diagnostic, réponse ou résolution claire (ou escalade si nécessaire), confirmation de la satisfaction, prise de congé.
+- Pour tout autre type non listé ou non précisé, applique les bonnes pratiques génériques d'un appel professionnel : accueil, identification claire de l'objectif de l'appel, écoute active, réponse adaptée à la demande, conclusion claire.
+
+Objectif unique : aider le REP à atteindre l'objectif propre à CET appel (vente, résolution, information, engagement de paiement, réponse au sondage, etc. selon le type de campagne ci-dessus) le plus efficacement possible — jamais à forcer une logique de vente sur un appel qui n'en est pas un.
+
+Règles :
+1. Réponds en 1 à 2 phrases maximum, actionnables immédiatement (une phrase à dire, une réponse à une objection ou une réclamation, une information précise, une question adaptée).
+2. N'utilise QUE les faits/offres/tarifs présents dans la base de connaissances fournie si elle est disponible. Si aucune information pertinente n'y figure, reste générique sur les bonnes pratiques du type d'appel — n'invente jamais un prix, une promotion ou un fait.
+3. Si rien d'utile n'est à ajouter à ce stade de la conversation, réponds exactement "NONE", sans aucun autre texte.
+4. Réponds dans la langue du client telle qu'elle apparaît dans le transcript.
+5. Adapte ta suggestion à la phase actuelle de l'appel selon le déroulé pertinent pour ce type de campagne (ex : ne propose jamais une offre commerciale ou un closing sur un appel de recouvrement, de sondage ou de support).
+Réponds simplement "Compris" pour confirmer que tu as bien intégré ces consignes.`,
+          }],
+        },
+        { role: 'model', parts: [{ text: 'Compris.' }] },
+      ];
+
+      // ENT-14: a one-time grounding turn ahead of the real conversation —
+      // the model answers it once, then both sides are kept in history so
+      // every later suggestion can draw on these real documents instead of
+      // inventing offers/facts.
+      const kbHistory = kbContext
+        ? [
+            {
+              role: 'user',
+              parts: [{ text: `Voici des extraits réels de la base de connaissances de l'entreprise, pertinents pour cet appel :\n\n${kbContext}\n\nUtilise uniquement ces informations (offres, tarifs, faits) quand elles sont pertinentes pour tes suggestions à venir — n'invente jamais une offre ou un fait qui n'y figure pas. Réponds simplement "Compris" pour confirmer.` }],
+            },
+            { role: 'model', parts: [{ text: 'Compris.' }] },
+          ]
+        : [];
+
       const chat = generativeModel.startChat({
-        history: sanitizedHistory,
+        history: [...personaHistory, ...kbHistory, ...sanitizedHistory],
       });
 
       const result = await chat.sendMessage(transcription);
-      const responseText = result.response.text();
+      const responseText = result.response.text().trim();
       console.log('✅ [VertexAIService] AI Assistance Response:', responseText.substring(0, 50) + '...');
       return responseText;
     } catch (error) {

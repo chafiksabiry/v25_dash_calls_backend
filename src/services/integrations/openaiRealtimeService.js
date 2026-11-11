@@ -44,9 +44,20 @@ class OpenAIRealtimeService {
   }
 
   on(event, fn) {
-    if (Object.prototype.hasOwnProperty.call(this.handlers, event)) {
-      this.handlers[event] = fn;
-    }
+    if (!Object.prototype.hasOwnProperty.call(this.handlers, event)) return this;
+    const prev = this.handlers[event];
+    // Chain handlers so bridge barge-in + transcript capture can coexist.
+    this.handlers[event] =
+      typeof prev === 'function'
+        ? (...args) => {
+            try {
+              prev(...args);
+            } catch (err) {
+              this.logger.warn('[OpenAIRealtime] prior handler error', event, err?.message || err);
+            }
+            return fn(...args);
+          }
+        : fn;
     return this;
   }
 
@@ -155,7 +166,9 @@ class OpenAIRealtimeService {
               type: 'server_vad',
               threshold: 0.5,
               prefix_padding_ms: 300,
-              silence_duration_ms: 400,
+              // Slightly longer silence so French replies aren't cut mid-sentence;
+              // still creates a response when the lead finishes speaking.
+              silence_duration_ms: 650,
               create_response: true,
               interrupt_response: true,
             },

@@ -8,6 +8,7 @@ const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 
 const { Call } = require('../../models/Call');
+const { dispositionFromCallSignals, syncLeadDisposition, syncLeadFollowUp, resolveFollowUpType } = require('../../utils/leadDispositionSync');
 const Transaction = require('../../models/Transaction');
 const path = require("path");
 const fetch = require('node-fetch');
@@ -103,10 +104,18 @@ const getCallDetails = async (callSid, userId) => {
       const effectiveErrorCode =
         callFils[0]?.errorCode ?? callParent.errorCode ?? null;
 
+      const child = callFils[0];
+      const childDuration = child ? parseInt(child.duration, 10) || 0 : 0;
+      const parentDuration = parseInt(callParent.duration, 10) || 0;
+      // Parent duration includes ringing ("mise en communication").
+      // Bill only the answered leg: the child call once the callee picks up.
+      // No child means a direct call whose duration is already talk time.
+      const billedDuration = child ? childDuration : parentDuration;
+
       return {
         ParentCallSid: callSid,
-        ChildCallSid: callFils[0]?.sid || null,
-        duration: callParent.duration,
+        ChildCallSid: child?.sid || null,
+        duration: billedDuration,
         from: callFils[0]?.from || callParent.from,
         to: callFils[0]?.to || callParent.to,
         status: effectiveStatus,
@@ -177,27 +186,51 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
 
     // Fetch price if possible
     let calculatedPrice = 0;
-    if (call.price !== undefined && call.price !== null) {
-      calculatedPrice = Math.abs(parseFloat(call.price)) || 0;
-    } else if (callSid) {
+    let twilioAnsweredBy = call.answeredBy || null;
+    if (callSid && (call.price === undefined || call.price === null || !twilioAnsweredBy)) {
       try {
         const credentials = await getTwilioCredentials(userId || agentId);
         if (credentials && credentials.accountSid && credentials.authToken) {
           const client = twilio(credentials.accountSid, credentials.authToken);
           const twilioCall = await client.calls(callSid).fetch();
-          if (twilioCall && twilioCall.price) {
+          if (twilioCall && twilioCall.price && (call.price === undefined || call.price === null)) {
             calculatedPrice = Math.abs(parseFloat(twilioCall.price));
+          }
+          if (twilioCall && twilioCall.answeredBy) {
+            twilioAnsweredBy = twilioCall.answeredBy;
           }
         }
       } catch (err) {
         console.warn(`⚠️ [TwilioService] Could not dynamically retrieve call price: ${err.message}`);
       }
     }
+    if (call.price !== undefined && call.price !== null) {
+      calculatedPrice = Math.abs(parseFloat(call.price)) || 0;
+    }
+
+    // Parent duration includes ringing. When a child leg exists, bill only
+    // the answered customer leg (0 if it never connected).
+    let talkDuration = parseInt(call.duration, 10) || 0;
+    try {
+      const children = await getChildCalls(callSid, userId || agentId);
+      if (children.length > 0) {
+        const child = children[0];
+        const childSeconds = parseInt(child.duration, 10);
+        const childDone = ['completed', 'busy', 'no-answer', 'failed', 'canceled'].includes(
+          String(child.status || '').toLowerCase()
+        );
+        if (Number.isFinite(childSeconds) && (childSeconds > 0 || childDone)) {
+          talkDuration = Math.max(0, childSeconds);
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️ [TwilioService] Could not read child-leg duration: ${err.message}`);
+    }
 
     // Build update object
     const update = {
       status: call.status || 'completed',
-      duration: parseInt(call.duration) || 0,
+      duration: talkDuration,
       recording_url: call.recordingUrl,
       recording_url_cloudinary: finalCloudinaryUrl,
       from: call.from,
@@ -231,6 +264,23 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
         update.validByAI = true;
         update.valid = true;
       }
+    }
+
+    if (twilioAnsweredBy) {
+      update.answeredBy = twilioAnsweredBy;
+    }
+    const machineAnswer = String(twilioAnsweredBy || '').toLowerCase();
+    const answeredByMachine = machineAnswer.startsWith('machine') || machineAnswer === 'fax';
+    if (answeredByMachine && !appointmentAt && !callbackAt) {
+      update.validByAI = false;
+      update.valid = false;
+      update.ai_call_status = 'auto_refused';
+      update.callOutcome = 'voicemail';
+      update.callOutcomeSource = isVoicemail ? 'rep' : 'system';
+      update.transcript = []; // AMD / répondeur — jamais de transcription
+      update.ai_refusal_reason = isVoicemail
+        ? 'Appel sur messagerie vocale (déclaré par le rep) — pas de transcription'
+        : `Répondeur détecté par Twilio AMD (${twilioAnsweredBy}) — pas de transcription`;
     }
 
     if (call.ChildCallSid) {
@@ -271,7 +321,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     // any failure here cannot break the saveCallToDB response.
     try {
       const targetCompanyId = result.companyId || companyId;
-      const durationSeconds = parseInt(call.duration) || 0;
+      const durationSeconds = talkDuration;
       if (targetCompanyId && durationSeconds > 0) {
         const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL
           || 'https://v25comporchestratorback-production.up.railway.app').replace(/\/$/, '');
@@ -320,17 +370,17 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
       }
     }
 
-    // ☎️  Short-circuit: calls that never reached a human (no-answer, busy,
-    // canceled, failed, or completed with zero duration) are auto-refused
-    // (`validByAI = false`). They carry no transcript / recording, so feeding
-    // them to the LLM would only waste credits and leave them stuck in
-    // "Analyse en cours" forever.
+    // ☎️  Busy / Injoignable / failed: auto-refuse, NEVER transcribe.
+    // Answered calls keep going to background analysis (literal transcript).
     const callStatus = (result.status || '').toString().toLowerCase();
     const noConnectStatuses = new Set(['no-answer', 'noanswer', 'busy', 'canceled', 'cancelled', 'failed']);
     const isUnanswered =
       noConnectStatuses.has(callStatus) ||
       // A "completed" call with no duration and no audio is also a non-connect.
-      (callStatus === 'completed' && (result.duration || 0) === 0 && !result.recording_url_cloudinary);
+      (callStatus === 'completed' &&
+        (result.duration || 0) === 0 &&
+        !result.recording_url_cloudinary &&
+        !result.recording_url);
 
     if (isUnanswered && result.validByAI == null) {
       try {
@@ -343,17 +393,27 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
           immediateOutcome = 'wrong_number';
         } else if (callStatus === 'busy') {
           immediateOutcome = 'busy';
+        } else if (
+          answeredByMachine ||
+          (callStatus === 'completed' &&
+            (result.duration || 0) === 0 &&
+            !result.recording_url_cloudinary &&
+            !result.recording_url)
+        ) {
+          // AMD / completed with no audio → Appelé – Répondeur (not Injoignable)
+          immediateOutcome = 'voicemail';
         } else {
           immediateOutcome = 'no_answer';
         }
 
         const errSuffix = resultErrCode ? `, ErrorCode: ${resultErrCode}` : '';
-        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'}${errSuffix})`;
+        const refusalReason = `Appel non décroché (status: ${result.status || 'unknown'}${errSuffix}) — pas de transcription`;
         const refused = await Call.findOneAndUpdate(
           { _id: result._id },
           {
             $set: {
               validByAI: false,
+              transcript: [],
               ai_refusal_reason: refusalReason,
               callOutcome: immediateOutcome,
               callOutcomeSource: 'system',
@@ -393,6 +453,30 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
     // same Mongoose document and the second `save()` threw a VersionError.
     // Keeping a single in-process analysis path removes both problems.
 
+    await syncLeadDisposition(leadId || result.lead, dispositionFromCallSignals({
+      callOutcome: result.callOutcome,
+      status: result.status,
+      answeredBy: result.answeredBy || twilioAnsweredBy,
+    }));
+
+    const followAt = result.appointmentAt || result.callbackAt;
+    const followType = resolveFollowUpType({
+      appointmentAt: result.appointmentAt,
+      callbackAt: result.callbackAt,
+      suggestedDisposition: dispositionFromCallSignals({
+        callOutcome: result.callOutcome,
+        status: result.status,
+        answeredBy: result.answeredBy || twilioAnsweredBy,
+      }),
+    });
+    if (followAt && followType) {
+      await syncLeadFollowUp(leadId || result.lead, {
+        at: followAt,
+        type: followType,
+        source: 'rep',
+      });
+    }
+
     return result;
   } catch (error) {
     console.error("❌ [TwilioService] Error saving call to MongoDB:", error.message);
@@ -403,19 +487,38 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
   }
 };
 
-const makeCall = async (to, userId) => {
+const makeCall = async (to, userId, fromNumber, { leadId, agentId } = {}) => {
   if (!to || !to.startsWith('+')) {
     return Promise.reject('Invalid phone number. Use international format, e.g. +1234567890');
   }
 
+  // getTwilioCredentials() never returns a phoneNumber (it only resolves
+  // accountSid/authToken), so this used to call Twilio with `from: undefined`
+  // and always fail. Callers now resolve the gig's purchased line
+  // (resolveActiveLineForLead/Gig) and pass it in; TWILIO_PHONE_NUMBER is the
+  // last-resort fallback, matching generateTwimlResponse's callerId default.
+  const from = fromNumber || process.env.TWILIO_PHONE_NUMBER;
+  if (!from) {
+    return Promise.reject('No Twilio phone number available for this call (no active gig line and no TWILIO_PHONE_NUMBER configured).');
+  }
+
   try {
     const client = await getTwilioClient(userId);
-    const credentials = await getTwilioCredentials(userId);
+
+    // handleVoice (the /twilio-voice webhook) reads LeadId/AgentId to run
+    // validateCopilotCallEligibility (enrollment/training/slot). Twilio
+    // forwards a webhook URL's query string into that POST, so pass them
+    // through here instead of letting the guard see them as missing.
+    const voiceParams = new URLSearchParams();
+    if (leadId) voiceParams.set('LeadId', leadId);
+    if (agentId) voiceParams.set('AgentId', agentId);
+    const voiceQuery = voiceParams.toString();
+    const voiceUrl = `${process.env.BASE_URL}/api/calls/twilio-voice${voiceQuery ? `?${voiceQuery}` : ''}`;
 
     const call = await client.calls.create({
-      url: `${process.env.BASE_URL}/api/calls/twilio-voice`,
+      url: voiceUrl,
       to: to,
-      from: credentials.phoneNumber,
+      from,
       record: true
     });
 
@@ -451,10 +554,13 @@ const generateTwimlResponse = async (to, callerIdOverride) => {
       callerId: callerId,
       record: 'record-from-answer',
     });
+    // `<Number>` uses amdStatusCallback. asyncAmdStatusCallback is only
+    // valid on the REST Calls API, so Twilio was ignoring it and never
+    // reporting a voicemail.
     dial.number({
       machineDetection: 'DetectMessageEnd',
-      asyncAmdStatusCallback: amdCallbackUrl,
-      asyncAmdStatusCallbackMethod: 'POST',
+      amdStatusCallback: amdCallbackUrl,
+      amdStatusCallbackMethod: 'POST',
     }, to);
   } else {
     twiml.say("Invalid number");
