@@ -34,6 +34,9 @@ const fakeCollection = (docs = []) => {
         rows.push(hit);
       }
       Object.assign(hit, update.$set || {});
+      for (const [k, v] of Object.entries(update.$push || {})) {
+        hit[k] = [...(hit[k] || []), ...v.$each].slice(v.$slice);
+      }
       return { modifiedCount: 1 };
     },
   };
@@ -98,12 +101,70 @@ describe('recordIntent (décision de l’orchestrateur)', () => {
     expect(w.Intent.updates).toHaveLength(0);
     expect(w.Call.updates).toHaveLength(0);
   });
-  it('première décision gagnante : une décision différente est refusée en 409 sans rien écrire', async () => {
-    const w = world({ intent: { sid: SID, companyId: COMPANY, recordingStatus: 'pending', recordingReason: 'recorded_planned' } });
+  it('envois répétés identiques : aucun effet, aucune entrée d’historique', async () => {
+    const w = world();
+    await recordIntent(w, intentBody());
+    const before = w.Intent.updates.length;
+    for (let i = 0; i < 3; i += 1) expect((await recordIntent(w, intentBody())).body.unchanged).toBe(true);
+    expect(w.Intent.updates).toHaveLength(before);
+    expect(w.Intent.rows[0].history).toBeUndefined();
+  });
+  it('décision différente : le dernier envoi l’emporte (pas de 409), l’ancienne décision et son horodatage sont conservés', async () => {
+    const decidedAt = new Date('2026-11-01T10:00:00Z');
+    const w = world({
+      call: { sid: SID, companyId: COMPANY, recordingStatus: 'pending', recordingReason: 'recorded_planned', recordingReasonAt: decidedAt },
+      intent: { sid: SID, companyId: COMPANY, recordingStatus: 'pending', recordingReason: 'recorded_planned', decidedAt },
+    });
     const out = await recordIntent(w, intentBody({ recordingStatus: 'not_recorded', recordingReason: 'disabled_by_company' }));
-    expect(out.status).toBe(409);
-    expect(out.body).toMatchObject({ success: false, recordingStatus: 'pending', recordingReason: 'recorded_planned' });
-    expect(w.Intent.updates).toHaveLength(0);
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({ success: true, recordingStatus: 'not_recorded', recordingReason: 'disabled_by_company', replaced: true });
+    expect(w.Intent.rows[0]).toMatchObject({ recordingStatus: 'not_recorded', recordingReason: 'disabled_by_company' });
+    expect(w.Call.rows[0]).toMatchObject({ recordingStatus: 'not_recorded', recordingReason: 'disabled_by_company' });
+    for (const doc of [w.Intent.rows[0].history, w.Call.rows[0].recordingHistory]) {
+      expect(doc).toHaveLength(1);
+      expect(doc[0]).toMatchObject({ recordingStatus: 'pending', recordingReason: 'recorded_planned', decidedAt });
+      expect(doc[0].replacedAt).toBeInstanceOf(Date);
+    }
+  });
+  it('plusieurs changements : l’historique garde les plus récents (5 au plus)', async () => {
+    const w = world();
+    const flip = ['plan_excludes', 'disabled_by_company', 'not_applicable', 'lookup_failed'];
+    await recordIntent(w, intentBody());
+    for (let i = 0; i < 8; i += 1) {
+      await recordIntent(w, i % 2 ? intentBody() : intentBody({ recordingStatus: 'not_recorded', recordingReason: flip[(i / 2) % flip.length] }));
+    }
+    expect(w.Intent.rows[0].history).toHaveLength(5);
+    expect(w.Intent.updates.some((u) => u.update.$push && u.update.$push.history.$slice === -5)).toBe(true);
+  });
+  it('ordre inversé : décision avant la création de l’appel, puis changement après sa création', async () => {
+    const w = world();
+    await recordIntent(w, intentBody());                                   // l’appel n’existe pas encore
+    expect(w.Call.updates).toHaveLength(0);
+    w.Call.rows.push({ sid: SID, companyId: COMPANY });                    // l’appel est créé ensuite
+    const out = await recordIntent(w, intentBody({ recordingStatus: 'not_recorded', recordingReason: 'plan_excludes' }));
+    expect(out.body).toMatchObject({ recordingStatus: 'not_recorded', recordingReason: 'plan_excludes', replaced: true });
+    expect(w.Call.rows[0]).toMatchObject({ recordingStatus: 'not_recorded', recordingReason: 'plan_excludes' });
+    expect(w.Call.rows[0].recordingHistory[0]).toMatchObject({ recordingStatus: 'pending', recordingReason: 'recorded_planned' });
+  });
+  it('un recordingUrl déjà posé n’est jamais effacé ni rétrogradé par un envoi ultérieur', async () => {
+    const w = world({ call: { sid: SID, companyId: COMPANY, recording_url: URL, recording_url_cloudinary: 'https://res.cloudinary.com/x.mp3', recordingStatus: 'recorded', recordingReason: 'recorded_planned' } });
+    for (const body of [intentBody({ recordingStatus: 'not_recorded', recordingReason: 'plan_excludes' }), intentBody()]) {
+      const out = await recordIntent(w, body);
+      expect(out.body).toMatchObject({ recordingStatus: 'recorded', unchanged: true });
+    }
+    expect(w.Call.updates).toHaveLength(0);
+    expect(w.Call.rows[0]).toMatchObject({ recording_url: URL, recording_url_cloudinary: 'https://res.cloudinary.com/x.mp3', recordingStatus: 'recorded' });
+    const none = world({ call: { sid: SID, companyId: COMPANY, recording_url: URL } }); // ancien appel sans statut
+    await recordIntent(none, intentBody({ recordingStatus: 'not_recorded', recordingReason: 'plan_excludes' }));
+    for (const u of none.Call.updates) expect(Object.keys(u.update.$set)).not.toContain('recording_url');
+    expect(none.Call.rows[0].recording_url).toBe(URL);
+  });
+  it('un pending tardif ne rouvre pas un échec technique ; une décision négative explicite le remplace', async () => {
+    const w = world({ intent: { sid: SID, companyId: COMPANY, recordingStatus: 'not_recorded', recordingReason: 'technical_failure' } });
+    expect((await recordIntent(w, intentBody())).body).toMatchObject({ recordingReason: 'technical_failure', unchanged: true });
+    const out = await recordIntent(w, intentBody({ recordingStatus: 'not_recorded', recordingReason: 'disabled_by_company' }));
+    expect(out.body).toMatchObject({ recordingReason: 'disabled_by_company', replaced: true });
+    expect(w.Intent.rows[0].history[0]).toMatchObject({ recordingReason: 'technical_failure' });
   });
   it('409 si l’appel appartient à une autre entreprise, 409 si l’intention en mémoire est d’une autre entreprise', async () => {
     const a = world({ call: { sid: SID, companyId: OTHER } });
@@ -147,6 +208,11 @@ describe('reportRecordingFailure (retries d’attache épuisés)', () => {
     expect(out.status).toBe(200);
     expect(w.Intent.rows[0]).toMatchObject({ recordingStatus: 'not_recorded', recordingReason: 'technical_failure' });
     expect(w.Call.updates).toHaveLength(0);
+  });
+  it('historise la décision remplacée par l’échec technique', async () => {
+    const w = world({ intent: { sid: SID, companyId: COMPANY, recordingStatus: 'pending', recordingReason: 'recorded_planned', decidedAt: new Date('2026-11-01T10:00:00Z') } });
+    await reportRecordingFailure(w, { sid: SID, companyId: COMPANY });
+    expect(w.Intent.rows[0].history[0]).toMatchObject({ recordingStatus: 'pending', recordingReason: 'recorded_planned' });
   });
   it('idempotent : un second signalement ne réécrit rien', async () => {
     const w = world({ call: { sid: SID, companyId: COMPANY, recordingStatus: 'not_recorded', recordingReason: 'technical_failure' } });

@@ -3,6 +3,7 @@
  * La décision (enregistrer ou non, et pourquoi) est calculée par l'orchestrateur ; ce service la mémorise, la fait évoluer
  * (rattachement de l'URL, échec technique) et l'expose en lecture. Transitions :
  *   (rien) ──décision──▶ pending/recorded_planned | not_recorded/<motif de décision>
+ *   décision ──nouvelle décision──▶ la dernière l'emporte (l'orchestrateur est la source de vérité) ; l'ancienne est gardée en historique (5 au plus)
  *   pending ──URL rattachée──▶ recorded      pending ──retries épuisés──▶ not_recorded/technical_failure
  *   not_recorded/technical_failure ──URL tardive──▶ recorded      (recorded est définitif ; l'URL l'emporte toujours)
  */
@@ -51,35 +52,43 @@ function currentState(call, intent) {
   return null;
 }
 
-/** Table de transitions. Retourne { next, conflict } ; `next` identique à `current` = rien à écrire. */
+/**
+ * Table de transitions. `next` identique à `current` = rien à écrire.
+ * Décision : la dernière l'emporte, sauf sur un appel enregistré (l'URL est un fait) ; un `pending` tardif ne rouvre pas
+ * un échec technique (une décision négative explicite, elle, le remplace).
+ */
 function transition(current, event) {
   if (event.type === 'failure') {
     if (!current || current.status === 'pending') return { next: { status: 'not_recorded', reason: 'technical_failure' } };
     return { next: current };
   }
-  // decision
   if (!current) return { next: event.next };
-  if (current.status === 'recorded' || current.reason === 'technical_failure') return { next: current };
-  if (current.status === event.next.status && current.reason === event.next.reason) return { next: current };
-  return { next: current, conflict: true };
+  if (current.status === 'recorded') return { next: current };
+  if (current.reason === 'technical_failure' && event.next.status === 'pending') return { next: current };
+  return { next: event.next };
 }
 
 const same = (a, b) => (!a && !b) || (a && b && a.status === b.status && a.reason === b.reason);
 const view = (state) => ({ recordingStatus: state.status, recordingReason: state.reason });
 
-/** Écrit l'état sur l'intention (upsert, première écriture gagnante pour la création) et sur l'appel s'il existe. */
-async function persist({ Call, Intent }, id, state, { callExists, intentExists }) {
+const HISTORY_MAX = 5;
+
+/** Écrit l'état sur l'intention (upsert) et sur l'appel s'il existe ; `previous` (état remplacé + horodatage) va en historique borné. */
+async function persist({ Call, Intent }, id, state, previous, { callExists, intentExists }) {
   const now = new Date();
+  const entry = previous ? { recordingStatus: previous.status, recordingReason: previous.reason, decidedAt: previous.at || null, replacedAt: now } : null;
+  const push = (field) => (entry ? { [field]: { $each: [entry], $slice: -HISTORY_MAX } } : null);
+  const withPush = (update, field) => (entry ? { ...update, $push: push(field) } : update);
   const fields = { recordingStatus: state.status, recordingReason: state.reason, decidedAt: now };
-  if (intentExists) await Intent.updateOne({ sid: id.sid, companyId: id.companyId }, { $set: fields });
-  else await Intent.updateOne({ sid: id.sid }, { $setOnInsert: { companyId: id.companyId }, $set: fields }, { upsert: true });
+  if (intentExists) await Intent.updateOne({ sid: id.sid, companyId: id.companyId }, withPush({ $set: fields }, 'history'));
+  else await Intent.updateOne({ sid: id.sid }, withPush({ $setOnInsert: { companyId: id.companyId }, $set: fields }, 'history'), { upsert: true });
   if (callExists) {
-    await Call.updateOne({ sid: id.sid, companyId: id.companyId }, { $set: { recordingStatus: state.status, recordingReason: state.reason, recordingReasonAt: now } });
+    await Call.updateOne({ sid: id.sid, companyId: id.companyId }, withPush({ $set: { recordingStatus: state.status, recordingReason: state.reason, recordingReasonAt: now } }, 'recordingHistory'));
   }
 }
 
 async function load({ Call, Intent }, id) {
-  const call = await Call.findOne({ sid: id.sid }).select('companyId recording_url recording_url_cloudinary recordingStatus recordingReason').lean();
+  const call = await Call.findOne({ sid: id.sid }).select('companyId recording_url recording_url_cloudinary recordingStatus recordingReason recordingReasonAt').lean();
   if (call && !sameCompany(call.companyId, id.companyId)) return { status: 409, body: { success: false, message: 'Appel d’une autre entreprise' } };
   const intent = await Intent.findOne({ sid: id.sid }).lean();
   if (intent && !sameCompany(intent.companyId, id.companyId)) return { status: 409, body: { success: false, message: 'Décision d’une autre entreprise' } };
@@ -91,16 +100,16 @@ async function apply(deps, id, event) {
   if (loaded.status) return loaded;
   const { call, intent } = loaded;
   const current = currentState(call, intent);
-  const { next, conflict } = transition(current, event);
-  if (conflict) return { status: 409, body: { success: false, message: 'Une autre décision est déjà enregistrée pour cet appel', ...view(current) } };
+  const { next } = transition(current, event);
   if (same(current, next)) return { status: 200, body: { success: true, ...view(next), unchanged: true } };
-  await persist(deps, id, next, { callExists: Boolean(call), intentExists: Boolean(intent) });
-  return { status: 200, body: { success: true, ...view(next) } };
+  const previous = current ? { ...current, at: (call && call.recordingStatus === current.status && call.recordingReasonAt) || (intent && intent.decidedAt) || null } : null;
+  await persist(deps, id, next, previous, { callExists: Boolean(call), intentExists: Boolean(intent) });
+  return { status: 200, body: { success: true, ...view(next), ...(previous ? { replaced: true } : {}) } };
 }
 
 /**
  * Décision d'enregistrement envoyée par l'orchestrateur, avant ou après la création de l'appel. Idempotente par CallSid/société :
- * la première décision l'emporte (une décision différente → 409), une décision tardive n'altère ni un appel enregistré ni un échec technique.
+ * la dernière décision l'emporte (ancienne décision + horodatage gardés en historique) ; sans effet sur un appel enregistré, ni un `pending` tardif sur un échec technique.
  * @returns {Promise<{status: number, body: object}>}
  */
 async function recordIntent(deps, rawBody) {

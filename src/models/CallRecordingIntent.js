@@ -11,6 +11,7 @@ const schema = new mongoose.Schema({
   recordingStatus: { type: String, enum: ['recorded', 'not_recorded', 'pending'], required: true },
   recordingReason: { type: String, enum: ['recorded_planned', 'plan_excludes', 'disabled_by_company', 'not_applicable', 'technical_failure', 'lookup_failed'], default: null },
   decidedAt: { type: Date, default: Date.now },
+  history: { type: [{ _id: false, recordingStatus: String, recordingReason: String, decidedAt: Date, replacedAt: Date }], default: undefined },
 }, { timestamps: true });
 
 module.exports = mongoose.models.CallRecordingIntent || mongoose.model('CallRecordingIntent', schema);
