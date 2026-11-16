@@ -7,6 +7,7 @@ const twilio = require('twilio');
 const fetch = require('node-fetch');
 const mongoose = require('mongoose');
 const { buildCenterCall } = require('../utils/centerCall');
+const { withRecordingStatus } = require('../utils/recordingStatus');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
@@ -471,10 +472,11 @@ exports.getCalls = async (req, res) => {
       });
     }
 
+    const data = await withRecordingStatus(processedCalls);
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: processedCalls,
+      data,
       ...(companyId
         ? {
             fraudStats: buildCompanyFraudStatsFromCalls(
@@ -519,11 +521,12 @@ exports.getCallsByAgent = async (req, res) => {
       .sort({ createdAt: -1 });
 
     const callObjects = calls.map((call) => call.toObject());
+    const data = await withRecordingStatus(calls);
 
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: calls,
+      data,
       fraudStats: buildAgentFraudStatsFromCalls(callObjects, agentId),
     });
   } catch (error) {
@@ -609,9 +612,10 @@ exports.getCall = async (req, res) => {
       });
     }
 
+    const [data] = await withRecordingStatus([call]);
     res.status(200).json({
       success: true,
-      data: call
+      data
     });
   } catch (err) {
     res.status(400).json({
@@ -1196,6 +1200,30 @@ exports.attachCallRecording = async (req, res) => {
   } catch (error) {
     console.error('Error in attachCallRecording:', error);
     return res.status(500).json({ success: false, message: 'Failed to attach recording' });
+  }
+};
+
+// Décision d'enregistrement de l'orchestrateur (idempotent par CallSid/société) : voir utils/recordingStatus.js.
+exports.recordCallRecordingIntent = async (req, res) => {
+  try {
+    const { recordIntent } = require('../utils/recordingStatus');
+    const out = await recordIntent({ Call, Intent: require('../models/CallRecordingIntent') }, req.body);
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error in recordCallRecordingIntent:', error);
+    return res.status(500).json({ success: false, message: 'Failed to record recording decision' });
+  }
+};
+
+// Signalement d'échec d'attache (retries épuisés) : l'appel passe en not_recorded / technical_failure.
+exports.reportCallRecordingFailure = async (req, res) => {
+  try {
+    const { reportRecordingFailure } = require('../utils/recordingStatus');
+    const out = await reportRecordingFailure({ Call, Intent: require('../models/CallRecordingIntent') }, req.body);
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error in reportCallRecordingFailure:', error);
+    return res.status(500).json({ success: false, message: 'Failed to report recording failure' });
   }
 };
 

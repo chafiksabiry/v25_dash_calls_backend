@@ -32,10 +32,17 @@ async function attachRecording({ Call, archive }, rawBody) {
   } catch (e) {
     return { status: 400, body: { success: false, message: e.message } };
   }
-  const call = await Call.findOne({ sid: rec.sid }).select('companyId recording_url recording_url_cloudinary').lean();
+  const call = await Call.findOne({ sid: rec.sid }).select('companyId recording_url recording_url_cloudinary recordingStatus recordingReason').lean();
   if (!call) return { status: 404, body: { success: false, pending: true, message: 'Appel pas encore inscrit' } };
   if (!call.companyId || String(call.companyId) !== rec.companyId) return { status: 409, body: { success: false, message: 'Appel d’une autre entreprise' } };
-  if (call.recording_url === rec.recordingUrl && call.recording_url_cloudinary) return { status: 200, body: { success: true, archived: true, unchanged: true } };
+  // Statut lisible : recorded dès qu'une URL est rattachée. « recorded_planned » seulement si l'orchestrateur avait décidé d'enregistrer (pending).
+  const statusSet = call.recordingStatus === 'recorded'
+    ? {}
+    : { recordingStatus: 'recorded', recordingReason: call.recordingStatus === 'pending' ? call.recordingReason || 'recorded_planned' : null, recordingReasonAt: new Date() };
+  if (call.recording_url === rec.recordingUrl && call.recording_url_cloudinary) {
+    if (Object.keys(statusSet).length) await Call.updateOne({ sid: rec.sid, companyId: call.companyId }, { $set: statusSet });
+    return { status: 200, body: { success: true, archived: true, unchanged: true } };
+  }
 
   let cloudinaryUrl = call.recording_url === rec.recordingUrl ? call.recording_url_cloudinary || null : null;
   if (!cloudinaryUrl) {
@@ -45,7 +52,7 @@ async function attachRecording({ Call, archive }, rawBody) {
       console.warn('[call-recording] archivage impossible, URL Twilio conservée:', e.message);
     }
   }
-  const set = { recording_url: rec.recordingUrl };
+  const set = { recording_url: rec.recordingUrl, ...statusSet };
   if (cloudinaryUrl) set.recording_url_cloudinary = cloudinaryUrl;
   await Call.updateOne({ sid: rec.sid, companyId: call.companyId }, { $set: set });
   return { status: 200, body: { success: true, archived: Boolean(cloudinaryUrl) } };

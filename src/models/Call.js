@@ -84,6 +84,11 @@ const callSchema = new mongoose.Schema({
   },
   recording_url: String,
   recording_url_cloudinary: String,
+  // Statut d'enregistrement lisible (décision de l'orchestrateur + rattachement de l'URL). Les appels anciens n'ont pas
+  // ces champs : l'API renvoie alors un statut dérivé à la lecture (voir utils/recordingStatus.js).
+  recordingStatus: { type: String, enum: ['recorded', 'not_recorded', 'pending'], default: undefined },
+  recordingReason: { type: String, enum: ['recorded_planned', 'plan_excludes', 'disabled_by_company', 'not_applicable', 'technical_failure', 'lookup_failed'], default: undefined },
+  recordingReasonAt: { type: Date, default: undefined },
   quality_score: {
     type: Number,
     min: 0,
