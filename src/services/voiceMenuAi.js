@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const OpenAI = require('openai');
+const { tokensServiceHeaders } = require('./orchestratorServiceAuth');
 
 /**
  * IA du menu vocal (message d'accueil, messagerie vocale, synthèse vocale, analyse de messages).
@@ -82,7 +83,7 @@ async function chargeTokens({ companyId, usageId, tokensUsed, tool, meta }) {
   try {
     res = await fetch(`${orchestratorOrigin()}/api/tokens-company/charge-usage`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: tokensServiceHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ companyId, usageId, tokensUsed, tool, meta: meta || {} }),
       signal: AbortSignal.timeout(8000),
     });
