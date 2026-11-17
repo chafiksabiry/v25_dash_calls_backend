@@ -16,6 +16,7 @@
 
 const mongoose = require("mongoose");
 const { Call } = require("../models/Call");
+const { withRecordingStatus } = require("../utils/recordingStatus");
 const { computeOperationMeasures } = require("../services/operationMeasures");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,10 +655,20 @@ exports.recent = async (req, res) => {
       {
         $project: {
           _id: 1,
+          sid: 1,
           createdAt: 1,
           startTime: 1,
           duration: 1,
           status: 1,
+          recordingStatus: 1,
+          recordingReason: 1,
+          recordingReasonAt: 1,
+          hasRecording: {
+            $or: [
+              { $gt: [{ $strLenCP: { $ifNull: ["$recording_url_cloudinary", ""] } }, 0] },
+              { $gt: [{ $strLenCP: { $ifNull: ["$recording_url", ""] } }, 0] }
+            ]
+          },
           outcome: "$_outcome",
           score: { $ifNull: ["$ai_call_score.overall.score", null] },
           validByAI: 1,
@@ -732,7 +743,7 @@ exports.recent = async (req, res) => {
     const match = buildCompanyScopeMatch(companyId, gigId);
     // Strict company scope: never display calls from other companies, even
     // when this company has no calls yet. Empty arrays are the correct UX.
-    const rows = await Call.aggregate(buildPipeline(match, limit));
+    const rows = await withRecordingStatus(await Call.aggregate(buildPipeline(match, limit)));
 
     res.json({ success: true, calls: rows, fallback: false });
   } catch (err) {
