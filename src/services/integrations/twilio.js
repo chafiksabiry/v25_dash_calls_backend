@@ -12,6 +12,7 @@ const { dispositionFromCallSignals, syncLeadDisposition, syncLeadFollowUp, resol
 const Transaction = require('../../models/Transaction');
 const path = require("path");
 const fetch = require('node-fetch');
+const { serviceAuthHeaders, ESCROW_RECONCILE_SCOPE } = require('../orchestratorServiceAuth');
 const vertexAIService = require('../vertexai.service');
 
 cloudinary.config({
@@ -434,7 +435,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
           const reconcileTarget = refused?.companyId || companyId;
           if (reconcileTarget) {
             fetch(`${orchestratorUrl}/api/escrow/reconcile/${reconcileTarget}`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }
+              method: 'POST', headers: serviceAuthHeaders(ESCROW_RECONCILE_SCOPE, { 'Content-Type': 'application/json' })
             }).catch(() => {});
           }
         } catch (_) { /* non-blocking */ }

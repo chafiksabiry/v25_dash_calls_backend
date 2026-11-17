@@ -8,6 +8,7 @@ const fetch = require('node-fetch');
 const mongoose = require('mongoose');
 const { buildCenterCall } = require('../utils/centerCall');
 const { withRecordingStatus } = require('../utils/recordingStatus');
+const { serviceAuthHeaders, ESCROW_RECONCILE_SCOPE, CALL_ANALYSIS_NOTIFY_SCOPE } = require('../services/orchestratorServiceAuth');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
@@ -197,7 +198,7 @@ function triggerCompanyReconcile(companyId) {
   if (!companyId) return Promise.resolve();
   const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
   const id = String(companyId);
-  return fetch(`${orchestratorUrl}/api/escrow/reconcile/${id}`, { method: 'POST' })
+  return fetch(`${orchestratorUrl}/api/escrow/reconcile/${id}`, { method: 'POST', headers: serviceAuthHeaders(ESCROW_RECONCILE_SCOPE) })
     .then(res => res.json().catch(() => ({})))
     .then(data => console.log(`✅ Triggered company reconcile for ${id}:`, data))
     .catch(err => {
@@ -1952,7 +1953,7 @@ function notifyRepCallAnalysisComplete(call, overrides = {}) {
 
   fetch(`${orchestratorUrl}/api/escrow/call-analysis-complete`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: serviceAuthHeaders(CALL_ANALYSIS_NOTIFY_SCOPE, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   }).catch((err) => {
     console.error('❌ Failed to broadcast call analysis complete:', err.message);
@@ -3070,7 +3071,7 @@ exports.analyzeCall = async (req, res) => {
     if (isValidByAI && call.companyId) {
       // Trigger reconciliation in orchestrator
       const orchestratorUrl = process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003';
-      fetch(`${orchestratorUrl}/api/escrow/reconcile/${call.companyId}`, { method: 'POST' })
+      fetch(`${orchestratorUrl}/api/escrow/reconcile/${call.companyId}`, { method: 'POST', headers: serviceAuthHeaders(ESCROW_RECONCILE_SCOPE) })
         .then(res => res.json())
         .then(data => console.log(`✅ Triggered reconciliation for company ${call.companyId}:`, data))
         .catch(err => console.error('❌ Failed to trigger reconciliation:', err));
@@ -3273,7 +3274,7 @@ exports.requestAnalysisHelp = async (req, res) => {
       const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
       fetch(`${orchestratorUrl}/api/escrow/call-analysis-help`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: serviceAuthHeaders(CALL_ANALYSIS_NOTIFY_SCOPE, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           companyId: String(companyId),
           callId: String(id),
