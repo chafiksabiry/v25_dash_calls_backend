@@ -77,6 +77,19 @@ describe('POST /suggest', () => {
     expect(body.usageId).toMatch(/^voice-suggest-/);
   });
 
+  test('charge-usage : clé de service x-service-key envoyée seulement si TOKENS_SERVICE_KEY est configurée', async () => {
+    delete process.env.TOKENS_SERVICE_KEY;
+    await controller.suggest(userReq({ companyId: 'c1', kind: 'greeting', companyName: 'Acme' }), makeRes());
+    expect(chargeCalls().at(-1)[1].headers).not.toHaveProperty('x-service-key');
+    process.env.TOKENS_SERVICE_KEY = 'svc-key-test';
+    try {
+      await controller.suggest(userReq({ companyId: 'c1', kind: 'greeting', companyName: 'Acme' }), makeRes());
+      expect(chargeCalls().at(-1)[1].headers).toMatchObject({ 'Content-Type': 'application/json', 'x-service-key': 'svc-key-test' });
+    } finally {
+      delete process.env.TOKENS_SERVICE_KEY;
+    }
+  });
+
   test('audience personne (Nomad Solo) : message personnel, sans centre', async () => {
     const res = makeRes();
     mockChat.mockClear();
