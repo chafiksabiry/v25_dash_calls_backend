@@ -19,6 +19,12 @@ const protect = async (req, res, next) => {
     });
   }
 
+  // Aucun secret de repli : sans JWT_SECRET, tous les jetons sont refusés.
+  if (!config.JWT_SECRET) {
+    console.error('[auth] JWT_SECRET is not set: refusing every protected request');
+    return res.status(500).json({ success: false, error: 'Authentication is not configured' });
+  }
+
   try {
     const decoded = jwt.verify(token, config.JWT_SECRET);
     req.user = await User.findById(decoded.id);

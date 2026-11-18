@@ -1,6 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const { config } = require('./config/env');
+const { config, assertRequiredEnv } = require('./config/env');
+
+// Aucun secret de repli : sans JWT_SECRET (ou sans adresse MongoDB) le service refuse de démarrer.
+try {
+  assertRequiredEnv();
+} catch (error) {
+  console.error(`❌ ${error.message}`);
+  process.exit(1);
+}
 const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
@@ -88,8 +96,8 @@ app.use(cors({
 
 app.use(express.urlencoded({ extended: true }));
 
-// Body parser
-app.use(express.json());
+// Body parser. Le corps brut est conservé pour vérifier la signature Ed25519 des webhooks Telnyx (middleware/webhookSignature.js).
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // Mount routers
 app.use('/api/auth', auth);

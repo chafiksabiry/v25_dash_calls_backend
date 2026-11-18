@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
-const uri = 'mongodb://mongo:DiGaBWUZXCkIxlZMuntztBaFJcOlUJIg@maglev.proxy.rlwy.net:40270/harx?authSource=admin';
+const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+if (!uri) {
+    console.error('MONGO_URI (ou MONGODB_URI) est requis.');
+    process.exit(1);
+}
 
 async function check() {
     try {
