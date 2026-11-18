@@ -699,4 +699,5 @@ module.exports = {
   defaultModelForBackend,
   DEFAULT_VOICE,
   VOICE_ALIASES,
+  parseServiceAccountJson,
 };

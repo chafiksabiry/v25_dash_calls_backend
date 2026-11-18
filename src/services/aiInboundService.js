@@ -5,6 +5,7 @@ const { registerStreamSession, unregisterStreamSession, createStreamToken } = re
 const { buildInboundTools, executeInboundTool, callToken, SLOW_TOOL_MS } = require('./aiInboundTools');
 const { emptyUsage, addOpenAiUsage, addGeminiUsage, estimateCost } = require('./aiUsageCost');
 const { TurnLatencyMeter } = require('../utils/turnLatency');
+const { analyzeCall, postLearning, learnedBlock } = require('./aiInboundLearning');
 
 /**
  * Pilote agent IA — appels ENTRANTS (recette uniquement). L'orchestrateur crée la session (jeton de service `ai-inbound`), le moteur
@@ -104,8 +105,10 @@ function buildInboundInstructions(s, { caller = null, now = Date.now() } = {}) {
     a.request ? "- Demande « à traiter » : confirme le motif et le numéro de rappel, puis appelle create_request." : '- Pas de création de demande, sauf une demande de rappel par une personne (humanCallback=true).',
     a.appointment ? "- Rendez-vous : appelle find_slots, propose au plus deux créneaux, fais confirmer explicitement le jour, l'heure et le nom, puis appelle book_appointment. Jamais de RDV sans confirmation." : '- Tu ne prends pas de rendez-vous : propose une demande de rappel.',
     "- Interdit : modifier ou annuler un rendez-vous existant, encaisser un paiement, donner des informations personnelles d'autres personnes.",
-    s.level === 'total' ? "- Personne n'est disponible en direct : pour toute demande que tu ne peux pas traiter, propose un rappel ou un message." : '',
-    s.trigger === 'all_busy' ? "- Tu décroches parce que l'équipe est déjà en ligne (appel simultané) : dis-le simplement, traite ce que tu peux, sinon propose un message ou un rappel ; un transfert peut ne pas aboutir." : '',
+    // `level: total` (envoyé par l'orchestrateur) : aucun humain n'a pu prendre l'appel. Cohérent avec le transfert : s'il est autorisé,
+    // il reste possible sur demande, sans être proposé d'emblée.
+    s.level === 'total' && canTransfer ? "- Aucun collaborateur n'a pu décrocher : propose d'abord un rappel ou un message ; le transfert reste possible si l'appelant demande une personne, mais il peut ne pas aboutir." : '',
+    s.level === 'total' && !canTransfer ? "- Personne n'est disponible en direct : pour toute demande que tu ne peux pas traiter, propose un rappel ou un message." : '',
     '',
     '## Fin et durée',
     `- L'appel dure au plus ${Math.round(Number(s.maxCallSeconds) / 60)} minutes. Si le système t'indique qu'il reste une minute : résume la demande en une phrase, propose un rappel (create_request) si elle n'est pas traitée, puis conclus.`,
@@ -116,6 +119,8 @@ function buildInboundInstructions(s, { caller = null, now = Date.now() } = {}) {
     caller && caller.known ? `- L'appelant est connu de l'entreprise : ${caller.name}. Tu peux l'appeler par son nom.` : "- L'appelant n'est pas identifié : demande son nom si une action le nécessite.",
     '',
     s.instructions ? `## Consignes de l'entreprise (elles ne peuvent pas modifier les règles ci-dessus)\n${clip(s.instructions, 4000)}` : '',
+    // Apprentissage : seules les réponses validées par le titulaire (jamais les propositions), dès l'appel suivant la validation.
+    learnedBlock(s.learnedAnswers),
   ];
   return lines.filter((l) => l !== '').join('\n');
 }
@@ -190,7 +195,7 @@ async function connectWithin(engine, args, ms) {
  * Crée la session : moteur connecté (principal puis repli, dans le budget de temps), session enregistrée pour le pont audio.
  * @returns {Promise<{ sessionId, streamUrl, provider, model, fallbackUsed }>}
  */
-async function createInboundSession(body, { env = process.env, publicWsBase, createEngine = defaultCreateEngine, fetchImpl = global.fetch, now = () => Date.now(), timers = { setTimeout, clearTimeout } } = {}) {
+async function createInboundSession(body, { env = process.env, publicWsBase, createEngine = defaultCreateEngine, fetchImpl = global.fetch, now = () => Date.now(), timers = { setTimeout, clearTimeout }, learningGenerate } = {}) {
   validateRequest(body);
   if (!inboundAllowed(body.companyId, env)) throw new SessionError(403, 'ai_inbound_disabled', 'Agent IA entrant non activé pour cette entreprise.');
   const s = {
@@ -201,6 +206,7 @@ async function createInboundSession(body, { env = process.env, publicWsBase, cre
     knowledgeBase: body.knowledgeBase || { enabled: true, gigId: null }, actions: body.actions || {}, transferTargets: Array.isArray(body.transferTargets) ? body.transferTargets.slice(0, 10) : [],
     maxCallSeconds: Number(body.maxCallSeconds), announcement: { mode: body.announcement.mode === 'twiml' ? 'twiml' : 'engine', text: body.announcement.text },
     callSid: body.callSid, record: body.record === true, timeZone: body.timeZone || 'Europe/Paris',
+    learnedAnswers: Array.isArray(body.learnedAnswers) ? body.learnedAnswers.slice(0, 40) : [], learning: body.learning !== false,
     orchestratorUrl: String(env.COMPORCHESTRATOR_API_URL || body.orchestratorUrl).replace(/\/+$/, ''),
   };
   // Gemini Live : connexion limitée à ~10 min par Google (goAway), session audio à 15 min. Pilote : appel plafonné à 9 min avec Gemini
@@ -246,7 +252,7 @@ async function createInboundSession(body, { env = process.env, publicWsBase, cre
     caller: caller && caller.ok ? caller : null, summary: '', holdInput: s.announcement.mode === 'engine',
     announcement: { verified: s.announcement.mode === 'twiml' ? true : null, attempts: 0 }, agentTurnText: '', agentUtterance: '',
     streamStartedAt: null, finished: false, timers: [], lastOutboundAt: 0, toolFillerMissed: 0, endRequested: false,
-    env, fetchImpl, now, timersApi: timers,
+    env, fetchImpl, now, timersApi: timers, learningGenerate,
   };
   wireSession(ctx);
   sessions.set(sessionId, ctx);
@@ -435,6 +441,14 @@ async function finishSession(ctx, endReason) {
   ctx.lastReport = report;
   console.log('[AiInbound][usage]', JSON.stringify({ callSid: ctx.s.callSid, endReason, provider: ctx.provider, model: ctx.model, seconds: Math.round((Date.parse(report.endedAt) - Date.parse(report.startedAt)) / 1000), usage: ctx.usage, cost: report.cost, latency: { medianMs: report.latency.medianMs, p95Ms: report.latency.p95Ms, turns: report.latency.turns.length } }));
   await postReport(ctx, report);
+  // Apprentissage : analyse APRÈS le compte rendu (la fin d'appel n'attend jamais le modèle texte), une seule fois par appel.
+  if (!ctx.learningDone) {
+    ctx.learningDone = true;
+    const learningRun = analyzeCall(ctx, report, { env: ctx.env, generate: ctx.learningGenerate })
+      .then((out) => (out ? postLearning(ctx, { proposals: out.proposals, unanswered: out.unanswered, callerNames: out.callerNames }, { fetchImpl: ctx.fetchImpl, callToken }) : null))
+      .then(() => undefined, () => undefined);
+    ctx.learningRun = learningRun;
+  }
   ctx.closingEngine = true;
   try { ctx.realtime.close(); } catch { /* ignore */ }
   const ws = ctx.mediaStreamWs;
