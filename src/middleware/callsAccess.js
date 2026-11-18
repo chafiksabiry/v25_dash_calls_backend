@@ -324,8 +324,8 @@ function guardGigCompany(param = 'id') {
 }
 
 /**
- * Raccrochage d'un appel IA sortant : avec un jeton, si l'appel est connu (callId, ou SID / call_control_id), il doit
- * appartenir à l'entreprise de l'appelant.
+ * Raccrochage d'un appel IA sortant : avec un jeton, l'appel (callId, ou SID / call_control_id) doit être connu (404 sinon)
+ * et appartenir à l'entreprise de l'appelant.
  */
 async function guardAiOutboundCall(req, res, next) {
   if (!req.auth) return next();
@@ -337,12 +337,107 @@ async function guardAiOutboundCall(req, res, next) {
     if (!call && callControlId) {
       call = await Call.findOne({ $or: [{ sid: String(callControlId) }, { call_id: String(callControlId) }] }).select('companyId').lean();
     }
-    if (!call) return next();
+    if (!call) return deny(res, 404, 'Call not found');
     if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
     return deny(res, 403, 'Not allowed for this call');
   } catch (error) {
     return sendScopeError(res, error);
   }
+}
+
+const ENROLL_TTL_MS = 60 * 1000;
+const enrollCache = new Map();
+
+function matchingOrigin() {
+  const explicit = process.env.MATCHING_API_URL;
+  const railway = process.env.RAILWAY_SERVICE_V25_MATCHING_BACKEND_URL;
+  const raw = (explicit || (railway ? (/^https?:\/\//i.test(railway) ? railway : `https://${railway}`) : '')).replace(/\/+$/, '');
+  return raw && !/\/api$/.test(raw) ? `${raw}/api` : raw;
+}
+
+/** Le profil rep est-il inscrit (enrolled) au gig ? Même source que l'éligibilité des appels (service de matching). */
+async function agentEnrolledInGig(agentId, gigId) {
+  const key = `${agentId}:${gigId}`;
+  const cached = enrollCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.ok;
+  const origin = matchingOrigin();
+  if (!origin) {
+    console.warn('[callsAccess] MATCHING_API_URL absent : inscription du rep au gig non vérifiable, accès admis');
+    return true;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const r = await fetch(`${origin}/gig-agents/agents/${encodeURIComponent(agentId)}/gigs?status=enrolled`, { signal: controller.signal });
+    if (!r.ok) throw Object.assign(new Error('Enrollment lookup failed'), { status: 503 });
+    const payload = await r.json();
+    const gigs = Array.isArray(payload && payload.gigs) ? payload.gigs : [];
+    const ok = gigs.some((row) => String((row && row.gig && (row.gig._id || row.gig.$oid)) || (row && row.gigId) || '') === String(gigId));
+    enrollCache.set(key, { ok, expires: Date.now() + ENROLL_TTL_MS });
+    return ok;
+  } catch (error) {
+    if (error.status) throw error;
+    throw Object.assign(new Error('Enrollment lookup failed'), { status: 503 });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ressource d'une entreprise désignée par la requête (prospect, gig, entreprise, appel) : avec un jeton, l'appelant doit être
+ * membre de l'entreprise, ou rep inscrit au gig concerné (pour un appel : le rep qui l'a pris).
+ * Sans ressource identifiable dans la requête, ou ressource inconnue (créée ensuite par la route), la requête continue.
+ *
+ * options : leadId(req), gigId(req), companyId(req), callControlId(req) -> valeurs extraites de la requête.
+ */
+function guardResourceCompany(options = {}) {
+  const pick = (fn, req) => (typeof fn === 'function' ? fn(req) : null);
+  return async (req, res, next) => {
+    if (!req.auth) return next();
+    try {
+      const leadId = pick(options.leadId, req);
+      let gigId = pick(options.gigId, req);
+      let companyId = pick(options.companyId, req);
+      if (leadId) {
+        const lead = await findRaw('leads', leadId, { companyId: 1, gigId: 1 });
+        if (lead) {
+          gigId = idOf(lead.gigId) || gigId;
+          companyId = idOf(lead.companyId) || (gigId ? await companyOfGig(gigId) : null);
+          if (!companyId) return deny(res, 403, 'Not allowed for this lead');
+        }
+      }
+      if (gigId && !companyId) companyId = await companyOfGig(gigId);
+      const callControlId = pick(options.callControlId, req);
+      if (!companyId && callControlId) {
+        const { Call } = require('../models/Call');
+        const call = await Call.findOne({ $or: [{ sid: String(callControlId) }, { call_id: String(callControlId) }] })
+          .select('companyId agent gigId')
+          .lean();
+        if (call) {
+          if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
+          const mine = await ownAgentId(req);
+          if (mine && call.agent && String(call.agent._id || call.agent) === mine) return next();
+          return deny(res, 403, 'Not allowed for this call');
+        }
+      }
+      if (!companyId) return next();
+      if (await belongsToCompany(req, companyId)) return next();
+      const agentId = await ownAgentId(req);
+      if (agentId && gigId && (await agentEnrolledInGig(agentId, gigId))) return next();
+      // Rep sans gig identifiable : l'entreprise seule ne permet pas de vérifier son inscription (admis, journalisé).
+      if (agentId && !gigId) {
+        console.warn(`[callsAccess] rep ${agentId} sur l'entreprise ${companyId} sans gig : inscription non vérifiable`);
+        return next();
+      }
+      return deny(res, 403, 'Not allowed for this company');
+    } catch (error) {
+      return sendScopeError(res, error);
+    }
+  };
+}
+
+function clearEnrollCache() {
+  enrollCache.clear();
 }
 
 module.exports = {
@@ -359,6 +454,8 @@ module.exports = {
   guardLeadCompany,
   guardGigCompany,
   guardAiOutboundCall,
+  guardResourceCompany,
+  clearEnrollCache,
   companyOfLead,
   companyOfGig,
   requireAuth,

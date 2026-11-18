@@ -1,5 +1,6 @@
 process.env.JWT_SECRET = 'test-secret';
 process.env.REGISTRATION_BACKEND_URL = 'https://reg.example';
+process.env.MATCHING_API_URL = 'https://match.example/api';
 
 const echo = () => new Proxy({}, { get: (_t, name) => (typeof name === 'string' && name !== 'then' && name !== '__esModule' ? (req, res) => res.status(200).json({ success: true, handler: name, body: req.body }) : undefined) });
 jest.mock('../controllers/calls', () => echo());
@@ -12,6 +13,12 @@ jest.mock('../models/Call', () => ({
     findById: (id) => ({ select: () => ({ lean: async () => mockCalls[id] || null }) }),
     findOne: (q) => ({ select: () => ({ lean: async () => Object.values(mockCalls).find((c) => q.$or.some((o) => (o.sid && o.sid === c.sid) || (o.call_id && o.call_id === c.sid))) || null }) }),
   },
+}));
+
+const U_REP = '6d00000000000000000000e1';
+const AGENT_REP = '6e00000000000000000000e1';
+jest.mock('../models/Agent', () => ({
+  findOne: ({ userId }) => ({ select: () => ({ lean: async () => (String(userId) === '6d00000000000000000000e1' ? { _id: '6e00000000000000000000e1' } : null) }) }),
 }));
 
 const crypto = require('crypto');
@@ -65,10 +72,11 @@ const call = (method, path, { auth, body, raw, headers = {} } = {}) => new Promi
   req.end();
 });
 
-const ENV_KEYS = ['CALLS_REQUIRE_AUTH', 'CALLS_LEGACY_ANON', 'COMPANY_SCOPE_MODE', 'WEBHOOK_SIGNATURE_MODE', 'TELNYX_PUBLIC_KEY', 'TWILIO_AUTH_TOKEN', 'PUBLIC_BASE_URL', 'BASE_URL'];
+const ENV_KEYS = ['CALLS_REQUIRE_AUTH', 'CALLS_LEGACY_ANON', 'COMPANY_SCOPE_MODE', 'WEBHOOK_SIGNATURE_MODE', 'TELNYX_PUBLIC_KEY', 'TWILIO_AUTH_TOKEN', 'PUBLIC_BASE_URL', 'BASE_URL', 'SELF_API_URL'];
 beforeAll(() => { realFetch = global.fetch; });
 beforeEach(async () => {
   clearCompanyCache();
+  require('../middleware/callsAccess').clearEnrollCache();
   ENV_KEYS.forEach((k) => delete process.env[k]);
   Object.keys(mockCalls).forEach((k) => delete mockCalls[k]);
   mockCalls[CALL_B] = { _id: CALL_B, companyId: B, sid: 'v3:call-b' };
@@ -76,7 +84,12 @@ beforeEach(async () => {
   await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); });
   port = server.address().port;
   global.fetch = jest.fn(async (url) => {
-    const userId = new URL(url).searchParams.get('userId');
+    const u = new URL(url);
+    if (u.host === 'match.example') {
+      const gigs = u.pathname.includes(AGENT_REP) ? [{ gig: { _id: GIG_A } }] : [];
+      return { ok: true, json: async () => ({ gigs }) };
+    }
+    const userId = u.searchParams.get('userId');
     return { ok: true, json: async () => ({ success: true, data: members[userId] || { companyId: null } }) };
   });
 });
@@ -155,6 +168,50 @@ describe('/api/gigs/:id/voice-assistant', () => {
   });
 });
 
+
+describe('ressources d\'une entreprise sur les routes des reps (avec un jeton)', () => {
+  test('line-for-lead : autre entreprise 403, la sienne 200, rep inscrit au gig 200, rep non inscrit 403', async () => {
+    expect((await call('GET', `/api/calls/line-for-lead/${LEAD_B}`, { auth: token('u-a') })).status).toBe(403);
+    expect((await call('GET', `/api/calls/line-for-lead/${LEAD_A}`, { auth: token('u-a') })).status).toBe(200);
+    expect((await call('GET', `/api/calls/line-for-lead/${LEAD_A}`, { auth: token(U_REP) })).status).toBe(200);
+    expect((await call('GET', `/api/calls/line-for-lead/${LEAD_B}`, { auth: token(U_REP) })).status).toBe(403);
+  });
+  test('store-call et telnyx/finalize : prospect d\'une autre entreprise 403', async () => {
+    expect((await call('POST', '/api/calls/store-call', { auth: token('u-a'), body: { leadId: LEAD_B } })).status).toBe(403);
+    expect((await call('POST', '/api/calls/telnyx/finalize', { auth: token('u-a'), body: { leadId: LEAD_B } })).status).toBe(403);
+    expect((await call('POST', '/api/calls/store-call', { auth: token('u-a'), body: { leadId: LEAD_A } })).status).toBe(200);
+  });
+  test('telnyx/record-start : appel d\'une autre entreprise 403', async () => {
+    expect((await call('POST', '/api/calls/telnyx/record-start', { auth: token('u-a'), body: { callControlId: 'v3:call-b' } })).status).toBe(403);
+    expect((await call('POST', '/api/calls/telnyx/record-start', { auth: token('u-b'), body: { callControlId: 'v3:call-b' } })).status).toBe(200);
+  });
+  test('token et get-login-token : entreprise ou gig d\'une autre entreprise 403', async () => {
+    expect((await call('GET', `/api/calls/token?companyId=${B}`, { auth: token('u-a') })).status).toBe(403);
+    expect((await call('POST', '/api/calls/get-login-token', { auth: token('u-a'), body: { gigId: GIG_B } })).status).toBe(403);
+    expect((await call('POST', '/api/calls/get-login-token', { auth: token('u-a'), body: { gigId: GIG_A } })).status).toBe(200);
+  });
+  test('ai-outbound/hangup : appel inconnu 404', async () => {
+    expect((await call('POST', '/api/calls/ai-outbound/hangup', { auth: token('u-a'), body: { callControlId: 'inconnu' } })).status).toBe(404);
+  });
+});
+
+describe('OVH : identifiants par variables uniquement', () => {
+  test('aucune clé OVH codée en dur', () => {
+    const fs = require('fs'); const path = require('path');
+    for (const f of ['src/services/integrations/OVHService.js', 'scripts/generatekey.js', 'src/services/integrations/ovh.js']) {
+      const src = fs.readFileSync(path.join(__dirname, '../..', f), 'utf8');
+      expect(src).not.toMatch(/(applicationKey|applicationSecret|consumerKey|appKey|appSecret)\s*[:=]\s*['"`][A-Za-z0-9]{8,}/);
+    }
+  });
+  test('variable manquante : erreur claire', () => {
+    const saved = { ...process.env };
+    ['OVH_APPLICATION_KEY', 'OVH_APP_KEY', 'OVH_APPLICATION_SECRET', 'OVH_APP_SECRET', 'OVH_CONSUMER_KEY', 'OVH_BILLING_ACCOUNT', 'OVH_SERVICE_NAME', 'OVH_DEFAULT_NUMBER'].forEach((k) => delete process.env[k]);
+    const { OVHService } = require('../services/integrations/OVHService');
+    expect(() => new OVHService().assertConfigured()).toThrow(/OVH_APPLICATION_KEY/);
+    process.env = saved;
+  });
+});
+
 describe('webhooks Telnyx : signature Ed25519', () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
   const rawKey = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
@@ -201,14 +258,30 @@ describe('webhooks Twilio : X-Twilio-Signature', () => {
   test('mode log (défaut) : signature absente tolérée', async () => {
     expect((await call('POST', '/api/calls/amd-callback', { raw: form, headers: formHeaders() })).status).toBe(200);
   });
+  test('URL signée construite depuis BASE_URL ou SELF_API_URL (adresses de rappel) : acceptée en mode enforce', async () => {
+    process.env.WEBHOOK_SIGNATURE_MODE = 'enforce';
+    process.env.TWILIO_AUTH_TOKEN = 'tw-token';
+    process.env.BASE_URL = 'https://autre.example';
+    process.env.SELF_API_URL = 'https://dash.example/';
+    expect((await call('POST', '/api/calls/amd-callback', { raw: form, headers: formHeaders({ 'X-Twilio-Signature': sign('/api/calls/amd-callback') }) })).status).toBe(200);
+  });
 });
 
 describe('configuration sans secret de repli', () => {
-  test('JWT_SECRET et MONGO_URI requis au démarrage', () => {
+  test('JWT_SECRET et une adresse MongoDB requis au démarrage', () => {
     const { missingRequiredEnv, assertRequiredEnv } = require('../config/env');
-    expect(missingRequiredEnv({})).toEqual(['JWT_SECRET', 'MONGO_URI (ou MONGODB_URI)']);
+    expect(missingRequiredEnv({})).toEqual(['JWT_SECRET', 'adresse MongoDB (MONGO_URI, MONGODB_URI, MONGO_URL, DATABASE_URL)']);
     expect(missingRequiredEnv({ JWT_SECRET: 's', MONGODB_URI: 'mongodb://h/db' })).toEqual([]);
     expect(() => assertRequiredEnv({ MONGO_URI: 'mongodb://h/db' })).toThrow(/JWT_SECRET/);
+  });
+  test('variables MongoDB de Railway acceptées ; seul le nom de la variable est donné', () => {
+    const { mongoUriSource, missingRequiredEnv } = require('../config/env');
+    expect(mongoUriSource({ MONGO_URL: 'mongodb://u:p@h/db' })).toBe('MONGO_URL');
+    expect(mongoUriSource({ DATABASE_URL: 'mongodb://u:p@h/db' })).toBe('DATABASE_URL');
+    expect(mongoUriSource({ MONGO_URI: 'a', MONGO_URL: 'b' })).toBe('MONGO_URI');
+    expect(missingRequiredEnv({ JWT_SECRET: 's', MONGO_URL: 'mongodb://h/db' })).toEqual([]);
+    const db = require('fs').readFileSync(require('path').join(__dirname, '../config/database.js'), 'utf8');
+    expect(db).not.toMatch(/\$\{config\.MONGODB_URI\}|maskedUri/);
   });
   test('aucune valeur par défaut codée en dur', () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, '../config/env.js'), 'utf8');

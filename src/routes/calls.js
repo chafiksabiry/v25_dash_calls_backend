@@ -15,6 +15,15 @@ const {
 } = require('../controllers/calls');
 
 const router = express.Router();
+const body = (k) => (req) => (req.body && req.body[k]) || (req.query && req.query[k]) || null;
+// Contrôle d'entreprise avec un jeton quand la requête désigne un prospect, un gig, une entreprise ou un appel
+// (membre de l'entreprise, ou rep inscrit au gig) : voir callsAccess.guardResourceCompany.
+const leadScope = access.guardResourceCompany({ leadId: (req) => req.params.leadId || body('leadId')(req), gigId: body('gigId'), companyId: body('companyId') });
+const callScope = access.guardResourceCompany({
+  leadId: body('leadId'), gigId: body('gigId'), companyId: body('companyId'),
+  callControlId: (req) => body('callControlId')(req) || body('externalId')(req) || body('callId')(req),
+});
+const companyScope = access.guardResourceCompany({ gigId: body('gigId'), companyId: body('companyId') });
 
 
 //@twilio logic
@@ -33,11 +42,11 @@ router.get('/agent/:agentId', access.compatAuth, access.guardAgentParam({ restri
 
 // Jeton Twilio (softphone) : réservé à un utilisateur connecté. Groupe compat : l'application entreprise historique
 // (comporchestrator_front) le demande encore sans jeton (voir README de la PR et CALLS_LEGACY_ANON).
-router.post('/token', access.compatAuth, callController.getTwilioToken);
-router.get('/token', access.compatAuth, callController.getTwilioToken);
+router.post('/token', access.compatAuth, companyScope, callController.getTwilioToken);
+router.get('/token', access.compatAuth, companyScope, callController.getTwilioToken);
 
 
-router.post('/store-call', access.compatAuth, callController.saveCallToDB);
+router.post('/store-call', access.compatAuth, callScope, callController.saveCallToDB);
 router.post('/center-call', access.userOrServiceAuth, access.guardCenterCallBody, callController.saveCenterCall);
 // Enregistrement d'un appel (offres Full Scope / Multi-clients / TaaS) : l'orchestrateur rattache l'URL au document d'appel, par CallSid.
 router.post('/recording', access.callRecordingServiceAuth, callController.attachCallRecording);
@@ -47,9 +56,9 @@ router.post('/recording/failed', access.callRecordingServiceAuth, callController
 
 // Resolve active gig phone line (provider + E.164) before Workspace dial.
 // Must be registered before `/:id` so "line-for-lead" is not captured as an id.
-router.get('/line-for-lead/:leadId', access.compatAuth, callController.getLineForLead);
-router.post('/telnyx/finalize', access.compatAuth, callController.finalizeTelnyxCall);
-router.post('/telnyx/record-start', access.compatAuth, callController.startTelnyxRecording);
+router.get('/line-for-lead/:leadId', access.compatAuth, leadScope, callController.getLineForLead);
+router.post('/telnyx/finalize', access.compatAuth, callScope, callController.finalizeTelnyxCall);
+router.post('/telnyx/record-start', access.compatAuth, callScope, callController.startTelnyxRecording);
 
 // Aucun appelant connu : jeton exigé.
 router.route('/initiate')
@@ -116,7 +125,7 @@ router.post('/ai-assist', access.compatAuth, callController.getAIAssistance);
 router.post('/personality-analysis', access.compatAuth, callController.getPersonalityAnalysis);
 
 // Jeton WebRTC Telnyx : utilisateur connecté (l'espace rep l'appelle encore sans jeton : groupe compat).
-router.post('/get-login-token', access.compatAuth, callController.getLoginToken);
+router.post('/get-login-token', access.compatAuth, companyScope, callController.getLoginToken);
 router.get('/get-login-token', access.compatAuth, callController.getLoginToken);
 
 // Appel IA sortant : avec un jeton, le prospect doit appartenir à l'entreprise de l'appelant.

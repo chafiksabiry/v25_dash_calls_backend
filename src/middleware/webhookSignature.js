@@ -5,8 +5,8 @@ const twilio = require('twilio');
  * Signature des webhooks Twilio et Telnyx (routes publiques, appelées par l'opérateur et non par un utilisateur).
  *
  *  - Twilio : en-tête `X-Twilio-Signature`, calculé sur l'URL PUBLIQUE exacte appelée et les paramètres POST, avec
- *    TWILIO_AUTH_TOKEN. L'URL est reconstruite depuis PUBLIC_BASE_URL (à défaut BASE_URL), les mêmes variables que celles qui
- *    servent à donner les adresses de rappel à Twilio, plus le chemin et la requête reçus.
+ *    TWILIO_AUTH_TOKEN. L'URL est reconstruite depuis PUBLIC_BASE_URL, BASE_URL ou SELF_API_URL (les variables qui construisent
+ *    les adresses de rappel données à Twilio ; à défaut, l'hôte reçu), plus le chemin et la requête reçus.
  *  - Telnyx : en-têtes `telnyx-signature-ed25519` et `telnyx-timestamp`, signature Ed25519 de `${timestamp}|${corps brut}`
  *    avec la clé publique du compte (TELNYX_PUBLIC_KEY, base64, portail Telnyx > Keys & Credentials > Public Key).
  *    Horodatage accepté à 5 minutes près (rejeu).
@@ -22,30 +22,44 @@ const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 const enforce = (env = process.env) => String(env.WEBHOOK_SIGNATURE_MODE || '').trim().toLowerCase() === 'enforce';
 
-function publicOrigin(env = process.env) {
-  const raw = String(env.PUBLIC_BASE_URL || env.BASE_URL || '').trim().replace(/\/+$/, '');
-  if (!/^https:\/\/[^/\s]+/i.test(raw)) return '';
-  try {
-    return new URL(raw).origin;
-  } catch (error) {
-    return '';
-  }
+// Mêmes variables que celles qui construisent les adresses de rappel données à Twilio :
+// PUBLIC_BASE_URL / BASE_URL (appel IA sortant, twilio-voice) et SELF_API_URL (amd-callback).
+const BASE_URL_VARS = ['PUBLIC_BASE_URL', 'BASE_URL', 'SELF_API_URL'];
+
+/** Origines candidates (schéma + hôte) de l'URL signée par Twilio, sans doublon. */
+function candidateOrigins(req, env = process.env) {
+  const out = [];
+  const add = (raw) => {
+    try {
+      const origin = new URL(String(raw).trim()).origin;
+      if (/^https?:\/\//.test(origin) && !out.includes(origin)) out.push(origin);
+    } catch (error) {
+      /* valeur invalide ignorée */
+    }
+  };
+  for (const name of BASE_URL_VARS) if (env[name] && String(env[name]).trim()) add(env[name]);
+  // Repli identique à publicBaseUrl() du service d'appel IA quand aucune variable n'est posée (l'hôte ne permet pas de
+  // forger une signature : il faut TWILIO_AUTH_TOKEN).
+  const host = req.headers && req.headers.host;
+  if (host) add(`${(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim()}://${host}`);
+  return out;
 }
+
+const publicOrigin = (env = process.env) => candidateOrigins({ headers: {} }, env)[0] || '';
 
 /** @returns {{ ok: boolean, reason?: string }} */
 function verifyTwilio(req, env = process.env) {
   const authToken = env.TWILIO_AUTH_TOKEN;
-  const origin = publicOrigin(env);
   const signature = req.headers && req.headers['x-twilio-signature'];
   if (!authToken) return { ok: false, reason: 'TWILIO_AUTH_TOKEN absent' };
-  if (!origin) return { ok: false, reason: 'PUBLIC_BASE_URL (ou BASE_URL) absent ou non https' };
   if (!signature) return { ok: false, reason: 'signature absente' };
+  const origins = candidateOrigins(req, env);
+  if (!origins.length) return { ok: false, reason: 'adresse publique inconnue (PUBLIC_BASE_URL, BASE_URL ou SELF_API_URL)' };
   try {
-    const url = `${origin}${req.originalUrl || req.url || ''}`;
+    const path = req.originalUrl || req.url || '';
     const params = req.method === 'GET' ? {} : req.body || {};
-    return twilio.validateRequest(String(authToken), String(signature), url, params)
-      ? { ok: true }
-      : { ok: false, reason: 'signature invalide' };
+    const ok = origins.some((origin) => twilio.validateRequest(String(authToken), String(signature), `${origin}${path}`, params));
+    return ok ? { ok: true } : { ok: false, reason: 'signature invalide' };
   } catch (error) {
     return { ok: false, reason: 'signature invérifiable' };
   }
@@ -92,4 +106,4 @@ function guard(provider, verify) {
 const twilioWebhook = guard('Twilio', (req) => verifyTwilio(req));
 const telnyxWebhook = guard('Telnyx', (req) => verifyTelnyx(req));
 
-module.exports = { twilioWebhook, telnyxWebhook, verifyTwilio, verifyTelnyx, publicOrigin };
+module.exports = { twilioWebhook, telnyxWebhook, verifyTwilio, verifyTelnyx, publicOrigin, candidateOrigins };
