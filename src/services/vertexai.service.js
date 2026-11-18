@@ -39,7 +39,7 @@ const setupGCPCredentials = async () => {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
-  const prepareCredentials = async (creds, fileName, defaultPath) => {
+  const prepareCredentials = async (creds, fileName) => {
     let sanitizedCreds = (creds || '').trim();
 
     // Remove surrounding quotes if present (common in some env setups)
@@ -68,20 +68,24 @@ const setupGCPCredentials = async () => {
       }
     }
 
-    return sanitizedCreds || path.join(__dirname, defaultPath);
+    if (sanitizedCreds) return sanitizedCreds;
+    // Aucun fichier de clé dans le dépôt : sans variable d'environnement, la bibliothèque Google utilise
+    // les identifiants par défaut de l'application (ADC).
+    console.warn(`⚠️ [VertexAIService] No credentials env var for ${fileName}: falling back to Application Default Credentials`);
+    return undefined;
   };
 
   // Vertex AI Credentials
   const vCreds = process.env.VERTEX_AI_CREDENTIALS || process.env.GCP_VERTEX_AI_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-  vertexCredentialsPath = await prepareCredentials(vCreds, 'vertex-credentials.json', "../../config/vertex-service-account.json");
+  vertexCredentialsPath = await prepareCredentials(vCreds, 'vertex-credentials.json');
 
   // Speech-to-Text Credentials
   const sCreds = process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-  speechCredentialsPath = await prepareCredentials(sCreds, 'speech-credentials.json', "../../config/speech-to-text-service-account.json");
+  speechCredentialsPath = await prepareCredentials(sCreds, 'speech-credentials.json');
 
   // Storage Credentials
   const stCreds = process.env.CLOUD_STORAGE_CREDENTIALS || process.env.GCP_STORAGE_CREDENTIALS || process.env.GCP_CLOUD_STORAGE_CREDENTIALS || vCreds;
-  storageCredentialsPath = await prepareCredentials(stCreds, 'storage-credentials.json', "../../config/cloud-storage-service-account.json");
+  storageCredentialsPath = await prepareCredentials(stCreds, 'storage-credentials.json');
 
   console.log('📂 [VertexAIService] Credentials paths resolved.');
 };

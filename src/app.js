@@ -1,4 +1,5 @@
 const express = require('express');
+const { captureRawBody } = require('./middleware/webhookSignature');
 const cors = require('cors');
 const { config } = require('./config/env');
 const { connectDB } = require('./config/database');
@@ -89,7 +90,7 @@ app.use(cors({
 app.use(express.urlencoded({ extended: true }));
 
 // Body parser
-app.use(express.json());
+app.use(express.json({ verify: captureRawBody }));
 
 // Mount routers
 app.use('/api/auth', auth);

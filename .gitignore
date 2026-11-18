@@ -5,3 +5,12 @@ recordings/
 .env
 
 /node_modules
+
+# Google Cloud / service-account credentials: never commit them.
+# Load them from VERTEX_AI_CREDENTIALS, GCP_SPEECH_TO_TEXT_CREDENTIALS, CLOUD_STORAGE_CREDENTIALS
+# (JSON in the env var) or GOOGLE_APPLICATION_CREDENTIALS (path to a file outside the repo).
+config/*.json
+temp/
+*.pem
+*-service-account*.json
+*ServiceAccount*.json

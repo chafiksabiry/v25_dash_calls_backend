@@ -2,6 +2,8 @@ const express = require('express');
 const { protect } = require('../middleware/auth');
 const { authenticateUser } = require('../middleware/companyScope');
 const access = require('../middleware/callsAccess');
+const { requireCompanyUser } = require('../middleware/aiVoiceAccess');
+const { verifyTwilioSignature, verifyTelnyxSignature } = require('../middleware/webhookSignature');
 const callController = require('../controllers/calls');
 const {
   getCalls,
@@ -125,13 +127,15 @@ router.post('/personality-analysis', callController.getPersonalityAnalysis);
 router.post('/get-login-token', callController.getLoginToken);
 router.get('/get-login-token', callController.getLoginToken);
 
-router.post('/ai-outbound', callController.startAiOutbound);
-router.post('/ai-outbound/hangup', callController.hangupAiOutbound);
-router.post('/webhooks/telnyx/ai-outbound', express.json(), callController.handleTelnyxAiOutboundWebhook);
+// Agent vocal IA sortant : jeton de l'entreprise exigé, le prospect / l'appel doit appartenir à son centre.
+router.post('/ai-outbound', requireCompanyUser, callController.startAiOutbound);
+router.post('/ai-outbound/hangup', requireCompanyUser, callController.hangupAiOutbound);
+// Webhooks opérateurs de l'agent IA : authentifiés par la signature Telnyx / Twilio (voir middleware/webhookSignature.js).
+router.post('/webhooks/telnyx/ai-outbound', verifyTelnyxSignature, callController.handleTelnyxAiOutboundWebhook);
 router.post('/webhooks/telnyx/call-control', express.json(), callController.handleTelnyxCallControlWebhook);
 // Twilio AI outbound (form-urlencoded by default from Twilio — express.urlencoded already applied upstream)
-router.post('/webhooks/twilio/ai-outbound/voice', callController.handleTwilioAiOutboundVoice);
-router.post('/webhooks/twilio/ai-outbound/status', callController.handleTwilioAiOutboundStatus);
-router.post('/webhooks/twilio/ai-outbound/recording', callController.handleTwilioAiOutboundRecording);
+router.post('/webhooks/twilio/ai-outbound/voice', verifyTwilioSignature, callController.handleTwilioAiOutboundVoice);
+router.post('/webhooks/twilio/ai-outbound/status', verifyTwilioSignature, callController.handleTwilioAiOutboundStatus);
+router.post('/webhooks/twilio/ai-outbound/recording', verifyTwilioSignature, callController.handleTwilioAiOutboundRecording);
 
 module.exports = router;

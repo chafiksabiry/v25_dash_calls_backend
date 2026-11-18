@@ -3455,16 +3455,17 @@ exports.startTelnyxRecording = async (req, res) => {
 /**
  * POST /api/calls/ai-outbound
  * Start a per-lead AI voice outbound call (Gemini/OpenAI Live + Telnyx or Twilio stream).
- * Body: { leadId, gigId?, companyId? }
+ * Auth: company JWT (requireCompanyUser). Body: { leadId, gigId? } — the lead and its gig must belong to the caller's company.
  */
 exports.startAiOutbound = async (req, res) => {
   try {
     const { startAiOutboundCall } = require('../services/aiOutboundCallService');
-    const { leadId, gigId, companyId } = req.body || {};
+    const { leadId, gigId } = req.body || {};
+    // Centre de l'appelant résolu par requireCompanyUser (jamais lu dans le corps ou les en-têtes).
     const result = await startAiOutboundCall({
       leadId,
       gigId,
-      companyId: companyId || req.user?.companyId || req.headers['x-company-id'],
+      companyId: req.companyId,
       req,
     });
     return res.status(200).json(result);
@@ -3487,7 +3488,7 @@ exports.hangupAiOutbound = async (req, res) => {
   try {
     const { hangupAiOutboundCall } = require('../services/aiOutboundCallService');
     const { callControlId, callId } = req.body || {};
-    const result = await hangupAiOutboundCall({ callControlId, callId });
+    const result = await hangupAiOutboundCall({ callControlId, callId, companyId: req.companyId });
     return res.status(200).json(result);
   } catch (error) {
     const status = error.status || 500;

@@ -332,6 +332,33 @@ function resolveOpeningPrompt(voiceAssistant, callScript) {
  * Start an AI outbound call for one lead (Telnyx Call Control or Twilio Media Streams).
  * Uses any active gig voice line (Twilio or Telnyx).
  */
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+const idOf = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'object') {
+    if (typeof v.toHexString === 'function') return v.toHexString(); // ObjectId (dont _id renvoie lui-même)
+    if (v.$oid) return String(v.$oid);
+    if (v._id && v._id !== v) return idOf(v._id);
+  }
+  return String(v);
+};
+
+/**
+ * Le prospect doit appartenir au centre de l'appelant ; son gig aussi, s'il porte un centre.
+ * Fermé par défaut : sans centre connu, ou sans centre sur le prospect, l'appel est refusé.
+ */
+function assertLeadAndGigOwnership({ companyId, lead, gig }) {
+  if (!companyId) throw httpError(403, 'Not allowed for this company');
+  if (idOf(lead.companyId) !== String(companyId)) throw httpError(403, 'Not allowed for this lead');
+  if (!gig) throw httpError(404, 'Gig not found');
+  if (gig.companyId && idOf(gig.companyId) !== String(companyId)) throw httpError(403, 'Not allowed for this gig');
+}
+
 async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
   if (!leadId || !mongoose.Types.ObjectId.isValid(leadId)) {
     const err = new Error('leadId is required');
@@ -366,6 +393,10 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
+  // Contrôle d'appartenance AVANT toute lecture de configuration ou numérotation.
+  const gig = await Gig.findById(resolvedGigId).lean();
+  assertLeadAndGigOwnership({ companyId, lead, gig });
+
   const voiceAssistant = await loadGigVoiceAssistant(resolvedGigId);
   console.log('[AiOutbound] voiceAssistant check', {
     leadId: String(leadId),
@@ -399,7 +430,6 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
-  const gig = await Gig.findById(resolvedGigId).lean();
   const callScript = await loadGigCallScript(resolvedGigId);
   const base = publicBaseUrl(req);
 
@@ -414,7 +444,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     agent: aiAgentId,
     lead: lead._id,
     gigId: resolvedGigId,
-    companyId: companyId || lead.companyId || null,
+    companyId: String(companyId),
     sid: `pending-ai-${Date.now()}`,
     direction: 'outbound-api',
     from: line.phoneNumber,
@@ -439,7 +469,7 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     callMongoId: String(callDoc._id),
     leadId: String(lead._id),
     gigId: resolvedGigId,
-    companyId: companyId || (lead.companyId ? String(lead.companyId) : null),
+    companyId: String(companyId),
     from: line.phoneNumber,
     to: toNumber,
     callControlId: null,
@@ -1007,7 +1037,8 @@ function getActiveSession(callControlId) {
  * Hang up an active AI outbound leg (Telnyx Call Control id or Twilio Call SID).
  * Body key: callControlId (returned by startAiOutboundCall) or callId.
  */
-async function hangupAiOutboundCall({ callControlId, callId }) {
+async function hangupAiOutboundCall({ callControlId, callId, companyId }) {
+  if (!companyId) throw httpError(403, 'Not allowed for this company');
   let resolvedControlId = callControlId ? String(callControlId) : null;
   let callDoc = null;
 
@@ -1025,6 +1056,16 @@ async function hangupAiOutboundCall({ callControlId, callId }) {
   }
 
   const ctx = activeSessions.get(resolvedControlId);
+
+  // L'appel visé doit appartenir au centre de l'appelant (session active, sinon document d'appel par SID).
+  if (!ctx && !callDoc) {
+    callDoc = await Call.findOne({ sid: resolvedControlId }).lean();
+  }
+  const ownerCompany = idOf(ctx?.companyId) || idOf(callDoc?.companyId);
+  if (!ctx && !callDoc) throw httpError(404, 'Call not found');
+  if (ownerCompany !== String(companyId)) throw httpError(403, 'Not allowed for this call');
+  // Un callId fourni en plus doit désigner le même appel (pas de finalisation d'un appel d'un autre centre).
+  if (callId && ctx?.callMongoId && String(callId) !== String(ctx.callMongoId)) throw httpError(403, 'Not allowed for this call');
   const telephony =
     ctx?.telephonyProvider ||
     callDoc?.provider ||
@@ -1083,7 +1124,7 @@ async function hangupAiOutboundCall({ callControlId, callId }) {
   const cleaned = cleanupAiOutboundSession(resolvedControlId);
   const callMongoId =
     cleaned?.callMongoId ||
-    (callId && mongoose.Types.ObjectId.isValid(callId) ? String(callId) : null);
+    (callDoc?._id ? String(callDoc._id) : null); // appel dont l'appartenance a été vérifiée ci-dessus
   await markAiOutboundCompleted(callMongoId, resolvedControlId);
   scheduleAiOutboundFinalize(callMongoId, resolvedControlId);
 

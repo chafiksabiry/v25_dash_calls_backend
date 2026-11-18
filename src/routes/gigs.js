@@ -1,12 +1,14 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
 const { getGig, updateGigVoiceAssistant } = require('../controllers/gigs');
+const { requireCompanyUser, guardGigOwnership } = require('../middleware/aiVoiceAccess');
 
 const router = express.Router();
 
-// Company telephony UI calls this without dash_calls JWT (same as /api/calls/ai-outbound).
-router.put('/:id/voice-assistant', updateGigVoiceAssistant);
-router.get('/:id/voice-assistant', async (req, res) => {
+// Assistant vocal IA d'un gig (activation + prompt joué en direct) : jeton de l'entreprise exigé,
+// le gig doit appartenir au centre de l'appelant, en lecture comme en écriture.
+router.put('/:id/voice-assistant', requireCompanyUser, guardGigOwnership(), updateGigVoiceAssistant);
+router.get('/:id/voice-assistant', requireCompanyUser, guardGigOwnership(), async (req, res) => {
   try {
     const mongoose = require('mongoose');
     const gigIdStr = String(req.params.id);
