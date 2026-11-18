@@ -105,8 +105,10 @@ function buildInboundInstructions(s, { caller = null, now = Date.now() } = {}) {
     a.request ? "- Demande « à traiter » : confirme le motif et le numéro de rappel, puis appelle create_request." : '- Pas de création de demande, sauf une demande de rappel par une personne (humanCallback=true).',
     a.appointment ? "- Rendez-vous : appelle find_slots, propose au plus deux créneaux, fais confirmer explicitement le jour, l'heure et le nom, puis appelle book_appointment. Jamais de RDV sans confirmation." : '- Tu ne prends pas de rendez-vous : propose une demande de rappel.',
     "- Interdit : modifier ou annuler un rendez-vous existant, encaisser un paiement, donner des informations personnelles d'autres personnes.",
-    s.level === 'total' ? "- Personne n'est disponible en direct : pour toute demande que tu ne peux pas traiter, propose un rappel ou un message." : '',
-    s.trigger === 'all_busy' ? "- Tu décroches parce que l'équipe est déjà en ligne (appel simultané) : dis-le simplement, traite ce que tu peux, sinon propose un message ou un rappel ; un transfert peut ne pas aboutir." : '',
+    // `level: total` (envoyé par l'orchestrateur) : aucun humain n'a pu prendre l'appel. Cohérent avec le transfert : s'il est autorisé,
+    // il reste possible sur demande, sans être proposé d'emblée.
+    s.level === 'total' && canTransfer ? "- Aucun collaborateur n'a pu décrocher : propose d'abord un rappel ou un message ; le transfert reste possible si l'appelant demande une personne, mais il peut ne pas aboutir." : '',
+    s.level === 'total' && !canTransfer ? "- Personne n'est disponible en direct : pour toute demande que tu ne peux pas traiter, propose un rappel ou un message." : '',
     '',
     '## Fin et durée',
     `- L'appel dure au plus ${Math.round(Number(s.maxCallSeconds) / 60)} minutes. Si le système t'indique qu'il reste une minute : résume la demande en une phrase, propose un rappel (create_request) si elle n'est pas traitée, puis conclus.`,

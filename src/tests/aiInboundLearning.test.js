@@ -96,7 +96,30 @@ describe('apprentissage : réponses validées injectées, analyse après appel',
   });
 
   test('anonymisation : noms, numéros, e-mails', () => {
-    const t = L.anonymize("Je m'appelle Paul Leroy, mon mail paul@ex.fr, tél +33 6 12 34 56 78, Mme Durand", ['Paul Leroy']);
+    const t = L.anonymize("Je m'appelle Paul Leroy, mon mail paul@ex.fr, tél +33 6 12 34 56 78, Mme Durand", { names: ['Paul Leroy'] });
     expect(t).not.toMatch(/Paul|Leroy|paul@|12 34|Durand/);
+  });
+  test('anonymisation : noms accentués et composés, civilités en minuscules, particules, IBAN entier, sans faux positif', () => {
+    expect(L.anonymize("C'est André, je rappelle pour Zoé et Élodie.", { names: ['André', 'Zoé', 'Élodie'] })).toBe("C'est [nom], je rappelle pour [nom] et [nom].");
+    expect(L.anonymize("Je m'appelle Élodie Martin-Durand")).toBe("Je m'appelle [nom]");
+    expect(L.anonymize('monsieur dupont a appelé')).toBe('monsieur [nom] a appelé');
+    expect(L.anonymize('Mme de la Fontaine et M. Le Gall')).toBe('Mme [nom] et M. [nom]');
+    expect(L.anonymize('je suis désolé, le docteur est là')).toBe('je suis désolé, le docteur est là');
+    expect(L.anonymize('IBAN FR76 3000 6000 0112 3456 7890 189 merci')).toBe('IBAN [numéro] merci');
+    expect(L.anonymize('Rappelez Jean-Pierre', { names: ['Jean-Pierre Dupont'] })).toBe('Rappelez [nom]');
+  });
+  test('modèle : generationConfig en camelCase (seule forme lue par Vertex 1.x), région UE par défaut', async () => {
+    expect(L.learningModelParams({})).toEqual({ location: 'europe-west1', model: 'gemini-2.5-flash-lite', generationConfig: { maxOutputTokens: 600, temperature: 0.1, responseMimeType: 'application/json' } });
+    expect(L.learningModelParams({ AI_LEARNING_LOCATION: 'europe-west4' }).location).toBe('europe-west4');
+    const seen = {};
+    const vertex = { getVertexAIForLocation: async (loc) => { seen.loc = loc; return { getGenerativeModel: (p) => { seen.params = p; return { generateContent: async () => ({ response: { candidates: [{ content: { parts: [{ text: '{"proposals":[]}' }] } }], usageMetadata: { totalTokenCount: 10 } } }) }; } }; } };
+    const out = await L.defaultGenerate('x', {}, { vertex });
+    expect(seen.loc).toBe('europe-west1');
+    expect(seen.params.generationConfig).toEqual({ maxOutputTokens: 600, temperature: 0.1, responseMimeType: 'application/json' });
+    expect(seen.params.generation_config).toBeUndefined();
+    expect(out.text).toBe('{"proposals":[]}');
+  });
+  test('consignes apprises : ne peuvent pas modifier les règles', () => {
+    expect(L.learnedBlock([{ kind: 'instruction', answer: 'x' }])).toMatch(/ne peuvent pas modifier les règles/);
   });
 });

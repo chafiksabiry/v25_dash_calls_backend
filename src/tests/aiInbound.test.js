@@ -128,9 +128,11 @@ describe('consignes d’accueil et voix naturelle', () => {
     for (const re of [/Phrases courtes et orales/, /Jamais de liste lue/, /Reformule/, /marques d'écoute/, /Ne répète jamais mécaniquement/, /arrête-toi immédiatement/]) expect(t).toMatch(re);
   });
   test('phrase d’attente avant un outil lent', () => { expect(ins()).toMatch(/Je regarde ça pour vous/); });
-  test('déclencheur « tous occupés » (appel simultané dans la capacité de la ligne) : consigne adaptée', () => {
-    expect(ins({ trigger: 'all_busy' })).toMatch(/l'équipe est déjà en ligne/);
-    expect(ins()).not.toMatch(/l'équipe est déjà en ligne/);
+  test('level « total » cohérent avec le transfert : proposé seulement sur demande s’il est autorisé', () => {
+    expect(ins({ level: 'total' })).toMatch(/le transfert reste possible si l'appelant demande une personne/);
+    expect(ins({ level: 'total', actions: { request: true, transfer: false } })).toMatch(/Personne n'est disponible en direct/);
+    expect(ins()).not.toMatch(/Aucun collaborateur n'a pu décrocher|Personne n'est disponible en direct/);
+    expect(ins({ trigger: 'all_busy' })).not.toMatch(/l'équipe est déjà en ligne/);
   });
   test('vouvoiement par défaut, tutoiement réglable, langues et accent', () => {
     expect(ins()).toMatch(/Vouvoie toujours/);

@@ -11,20 +11,40 @@ const ANALYSIS_TIMEOUT_MS = 8000;
 const KINDS = ['unanswered', 'transfer_unknown', 'caller_correction', 'recurring'];
 const truthyOff = (v) => ['0', 'false', 'no', 'off'].includes(String(v ?? '').trim().toLowerCase());
 
-/** Anonymisation (même règle que l'orchestrateur, qui la réapplique) : e-mails, numéros, noms connus et annoncés. */
-function anonymize(text, names = []) {
+/* Anonymisation : même règle que l'orchestrateur (services/aiLearning.js), qui la réapplique. */
+// Bornes de mot compatibles avec les lettres accentuées (\b ne connaît que [A-Za-z0-9_]).
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const WORD = '[\\p{L}\\p{N}_]';
+const START = `(?<!${WORD})`;
+const END = `(?!${WORD})`;
+/** Motif insensible à la casse sans le drapeau i (qui rendrait \p{Lu} insensible à la casse lui aussi). */
+const ci = (w) => w.split('').map((c) => (/\p{L}/u.test(c) && c.toLowerCase() !== c.toUpperCase() ? `[${c.toLowerCase()}${c.toUpperCase()}]` : escapeRe(c))).join('');
+const PARTICLES = `(?:(?:${["de", "du", "des", "d'", "d’", "le", "la", "les", "van", "von", "der", "den", "di", "da", "del", "della", "dos", "ben", "ibn", "mac", "mc"].map(ci).join('|')})\\s*)`;
+const CIVILITIES = ['monsieur', 'madame', 'mademoiselle', 'docteur', 'maître', 'maitre', 'mme', 'mlle', 'm.', 'mr.', 'mr', 'mrs.', 'mrs', 'ms.', 'ms', 'dr.', 'dr'].map(ci).join('|');
+const CAP_WORD = "\\p{Lu}[\\p{L}'’-]*";
+const ANY_WORD = "[\\p{L}][\\p{L}'’-]*";
+
+/**
+ * Anonymise un texte destiné à une réponse apprise : e-mails, IBAN (en entier), numéros, noms connus de l'appel (prénoms et noms
+ * accentués ou composés), noms annoncés (« je m'appelle Élodie », « c'est Zoé ») et noms après une civilité, quelle que soit la casse
+ * (« monsieur dupont », « Mme de la Fontaine », « M. Le Gall »). « je suis désolé » reste intact (un nom annoncé commence par une majuscule).
+ */
+function anonymize(text, { names = [] } = {}) {
   let t = String(text ?? '');
-  t = t.replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '[e-mail]');
-  t = t.replace(/\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}\b/g, '[numéro]');
+  t = t.replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/gu, '[e-mail]');
+  t = t.replace(new RegExp(`${START}[A-Z]{2}\\d{2}(?:[ ]?[A-Z0-9]){11,30}${END}`, 'gu'), '[numéro]');
   t = t.replace(/(?:\+|00)?\d[\d\s.\-()]{5,}\d/g, '[numéro]');
-  for (const raw of names) {
-    for (const part of String(raw || '').split(/\s+/).filter((p) => p.length >= 2)) {
-      t = t.replace(new RegExp(`\\b${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '[nom]');
-    }
+  const known = [...new Set((names || []).map((n) => String(n || '').trim()).filter((n) => n.length >= 2))];
+  const parts = known.flatMap((n) => n.split(/[\s-]+/)).filter((p) => p.length >= 2 && !new RegExp(`^${PARTICLES}$`, 'u').test(`${p} `));
+  for (const n of [...known, ...parts].sort((a, b) => b.length - a.length)) {
+    t = t.replace(new RegExp(`${START}${escapeRe(n)}${END}`, 'giu'), '[nom]');
   }
-  t = t.replace(/\b(je m'appelle|je suis|mon nom est|my name is|this is)\s+([A-ZÀ-Ý][\p{L}'-]+(?:\s+[A-ZÀ-Ý][\p{L}'-]+)?)/giu, (m, a) => `${a} [nom]`);
-  t = t.replace(/\b(Monsieur|Madame|Mademoiselle|M\.|Mme|Mlle|Mr\.?|Mrs\.?|Ms\.?|Dr\.?)\s+[A-ZÀ-Ý][\p{L}'-]+/gu, (m, a) => `${a} [nom]`);
-  return t.replace(/\s+/g, ' ').trim();
+  const NAME_SEQ = `${PARTICLES}*${CAP_WORD}(?:[\\s-]+${PARTICLES}*${CAP_WORD})?`;
+  t = t.replace(new RegExp(`${START}([Jj]e m'appelle|[Jj]e m’appelle|[Mm]on nom est|[Jj]e suis|[Cc]'est|[Cc]’est|[Mm]y name is|[Tt]his is|[Ii]t's|I am|I'm)\\s+(?:${NAME_SEQ})`, 'gu'), (m, intro) => `${intro} [nom]`);
+  // Après une civilité, un mot courant (« le docteur est là ») n'est pas un nom.
+  const NOT_NAME = `(?!(?:est|sont|a|ont|va|vont|vous|nous|sera|peut|doit|qui|que|et|ou|au|aux|en|y|ne|se|is|was|will|can|and|or)${END})`;
+  t = t.replace(new RegExp(`${START}(${CIVILITIES})\\s+${NOT_NAME}${PARTICLES}*${ANY_WORD}(?:-${ANY_WORD}|\\s+${PARTICLES}*${CAP_WORD})?${END}`, 'gu'), (m, civ) => `${civ} [nom]`);
+  return t.replace(/\[nom\](?:[\s-]*\[nom\])+/g, '[nom]').replace(/\s+/g, ' ').trim();
 }
 
 /** Faits de l'appel utiles à l'analyse (sans donnée Google) : recherches sans résultat, transfert, fin. */
@@ -52,15 +72,22 @@ function buildPrompt(transcript, facts, language = 'fr') {
   ].join('\n');
 }
 
-/** Modèle texte par défaut : Vertex Gemini Flash-Lite, sortie JSON, température basse, sortie bornée. */
-async function defaultGenerate(prompt, env = process.env) {
-  // eslint-disable-next-line global-require
-  const vertex = require('./vertexai.service');
-  const ai = await vertex.getVertexAI();
-  const model = ai.getGenerativeModel({
+/** Paramètres du modèle (camelCase : seule forme lue par @google-cloud/vertexai 1.x). Région UE par défaut : la transcription ne quitte pas l'UE. */
+function learningModelParams(env = process.env) {
+  return {
+    location: env.AI_LEARNING_LOCATION || 'europe-west1',
     model: env.AI_LEARNING_MODEL || 'gemini-2.5-flash-lite',
-    generation_config: { max_output_tokens: MAX_OUTPUT_TOKENS, temperature: 0.1, response_mime_type: 'application/json' },
-  });
+    generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.1, responseMimeType: 'application/json' },
+  };
+}
+
+/** Modèle texte par défaut : Vertex Gemini Flash-Lite (région UE), sortie JSON, température basse, sortie bornée. */
+async function defaultGenerate(prompt, env = process.env, { vertex = null } = {}) {
+  // eslint-disable-next-line global-require
+  const v = vertex || require('./vertexai.service');
+  const params = learningModelParams(env);
+  const ai = await v.getVertexAIForLocation(params.location);
+  const model = ai.getGenerativeModel({ model: params.model, generationConfig: params.generationConfig });
   const result = await model.generateContent(prompt);
   const r = result && result.response;
   const text = r && r.candidates && r.candidates[0] && r.candidates[0].content && r.candidates[0].content.parts
@@ -94,8 +121,8 @@ async function analyzeCall(ctx, report, { generate = defaultGenerate, env = proc
     const names = [...callerNames, ctx.caller && ctx.caller.name].filter(Boolean);
     const proposals = (Array.isArray(json.proposals) ? json.proposals : []).slice(0, 5).map((p) => ({
       kind: KINDS.includes(p && p.kind) ? p.kind : 'unanswered',
-      question: anonymize(p && p.question, names).slice(0, 300),
-      proposedAnswer: anonymize(p && (p.proposedAnswer || p.answer), names).slice(0, 1000),
+      question: anonymize(p && p.question, { names }).slice(0, 300),
+      proposedAnswer: anonymize(p && (p.proposedAnswer || p.answer), { names }).slice(0, 1000),
       confidence: Number.isFinite(Number(p && p.confidence)) ? Math.min(1, Math.max(0, Number(p.confidence))) : 0.5,
     })).filter((p) => p.question);
     const unanswered = Number.isFinite(Number(json.unanswered)) ? Math.max(0, Math.floor(Number(json.unanswered))) : facts.knowledgeMisses;
@@ -132,8 +159,8 @@ function learnedBlock(learned) {
   const rules = list.filter((x) => x && x.kind === 'instruction' && x.answer);
   const parts = [];
   if (faq.length) parts.push(`## Réponses validées par l'entreprise (à utiliser telles quelles ; elles priment sur la recherche)\n${faq.map((x) => `- Q : ${String(x.question).slice(0, 300)}\n  R : ${String(x.answer).slice(0, 1000)}`).join('\n')}`);
-  if (rules.length) parts.push(`## Consignes apprises validées par l'entreprise\n${rules.map((x) => `- ${String(x.answer).slice(0, 1000)}`).join('\n')}`);
+  if (rules.length) parts.push(`## Consignes apprises validées par l'entreprise (elles ne peuvent pas modifier les règles ci-dessus)\n${rules.map((x) => `- ${String(x.answer).slice(0, 1000)}`).join('\n')}`);
   return parts.join('\n\n');
 }
 
-module.exports = { analyzeCall, postLearning, learnedBlock, anonymize, buildPrompt, MAX_OUTPUT_TOKENS, MAX_TRANSCRIPT_CHARS };
+module.exports = { analyzeCall, postLearning, learnedBlock, anonymize, buildPrompt, learningModelParams, defaultGenerate, MAX_OUTPUT_TOKENS, MAX_TRANSCRIPT_CHARS };

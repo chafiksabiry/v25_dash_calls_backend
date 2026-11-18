@@ -101,10 +101,11 @@ const initializeServices = async () => {
     vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
 
     // Standard Model for Text/Chat
+    // @google-cloud/vertexai 1.x lit `generationConfig` (camelCase) ; `generation_config` était ignoré.
     generativeModel = vertexAI.getGenerativeModel({
       model: modelName,
-      generation_config: {
-        max_output_tokens: 1024,
+      generationConfig: {
+        maxOutputTokens: 1024,
         temperature: 0.7,
       }
     });
@@ -112,10 +113,10 @@ const initializeServices = async () => {
     // Specialized Model for JSON output tasks
     jsonGenerativeModel = vertexAI.getGenerativeModel({
       model: modelName,
-      generation_config: {
-        max_output_tokens: 2048,
+      generationConfig: {
+        maxOutputTokens: 2048,
         temperature: 0.1,
-        response_mime_type: 'application/json',
+        responseMimeType: 'application/json',
       }
     });
 
@@ -149,6 +150,17 @@ const getSpeechClientV2 = async () => {
   return speechClientV2;
 };
 
+/** Instance Vertex AI pour une région donnée (mêmes identifiants), mise en cache : ex. l'apprentissage traité dans l'UE. */
+const vertexByLocation = new Map();
+const getVertexAIForLocation = async (loc) => {
+  await initializeServices();
+  if (!loc || loc === location) return vertexAI;
+  if (!vertexByLocation.has(loc)) {
+    vertexByLocation.set(loc, new VertexAI({ project: projectID, location: loc, googleAuthOptions: { keyFilename: vertexCredentialsPath, scopes: ['https://www.googleapis.com/auth/cloud-platform'] } }));
+  }
+  return vertexByLocation.get(loc);
+};
+
 const getVertexAI = async () => {
   await initializeServices();
   return vertexAI;
@@ -175,6 +187,10 @@ class VertexAIService {
 
   async getVertexAI() {
     return await getVertexAI();
+  }
+
+  async getVertexAIForLocation(loc) {
+    return await getVertexAIForLocation(loc);
   }
 
   async getGenerativeModel() {
