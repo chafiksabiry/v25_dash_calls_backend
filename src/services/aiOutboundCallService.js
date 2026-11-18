@@ -15,6 +15,14 @@ const { OpenAIRealtimeService } = require('./integrations/openaiRealtimeService'
 const { GeminiLiveService } = require('./integrations/geminiLiveService');
 const telnyxService = require('./integrations/telnyxService');
 const { buildRealtimeTools, executeVoiceTool } = require('./aiVoiceTools');
+const {
+  resolveCallLanguage,
+  getRecordingNotice,
+  engineNoticeInstruction,
+} = require('./aiOutboundRecordingNotice');
+
+/** Délai max d'attente de la fin de l'annonce Telnyx (call.speak.ended) avant d'ouvrir le flux IA. */
+const NOTICE_SPEAK_TIMEOUT_MS = Number(process.env.AI_OUTBOUND_NOTICE_TIMEOUT_MS) || 8000;
 
 /** gemini (default) | openai — override with AI_VOICE_PROVIDER */
 function resolveVoiceProvider() {
@@ -771,33 +779,92 @@ async function startMediaStream(callControlId) {
     console.log('[AiOutbound] Twilio stream will connect via TwiML', callControlId, ctx.streamUrl);
   }
 
-  // 3) Kick off with script opening
-  realtime.send({
-    type: 'conversation.item.create',
-    item: {
-      type: 'message',
-      role: 'user',
-      content: [
-        {
-          type: 'input_text',
-          text: resolveOpeningPrompt(ctx.voiceAssistant, ctx.callScript),
-        },
-      ],
-    },
-  });
-  realtime.createResponse();
+  // 3) Kick off with script opening — only once the recording notice has been played.
+  // Twilio: TwiML <Say> (annonce) précède <Connect><Stream> ; l'ouverture IA attend le « start » du flux,
+  // sinon l'audio généré pendant l'annonce serait perdu. Telnyx : l'annonce est déjà jouée (call.answered).
+  const kickoff = () => {
+    const opening = resolveOpeningPrompt(ctx.voiceAssistant, ctx.callScript);
+    const text = ctx.noticeViaEngine
+      ? `${engineNoticeInstruction(resolveCallLanguage(ctx))} ${opening}`
+      : opening;
+    realtime.send({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text }],
+      },
+    });
+    realtime.createResponse();
+  };
+  if (telephony === 'twilio' && !ctx.mediaStreamId) {
+    ctx.onStreamStart = () => {
+      ctx.onStreamStart = null;
+      kickoff();
+    };
+  } else {
+    kickoff();
+  }
 
   await Call.findByIdAndUpdate(ctx.callMongoId, { status: 'in-progress' });
+  // Recording: Telnyx starts at call.answered (before the notice); Twilio uses record:true on dial.
+}
 
-  // Recording: Telnyx explicit start; Twilio uses record:true on dial.
-  if (telephony === 'telnyx') {
-    try {
-      await telnyxService.startCallRecording(callControlId);
-      console.log('[AiOutbound] record_start ok', callControlId);
-    } catch (err) {
-      console.warn('[AiOutbound] record_start failed:', err?.message || err);
-    }
+/**
+ * Telnyx : au décroché, démarre l'enregistrement puis joue l'annonce « Cet appel est enregistré. »
+ * (langue de l'appel) AVANT d'ouvrir le flux IA. Le flux s'ouvre à call.speak.ended, ou après
+ * NOTICE_SPEAK_TIMEOUT_MS. Si l'annonce ne peut pas être jouée, l'IA la dit elle-même en premier.
+ */
+async function announceRecordingThenStream(callControlId) {
+  const ctx = activeSessions.get(callControlId);
+  if (!ctx || ctx.streamStarted || ctx.noticeStarted) return;
+  ctx.noticeStarted = true;
+
+  try {
+    await telnyxService.startCallRecording(callControlId);
+    console.log('[AiOutbound] record_start ok', callControlId);
+  } catch (err) {
+    console.warn('[AiOutbound] record_start failed:', err?.message || err);
   }
+
+  const notice = getRecordingNotice(resolveCallLanguage(ctx));
+  let res = null;
+  try {
+    res = await telnyxPost(`https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`, {
+      payload: notice.text,
+      voice: 'female',
+      language: notice.telnyx,
+    });
+  } catch (err) {
+    console.warn('[AiOutbound] recording notice speak threw', err?.message || err);
+  }
+
+  if (!res || res.status >= 400) {
+    console.warn('[AiOutbound] recording notice speak failed — AI will say it first', res?.status);
+    ctx.noticeViaEngine = true;
+    await startMediaStream(callControlId);
+    return;
+  }
+
+  console.log('[AiOutbound] recording notice playing', callControlId, notice.language);
+  ctx.noticePending = true;
+  ctx.noticeTimer = setTimeout(() => {
+    if (!ctx.noticePending) return;
+    console.warn('[AiOutbound] call.speak.ended not received — opening stream', callControlId);
+    finishRecordingNotice(callControlId).catch((err) =>
+      console.error('[AiOutbound] stream after notice failed', err?.message || err)
+    );
+  }, NOTICE_SPEAK_TIMEOUT_MS);
+  if (typeof ctx.noticeTimer?.unref === 'function') ctx.noticeTimer.unref();
+}
+
+async function finishRecordingNotice(callControlId) {
+  const ctx = activeSessions.get(callControlId);
+  if (!ctx || !ctx.noticePending) return;
+  ctx.noticePending = false;
+  if (ctx.noticeTimer) clearTimeout(ctx.noticeTimer);
+  ctx.noticeTimer = null;
+  await startMediaStream(callControlId);
 }
 
 async function findAiOutboundCallDoc(callControlId, callMongoId) {
@@ -952,6 +1019,8 @@ function cleanupAiOutboundSession(callControlId) {
       /* ignore */
     }
   }
+  if (ctx?.noticeTimer) clearTimeout(ctx.noticeTimer);
+  if (ctx) ctx.noticePending = false;
   if (ctx?.streamToken) sessionsByStreamToken.delete(ctx.streamToken);
   activeSessions.delete(callControlId);
   return ctx;
@@ -966,7 +1035,13 @@ async function handleAiOutboundWebhook(event) {
   console.log('[AiOutbound] webhook', type, callControlId);
 
   if (type === 'call.answered') {
-    await startMediaStream(callControlId);
+    await announceRecordingThenStream(callControlId);
+    return { ok: true };
+  }
+
+  if (type === 'call.speak.ended') {
+    if (payload.status === 'call_hangup') return { ok: true };
+    await finishRecordingNotice(callControlId);
     return { ok: true };
   }
 
@@ -1129,6 +1204,10 @@ async function handleTwilioAiOutboundVoice(req) {
     }
   }
 
+  // Annonce d'enregistrement jouée par Twilio avant toute parole de l'IA (langue de l'appel).
+  const notice = getRecordingNotice(resolveCallLanguage(ctx));
+  vr.say(notice.twilio, notice.text);
+
   try {
     await startMediaStream(callSid || ctx.callControlId);
   } catch (err) {
@@ -1209,6 +1288,7 @@ async function handleTwilioAiOutboundRecording(req) {
 
 module.exports = {
   startAiOutboundCall,
+  NOTICE_SPEAK_TIMEOUT_MS,
   hangupAiOutboundCall,
   handleAiOutboundWebhook,
   handleTwilioAiOutboundVoice,
