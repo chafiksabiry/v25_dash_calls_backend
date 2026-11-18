@@ -641,7 +641,7 @@ exports.createCall = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -1690,7 +1690,9 @@ exports.fetchRecording = async (req, res) => {
   }
 
   try {
-    const recording = await twilioService.fetchTwilioRecording(recordingUrl, userId);
+    // URL canonique reconstruite par callsAccess.guardFetchRecording : jamais la chaîne envoyée par le client.
+    if (!req.twilioRecordingUrl) return res.status(400).json({ message: 'recordingUrl must be a Twilio recording of this account' });
+    const recording = await twilioService.fetchTwilioRecording(req.twilioRecordingUrl, userId);
     if (!recording) {
       return res.status(500).json({ message: 'Error fetching the recording' });
     }

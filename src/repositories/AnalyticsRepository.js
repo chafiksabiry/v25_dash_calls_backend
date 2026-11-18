@@ -1,6 +1,13 @@
 const { Call } = require('../models/Call');
 const { Agent } = require('../models/Agent');
 const { Lead } = require('../models/Lead');
+const mongoose = require('mongoose');
+
+/** Lead.companyId est de type Mixed (ObjectId ou texte selon l'origine, voir internalCenter.companyFilter) : pas de conversion automatique. */
+function leadCompanyFilter(companyId) {
+  const id = String(companyId);
+  return mongoose.Types.ObjectId.isValid(id) ? { $in: [new mongoose.Types.ObjectId(id), id] } : id;
+}
 
 /**
  * Toutes les lectures sont cantonnées à UNE entreprise (celle de l'appelant, vérifiée par callsAccess.requireCallerCompany).
@@ -16,7 +23,7 @@ class AnalyticsRepository {
     const [calls, agents, leads] = await Promise.all([
       Call.find({ companyId }),
       companyAgents(companyId),
-      Lead.find({ companyId })
+      Lead.find({ companyId: leadCompanyFilter(companyId) })
     ]);
 
     return { calls, agents, leads };
@@ -38,4 +45,4 @@ class AnalyticsRepository {
   }
 }
 
-module.exports = { AnalyticsRepository, companyAgents };
+module.exports = { AnalyticsRepository, companyAgents, leadCompanyFilter };

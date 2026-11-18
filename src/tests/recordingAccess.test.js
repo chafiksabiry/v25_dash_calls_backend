@@ -292,6 +292,9 @@ describe('POST /fetch-recording', () => {
 
   test('URL hors enregistrement Twilio du compte : 400, aucun téléchargement', async () => {
     const bad = [
+      `https://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE.toUpperCase()}.mp3`,
+      `https://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/re${'a'.repeat(32)}.mp3`,
+      `https://API.twilio.com/2010-04-01/Accounts/${ACC}/recordings/${RE}.mp3`,
       'https://evil.example/2010-04-01/Accounts/x/Recordings/y',
       `https://api.twilio.com/2010-04-01/Accounts/AC${'2'.repeat(32)}/Recordings/${RE}.mp3`,
       `http://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE}.mp3`,
@@ -321,6 +324,13 @@ describe('POST /fetch-recording', () => {
     expect(r.status).toBe(200);
     expect(r.body.url).toBeNull();
     expect(mockTwilio.fetchTwilioRecording).toHaveBeenCalledTimes(3);
+  });
+  test('le téléchargement reçoit l’URL canonique reconstruite, pas la chaîne du client', async () => {
+    // Hôte en majuscules et port 443 explicite : normalisés par URL(), l'URL téléchargée est reconstruite.
+    const r = await post({ recordingUrl: `https://API.TWILIO.COM:443/2010-04-01/Accounts/${ACC}/Recordings/${RE}.wav`, userId: 'u' }, token('owner'));
+    expect(r.status).toBe(200);
+    expect(mockTwilio.fetchTwilioRecording).toHaveBeenCalledWith(`https://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE}.wav`, 'u');
+    expect(mockCall.findOne).toHaveBeenCalledWith({ recording_url: { $in: [`https://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE}`, expect.any(String), expect.any(String)], $type: 'string' } });
   });
 });
 
@@ -372,7 +382,48 @@ describe('/api/analytics et /api/dashboard cantonnés à l’entreprise de l’a
     }
     for (const [q] of mockCall.find.mock.calls) expect(q.companyId).toBe(COMPANY);
     for (const [, q] of mockCall.distinct.mock.calls) expect(q.companyId).toBe(COMPANY);
-    for (const [q] of mockLeadModel.find.mock.calls) expect(q).toEqual({ companyId: COMPANY });
+    // Lead.companyId est Mixed : ObjectId OU texte, les deux formes sont cherchées.
+    expect(mockLeadModel.find).toHaveBeenCalled();
+    for (const [q] of mockLeadModel.find.mock.calls) {
+      expect(q.companyId.$in).toHaveLength(2);
+      expect(q.companyId.$in.map(String)).toEqual([COMPANY, COMPANY]);
+      expect(q.companyId.$in[0]).toBeInstanceOf(require('mongoose').Types.ObjectId);
+      expect(typeof q.companyId.$in[1]).toBe('string');
+    }
     for (const [q] of mockAgentModel.find.mock.calls) expect(q).toEqual({ _id: { $in: [] } });
+  });
+});
+
+describe('relecture 2 : fraud-review, création, index', () => {
+  test('PATCH /:id/fraud-review : réponse filtrée pour la secrétaire, URL pour le titulaire', async () => {
+    const c = require('../controllers/calls');
+    const make = () => {
+      const call = { ...doc().toJSON(), flags: { fraud: true }, save: jest.fn(async () => {}) };
+      call.toJSON = () => { const { save, toJSON, ...rest } = call; return { ...rest }; };
+      return call;
+    };
+    mockCall.findById.mockImplementation(async () => make());
+    let res = makeRes();
+    await c.overturnCallFraud(reqFor('secretary', { params: { id: CALL_ID }, body: { decision: 'confirm' } }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({ recording_url: null, recording_url_cloudinary: null });
+    res = makeRes();
+    await c.overturnCallFraud(reqFor('owner', { params: { id: CALL_ID }, body: { decision: 'confirm' } }), res);
+    expect(res.body.data.recording_url).toBe(TWILIO);
+  });
+  test('POST /calls : réponse filtrée', async () => {
+    const c = require('../controllers/calls');
+    mockCall.create = jest.fn(async () => ({ _id: CALL_ID }));
+    mockCall.findById.mockImplementation(() => thenableDoc(doc()));
+    const res = makeRes();
+    await c.createCall(reqFor('secretary', { body: { companyId: COMPANY } }), res);
+    expect(res.statusCode).toBe(201);
+    expect(res.body.data).toMatchObject({ recording_url: null, recording_url_cloudinary: null });
+  });
+  test('index du modèle Call : recording_url partiel (chaîne) et companyId + status', () => {
+    const { Call } = jest.requireActual('../models/Call');
+    const idx = Call.schema.indexes();
+    expect(idx).toContainEqual([{ recording_url: 1 }, expect.objectContaining({ partialFilterExpression: { recording_url: { $type: 'string' } } })]);
+    expect(idx).toContainEqual([{ companyId: 1, status: 1 }, expect.anything()]);
   });
 });

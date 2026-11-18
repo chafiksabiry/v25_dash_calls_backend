@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const { Call } = require('../models/Call');
 const { readFraudScore } = require('../utils/selfCallVoice');
 const { assertCompanyAccess } = require('../middleware/companyScope');
-const { callerCanListen } = require('../utils/recordingAccess');
+const { callerCanListen, applyRecordingAccess } = require('../utils/recordingAccess');
 const {
   buildCompanyFraudMatchQuery,
   isCallFraudDetected,
@@ -57,7 +57,7 @@ const overturnCallFraud = async (req, res) => {
     };
     await call.save();
 
-    res.status(200).json({ success: true, data: call });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, call) });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ success: false, message: error.message });
     console.error('Error in overturnCallFraud:', error);

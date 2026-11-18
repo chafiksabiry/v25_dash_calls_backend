@@ -82,8 +82,7 @@ const callSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  // Index clairsemé : POST /calls/fetch-recording retrouve l'appel par l'URL Twilio de son enregistrement (callsAccess.guardFetchRecording).
-  recording_url: { type: String, index: { sparse: true } },
+  recording_url: String,
   recording_url_cloudinary: String,
   // Statut d'enregistrement lisible (décision de l'orchestrateur + rattachement de l'URL). Les appels anciens n'ont pas
   // ces champs : l'API renvoie alors un statut dérivé à la lecture (voir utils/recordingStatus.js).
@@ -473,6 +472,12 @@ const callSchema = new mongoose.Schema({
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
+
+// POST /calls/fetch-recording retrouve l'appel par l'URL Twilio de son enregistrement (callsAccess.guardFetchRecording).
+// Index partiel : seuls les appels qui ont une URL (chaîne) y figurent ; la requête répète `$type: 'string'` pour pouvoir l'utiliser.
+callSchema.index({ recording_url: 1 }, { partialFilterExpression: { recording_url: { $type: 'string' } } });
+// Lectures cantonnées à une entreprise (/api/analytics, /api/dashboard/live-calls : companyId, et companyId + status).
+callSchema.index({ companyId: 1, status: 1 });
 
 callSchema.virtual('transaction', {
   ref: 'Transaction',

@@ -1,7 +1,7 @@
 const { Call } = require('../models/Call');
 const { Agent } = require('../models/Agent');
 const { Lead } = require('../models/Lead');
-const { companyAgents } = require('./AnalyticsRepository');
+const { companyAgents, leadCompanyFilter } = require('./AnalyticsRepository');
 
 /** Lectures cantonnées à l'entreprise de l'appelant (voir callsAccess.requireCallerCompany). */
 class DashboardRepository {
@@ -9,7 +9,7 @@ class DashboardRepository {
     return Promise.all([
       Call.find({ companyId }),
       companyAgents(companyId),
-      Lead.find({ companyId })
+      Lead.find({ companyId: leadCompanyFilter(companyId) })
     ]);
   }
 
