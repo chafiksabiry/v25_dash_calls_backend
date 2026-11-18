@@ -107,17 +107,28 @@ describe('apprentissage : réponses validées injectées, analyse après appel',
     expect(L.anonymize('je suis désolé, le docteur est là')).toBe('je suis désolé, le docteur est là');
     expect(L.anonymize('IBAN FR76 3000 6000 0112 3456 7890 189 merci')).toBe('IBAN [numéro] merci');
     expect(L.anonymize('Rappelez Jean-Pierre', { names: ['Jean-Pierre Dupont'] })).toBe('Rappelez [nom]');
+    expect(L.anonymize("Je m'appelle jean dupont et je rappelle")).toBe("Je m'appelle [nom] et je rappelle");
+    expect(L.anonymize('my name is john smith')).toBe('my name is [nom]');
+    expect(L.anonymize("Bonjour, c'est Jean de la part de Mme Martin")).toBe("Bonjour, c'est [nom] de la part de [nom]");
+    expect(L.anonymize("C'est Paris, c'est mardi")).toBe("C'est Paris, c'est mardi");
   });
-  test('modèle : generationConfig en camelCase (seule forme lue par Vertex 1.x), région UE par défaut', async () => {
-    expect(L.learningModelParams({})).toEqual({ location: 'europe-west1', model: 'gemini-2.5-flash-lite', generationConfig: { maxOutputTokens: 600, temperature: 0.1, responseMimeType: 'application/json' } });
-    expect(L.learningModelParams({ AI_LEARNING_LOCATION: 'europe-west4' }).location).toBe('europe-west4');
+  test('modèle : Gemini 3.1 Flash-Lite, multi-région UE (point d’accès eu), generationConfig camelCase, réflexion minimale', async () => {
+    const gc = { maxOutputTokens: 600, temperature: 0.1, responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'MINIMAL' } };
+    expect(L.learningModelParams({})).toEqual({ location: 'eu', apiEndpoint: 'aiplatform.eu.rep.googleapis.com', model: 'gemini-3.1-flash-lite', generationConfig: gc });
+    expect(L.learningModelParams({ AI_LEARNING_LOCATION: 'europe-west4' }).apiEndpoint).toBeUndefined();
+    const client = L.learningVertexClient(L.learningModelParams({}), { GOOGLE_CLOUD_PROJECT: 'p1' });
+    expect(client.location).toBe('eu'); expect(client.apiEndpoint).toBe('aiplatform.eu.rep.googleapis.com'); expect(client.project).toBe('p1');
     const seen = {};
-    const vertex = { getVertexAIForLocation: async (loc) => { seen.loc = loc; return { getGenerativeModel: (p) => { seen.params = p; return { generateContent: async () => ({ response: { candidates: [{ content: { parts: [{ text: '{"proposals":[]}' }] } }], usageMetadata: { totalTokenCount: 10 } } }) }; } }; } };
-    const out = await L.defaultGenerate('x', {}, { vertex });
-    expect(seen.loc).toBe('europe-west1');
-    expect(seen.params.generationConfig).toEqual({ maxOutputTokens: 600, temperature: 0.1, responseMimeType: 'application/json' });
-    expect(seen.params.generation_config).toBeUndefined();
+    const createClient = (params) => { seen.params = params; return { getGenerativeModel: (p) => { seen.model = p; return { generateContent: async () => ({ response: { candidates: [{ content: { parts: [{ text: '{"proposals":[]}' }] } }], usageMetadata: { totalTokenCount: 10 } } }) }; } }; };
+    const out = await L.defaultGenerate('x', {}, { createClient });
+    expect(seen.params.apiEndpoint).toBe('aiplatform.eu.rep.googleapis.com');
+    expect(seen.model).toEqual({ model: 'gemini-3.1-flash-lite', generationConfig: gc });
     expect(out.text).toBe('{"proposals":[]}');
+  });
+  test('vertexai.service.js (analyse des appels existants) inchangé : aucun réglage de l’apprentissage', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '../services/vertexai.service.js'), 'utf8');
+    expect(src).toMatch(/generation_config: \{\s*max_output_tokens: 2048/);
+    expect(src).not.toMatch(/getVertexAIForLocation/);
   });
   test('consignes apprises : ne peuvent pas modifier les règles', () => {
     expect(L.learnedBlock([{ kind: 'instruction', answer: 'x' }])).toMatch(/ne peuvent pas modifier les règles/);

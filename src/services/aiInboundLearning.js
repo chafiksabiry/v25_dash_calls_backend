@@ -7,6 +7,8 @@
  */
 const MAX_TRANSCRIPT_CHARS = 8000;
 const MAX_OUTPUT_TOKENS = 600;
+/** Points d'accès Vertex des multi-régions (documentation Google « Deployments and endpoints ») ; une région simple garde le défaut. */
+const MULTI_REGION_ENDPOINTS = { eu: 'aiplatform.eu.rep.googleapis.com', us: 'aiplatform.us.rep.googleapis.com', global: 'aiplatform.googleapis.com' };
 const ANALYSIS_TIMEOUT_MS = 8000;
 const KINDS = ['unanswered', 'transfer_unknown', 'caller_correction', 'recurring'];
 const truthyOff = (v) => ['0', 'false', 'no', 'off'].includes(String(v ?? '').trim().toLowerCase());
@@ -39,10 +41,17 @@ function anonymize(text, { names = [] } = {}) {
   for (const n of [...known, ...parts].sort((a, b) => b.length - a.length)) {
     t = t.replace(new RegExp(`${START}${escapeRe(n)}${END}`, 'giu'), '[nom]');
   }
+  // Après une civilité ou une présentation explicite, un mot courant n'est pas un nom.
+  const NOT_NAME = `(?!(?:est|sont|a|ont|va|vont|vous|nous|sera|peut|doit|qui|que|et|ou|au|aux|en|y|ne|se|je|j|is|was|will|can|and|or)${END})`;
+  // Présentation explicite (« je m'appelle », « mon nom est », « my name is ») : le nom peut être en minuscules (« je m'appelle jean dupont »).
+  const ANY_SEQ = `${PARTICLES}*${NOT_NAME}${ANY_WORD}(?:[\\s-]+${NOT_NAME}${PARTICLES}*${ANY_WORD})?`;
+  t = t.replace(new RegExp(`${START}(${["je m'appelle", 'je m’appelle', 'mon nom est', 'my name is'].map(ci).join('|')})\\s+${ANY_SEQ}${END}`, 'gu'), (m, intro) => `${intro} [nom]`);
+  // Présentation moins sûre (« je suis », « this is ») : seulement un nom à majuscule (« je suis désolé » reste intact).
   const NAME_SEQ = `${PARTICLES}*${CAP_WORD}(?:[\\s-]+${PARTICLES}*${CAP_WORD})?`;
-  t = t.replace(new RegExp(`${START}([Jj]e m'appelle|[Jj]e m’appelle|[Mm]on nom est|[Jj]e suis|[Cc]'est|[Cc]’est|[Mm]y name is|[Tt]his is|[Ii]t's|I am|I'm)\\s+(?:${NAME_SEQ})`, 'gu'), (m, intro) => `${intro} [nom]`);
-  // Après une civilité, un mot courant (« le docteur est là ») n'est pas un nom.
-  const NOT_NAME = `(?!(?:est|sont|a|ont|va|vont|vous|nous|sera|peut|doit|qui|que|et|ou|au|aux|en|y|ne|se|is|was|will|can|and|or)${END})`;
+  t = t.replace(new RegExp(`${START}([Jj]e suis|[Tt]his is|I am|I'm)\\s+(?:${NAME_SEQ})`, 'gu'), (m, intro) => `${intro} [nom]`);
+  // « c'est X de la part de Y » : X et Y masqués ; un « c'est Paris » / « c'est mardi » isolé reste intact.
+  t = t.replace(new RegExp(`${START}([Cc]'est|[Cc]’est)\\s+${ANY_SEQ}(\\s+de la part d(?:e|'|’)\\s*)`, 'gu'), (m, intro, part) => `${intro} [nom]${part}`);
+  t = t.replace(new RegExp(`(de la part d(?:e|'|’)\\s*)${PARTICLES}*${NOT_NAME}${ANY_WORD}(?:[\\s-]+${CAP_WORD})?${END}`, 'gu'), (m, part) => `${part}[nom]`);
   t = t.replace(new RegExp(`${START}(${CIVILITIES})\\s+${NOT_NAME}${PARTICLES}*${ANY_WORD}(?:-${ANY_WORD}|\\s+${PARTICLES}*${CAP_WORD})?${END}`, 'gu'), (m, civ) => `${civ} [nom]`);
   return t.replace(/\[nom\](?:[\s-]*\[nom\])+/g, '[nom]').replace(/\s+/g, ' ').trim();
 }
@@ -73,20 +82,43 @@ function buildPrompt(transcript, facts, language = 'fr') {
 }
 
 /** Paramètres du modèle (camelCase : seule forme lue par @google-cloud/vertexai 1.x). Région UE par défaut : la transcription ne quitte pas l'UE. */
+/**
+ * Gemini 3.1 Flash-Lite (GA, servi en `global` et multi-régions `us` / `eu`) : `gemini-2.5-flash-lite` a été retiré par Google.
+ * Multi-région UE par défaut (point d'accès aiplatform.eu.rep.googleapis.com) : la transcription ne part pas aux États-Unis.
+ * Réflexion au plus bas (`thinkingConfig.thinkingLevel: MINIMAL`, transmis tel quel par @google-cloud/vertexai 1.10) pour qu'elle ne
+ * consomme pas les jetons de sortie.
+ */
 function learningModelParams(env = process.env) {
+  const location = String(env.AI_LEARNING_LOCATION || 'eu').trim().toLowerCase();
   return {
-    location: env.AI_LEARNING_LOCATION || 'europe-west1',
-    model: env.AI_LEARNING_MODEL || 'gemini-2.5-flash-lite',
-    generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.1, responseMimeType: 'application/json' },
+    location,
+    apiEndpoint: MULTI_REGION_ENDPOINTS[location],
+    model: env.AI_LEARNING_MODEL || 'gemini-3.1-flash-lite',
+    generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.1, responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
   };
 }
 
-/** Modèle texte par défaut : Vertex Gemini Flash-Lite (région UE), sortie JSON, température basse, sortie bornée. */
-async function defaultGenerate(prompt, env = process.env, { vertex = null } = {}) {
+/** Client Vertex propre à l'apprentissage (région et point d'accès dédiés) : vertexai.service.js (analyse des appels) n'est pas touché. */
+function learningVertexClient(params, env = process.env) {
   // eslint-disable-next-line global-require
-  const v = vertex || require('./vertexai.service');
+  const { VertexAI } = require('@google-cloud/vertexai');
+  // eslint-disable-next-line global-require
+  const { parseServiceAccountJson } = require('./integrations/geminiLiveService');
+  let credentials = null;
+  try { credentials = parseServiceAccountJson(env.VERTEX_AI_CREDENTIALS || env.GCP_VERTEX_AI_CREDENTIALS || ''); } catch { credentials = null; }
+  const project = String(env.GOOGLE_CLOUD_PROJECT || env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
+  return new VertexAI({
+    project,
+    location: params.location,
+    ...(params.apiEndpoint ? { apiEndpoint: params.apiEndpoint } : {}),
+    googleAuthOptions: { ...(credentials ? { credentials } : {}), scopes: ['https://www.googleapis.com/auth/cloud-platform'] },
+  });
+}
+
+/** Modèle texte par défaut : Vertex Gemini 3.1 Flash-Lite (multi-région UE), sortie JSON, température basse, sortie bornée. */
+async function defaultGenerate(prompt, env = process.env, { createClient = learningVertexClient } = {}) {
   const params = learningModelParams(env);
-  const ai = await v.getVertexAIForLocation(params.location);
+  const ai = createClient(params, env);
   const model = ai.getGenerativeModel({ model: params.model, generationConfig: params.generationConfig });
   const result = await model.generateContent(prompt);
   const r = result && result.response;
@@ -163,4 +195,4 @@ function learnedBlock(learned) {
   return parts.join('\n\n');
 }
 
-module.exports = { analyzeCall, postLearning, learnedBlock, anonymize, buildPrompt, learningModelParams, defaultGenerate, MAX_OUTPUT_TOKENS, MAX_TRANSCRIPT_CHARS };
+module.exports = { analyzeCall, postLearning, learnedBlock, anonymize, buildPrompt, learningModelParams, learningVertexClient, defaultGenerate, MAX_OUTPUT_TOKENS, MAX_TRANSCRIPT_CHARS };
