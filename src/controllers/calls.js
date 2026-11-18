@@ -8,6 +8,7 @@ const fetch = require('node-fetch');
 const mongoose = require('mongoose');
 const { buildCenterCall } = require('../utils/centerCall');
 const { withRecordingStatus } = require('../utils/recordingStatus');
+const { applyRecordingAccess } = require('../utils/recordingAccess');
 const { serviceAuthHeaders, ESCROW_RECONCILE_SCOPE, CALL_ANALYSIS_NOTIFY_SCOPE } = require('../services/orchestratorServiceAuth');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
@@ -473,7 +474,7 @@ exports.getCalls = async (req, res) => {
       });
     }
 
-    const data = await withRecordingStatus(processedCalls);
+    const data = await applyRecordingAccess(req, await withRecordingStatus(processedCalls));
     res.status(200).json({
       success: true,
       count: calls.length,
@@ -522,7 +523,7 @@ exports.getCallsByAgent = async (req, res) => {
       .sort({ createdAt: -1 });
 
     const callObjects = calls.map((call) => call.toObject());
-    const data = await withRecordingStatus(calls);
+    const data = await applyRecordingAccess(req, await withRecordingStatus(calls));
 
     res.status(200).json({
       success: true,
@@ -613,7 +614,7 @@ exports.getCall = async (req, res) => {
       });
     }
 
-    const [data] = await withRecordingStatus([call]);
+    const [data] = await applyRecordingAccess(req, await withRecordingStatus([call]));
     res.status(200).json({
       success: true,
       data
@@ -766,7 +767,7 @@ exports.updateCall = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -808,7 +809,7 @@ exports.endCall = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -841,7 +842,7 @@ exports.addNote = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -874,7 +875,7 @@ exports.updateQualityScore = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
