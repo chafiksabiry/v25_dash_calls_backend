@@ -27,20 +27,6 @@ class OVHService {
     if (missing.length) throw new Error(`Intégration OVH non configurée : variable(s) ${missing.join(', ')} absente(s).`);
   }
 
-/*   async initializeClient() {
-    console.log("we are in the initializeClient")
-    if (!this.consumerKey) {
-      this.consumerKey = await this.getOrCreateConsumerKey();
-    }
-console.log("before client initiation");
-    this.client = ovh({
-      appKey: this.applicationKey,
-      appSecret: this.applicationSecret,
-      consumerKey: this.consumerKey,
-      endpoint: 'eu.api.ovh.com'
-    });
-    console.log("this.client",this.client);
-  } */
     async initializeClient() {
       this.assertConfigured();
       try {
@@ -116,156 +102,13 @@ console.log("before client initiation");
     }
   }
 
-/*   async makeCall(to, from) {
-    console.log("we are in makeCall");
-    await this.initializeClient();
-    try {
-      const call = await this.client.requestPromised('POST', '/telephony/line/calls', {
-        to,
-        from,
-        type: 'voice'
-      });
-      console.log("call in requestPromised",call);
-      return call;
-    } catch (error) {
-      throw new Error(`Failed to make OVH call: ${error.message}`);
-    }
-  } */
-/*     async makeCall(to, from) {
-      console.log("we are in makeCall");
-      await this.initializeClient();
-      try {
-        const call = await this.client.requestPromised('POST', '/telephony/line/calls', {
-          to,
-          from,
-          type: 'voice'
-        });
-        console.log("call in requestPromised", call);
-        return call;
-      } catch (error) {
-        console.error("Error details:", error); // Log the full error object
-        throw new Error(`Failed to make OVH call: ${error.message || error}`); // Include more details if needed
-      }
-    } */
    
 
-/* async  makeCall(to, from, billingAccount, serviceName) {
-  try {
-    const response = await axios.post(
-      `https://eu.api.ovh.com/1.0/telephony/${billingAccount}/line/${serviceName}/click2Call`,
-      {
-        calledNumber: to,
-        callingNumber: from,
-        intercom: false
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      }
-    );
-
-    console.log('Call initiated:', response.data);
-    return response.data;
-  } catch (error) {
-    console.error('Error making call:', error.response ? error.response.data : error.message);
-    throw new Error(`Failed to initiate the call: ${error.message}`);
-  }
-} */
 
 
   
- /*  async  makeCall(to, from, billingAccount, serviceName) {
-    const applicationKey = process.env.OVH_APPLICATION_KEY;
-    const consumerKey = process.env.OVH_CONSUMER_KEY;
-    const applicationSecret = process.env.OVH_APPLICATION_SECRET;
-    const bearerToken = 'eyJhbGciOiJFZERTQSIsImtpZCI6IkVGNThFMkUxMTFBODNCREFEMDE4OUUzMzZERTk3MDhFNjRDMDA4MDEiLCJraW5kIjoib2F1dGgyIiwidHlwIjoiSldUIn0.eyJBY2Nlc3NUb2tlbiI6ImQ3MzQzZGYzNjA4MTJlOWUwZjZiZjhmMjUwNDAwMWMyN2E2NTY3ZDgxZWU1Mjk0MDcxMGZiZWE0NzE5ZDJiNTQiLCJpYXQiOjE3MzkzNjM4MDN9.fqXJJu4d1mY5R2-XLXSqaj8Z2MPbC41xgCNFyAewXNVfCKshAFrubETaMq8MUfhWTTFQj541PRj4Z_1OFV3dBg';
-  
-    const body = {
-      calledNumber: to,
-      callingNumber: from,
-      intercom: false
-    };
-  
-    const timestamp = Math.floor(Date.now() / 1000); // Timestamp UNIX
-    const date = new Date().toUTCString();
-  
-    // Créer la signature OVH
-    const signature = `$${applicationSecret}$${timestamp}$POST$${'/1.0/telephony/' + billingAccount + '/line/' + serviceName + '/click2Call'}$${JSON.stringify(body)}`;
-    const hashedSignature = crypto.createHmac('sha1', applicationSecret).update(signature).digest('hex');
-  
-    try {
-      const response = await axios.post(
-        `https://eu.api.ovh.com/1.0/telephony/${billingAccount}/line/${serviceName}/click2Call`,
-        body,
-        {
-          headers: {
-            'X-Ovh-Application': applicationKey,
-            'X-Ovh-Consumer': consumerKey,
-            'X-Ovh-Signature': `+${hashedSignature}`, // Ajout de la signature OVH
-            'X-Ovh-Timestamp': timestamp, // Ajout du timestamp
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${bearerToken}` // Ajout du Bearer token dans l'en-tête
-          }
-        }
-      );
-  
-      console.log('Call initiated:', response.data);
-      return response.data;
-    } catch (error) {
-      console.error('Error making call:', error.response ? error.response.data : error.message);
-      throw new Error(`Failed to initiate the call: ${error.message}`);
-    }
-  } */
 
     
-/*    async makeCall(to, from) {
-      console.log("👉 Démarrage de makeCall");
-    
-      // Configuration OVH
-      const applicationKey = process.env.OVH_APPLICATION_KEY;
-const applicationSecret = process.env.OVH_APPLICATION_SECRET;
-const consumerKey = process.env.OVH_CONSUMER_KEY;
-      const billingAccount ='sc899836-ovh-1';
-      const serviceName = process.env.OVH_SERVICE_NAME; 
-      const apiEndpoint = 'https://eu.api.ovh.com';
-      const requestUrl = `/1.0/telephony/${billingAccount}/line/${serviceName}/click2Call`;
-      const httpMethod = 'POST';
-      const timestamp = Math.floor(Date.now() / 1000);
-    
-      // Corps de la requête
-      const body = JSON.stringify({
-        "calledNumber": to,
-        "callingNumber": from,
-        "intercom": false
-      });
-    
-      // Construction de la chaîne à signer
-      const stringToSign = applicationSecret + '+' + consumerKey + '+' + httpMethod + '+' + apiEndpoint + requestUrl + '+' + body + '+' + timestamp;
-    
-      // Génération de la signature HMAC-SHA1
-      const signature = '$1$' + crypto.createHash('sha1').update(stringToSign).digest('hex');
-      console.log("signature",signature);
-      console.log("timestamp",timestamp);
-      try {
-        // Requête POST avec Axios
-        const response = await axios.post(apiEndpoint + requestUrl, body, {
-          headers: {
-            'X-Ovh-Application': applicationKey,
-            'X-Ovh-Consumer': consumerKey,
-            'X-Ovh-Signature': signature,
-            'X-Ovh-Timestamp': timestamp,
-            'Content-Type': 'application/json'
-          }
-        });
-  
-        console.log('✅ Appel initié avec succès :', response);
-        return response.data;
-      } catch (error) {
-        console.error('❌ Erreur lors de l\'appel OVH :', error.response?.data || error.message);
-        throw new Error('Erreur lors de l\'initialisation de l\'appel.');
-      }
-    }  */
       async makeCall(to, from) {
         this.assertConfigured();
         console.log("👉 Démarrage de makeCall");
@@ -297,100 +140,6 @@ const consumerKey = process.env.OVH_CONSUMER_KEY;
           throw new Error('Erreur lors de l\'initialisation de l\'appel.');
         }
       } 
-    /*     async makeCall(to, from) {
-          console.log("👉 Démarrage de makeCall");
-        
-          // Vérification de l'initialisation du client
-          if (!this.client) {
-            console.log("Client non initialisé, initialisation en cours...");
-            await this.initializeClient();
-          }
-        
-          try {
-            // Configuration OVH
-            const billingAccount = 'sc899836-ovh-1';
-            const serviceName = process.env.OVH_SERVICE_NAME; // Numéro OVH utilisé comme appelant
-            const requestUrl = `/telephony/${billingAccount}/line/${serviceName}/click2Call`;
-            const body = {
-              "calledNumber": to,
-              "callingNumber": from,
-              "intercom": false
-            };
-        
-            // Requête OVH
-            const response = await this.client.request('POST', requestUrl, body);
-            console.log('✅ Appel initié avec succès :', response);
-            return response;
-          } catch (error) {
-            console.error('❌ Erreur lors de l\'appel OVH :', error);
-            throw new Error('Erreur lors de l\'appel OVH.');
-          }
-        }
-         */
-/* 
-        async makeCall(to, from) {
-          console.log("👉 Démarrage de makeCall");
-        console.log("to",to);
-        console.log("from",from);
-          // Vérification de l'initialisation du client
-          if (!this.client) {
-            console.log("Client non initialisé, initialisation en cours...");
-            await this.initializeClient();
-          }
-        
-          const billingAccount = 'sc899836-ovh-1';
-          const serviceName = process.env.OVH_SERVICE_NAME; // Numéro OVH utilisé comme appelant
-          const requestUrl = `/telephony/${billingAccount}/line/${serviceName}/click2Call`;
-          const body = {
-            "calledNumber": to,
-            "callingNumber": from,
-            "intercom": false
-          };
-        
-          // Utilisation de callback pour gérer la requête
-          this.client.request('POST', requestUrl, body, function (error, response) {
-            if (error) {
-              console.error('❌ Erreur lors de l\'appel OVH :', error);
-              throw new Error('Erreur lors de l\'appel OVH.');
-            }
-            console.log('✅ Appel initié avec succès :', response);
-            return response;
-          });
-        } */
-   /*        async makeCall(to, from) {
-            console.log("👉 Démarrage de makeCall");
-            console.log("to", to);
-            console.log("from", from);
-            
-            // Vérification de l'initialisation du client
-            if (!this.client) {
-              console.log("Client non initialisé, initialisation en cours...");
-              await this.initializeClient();
-            }
-          
-            const billingAccount = 'sc899836-ovh-1';
-            const serviceName = process.env.OVH_SERVICE_NAME;
-            const requestUrl = `/telephony/${billingAccount}/line/${serviceName}/click2Call`;
-            const body = {
-              "calledNumber": to,
-              "callingNumber": from,
-              "intercom": false
-            };
-          
-            // Convert callback to Promise
-            return new Promise((resolve, reject) => {
-              this.client.request('POST', requestUrl, body, (error, response) => {
-                if (error) {
-                  console.error('❌ Erreur lors de l\'appel OVH :', error);
-                  reject(error);
-                } else {
-                  console.log('✅ Appel initié avec succès :', response);
-                  resolve(response);
-                }
-              });
-            });
-          } 
-           */
   
 
 
