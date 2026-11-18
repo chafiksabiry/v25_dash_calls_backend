@@ -82,7 +82,8 @@ const callSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  recording_url: String,
+  // Index clairsemé : POST /calls/fetch-recording retrouve l'appel par l'URL Twilio de son enregistrement (callsAccess.guardFetchRecording).
+  recording_url: { type: String, index: { sparse: true } },
   recording_url_cloudinary: String,
   // Statut d'enregistrement lisible (décision de l'orchestrateur + rattachement de l'URL). Les appels anciens n'ont pas
   // ces champs : l'API renvoie alors un statut dérivé à la lecture (voir utils/recordingStatus.js).
