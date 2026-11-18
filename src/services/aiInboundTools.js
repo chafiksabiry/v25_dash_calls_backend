@@ -1,3 +1,4 @@
+const jwt = require('jsonwebtoken');
 const { searchKnowledge } = require('./aiVoiceTools');
 
 /**
@@ -7,6 +8,18 @@ const { searchKnowledge } = require('./aiVoiceTools');
  * Délais courts et réponse de repli : un appel vivant ne peut pas attendre (contrat-pilote.md, 7.2).
  */
 const TOOL_TIMEOUT_MS = 3000;
+/** Le transfert attend la fin de la phrase de l'IA (pause côté orchestrateur) puis la bascule Twilio : délai plus long, pour ne pas annoncer un échec à tort. */
+const TRANSFER_TIMEOUT_MS = 8000;
+const CALL_SCOPE = 'ai-inbound-call';
+
+/**
+ * Jeton d'appel signé à CHAQUE requête (120 s au plus), avec l'entreprise et l'appel de la session (fixés par l'orchestrateur à la création) :
+ * jamais une valeur du modèle.
+ */
+function callToken(session, secret = process.env.JWT_SECRET) {
+  if (!secret) throw new Error('JWT_SECRET is not configured');
+  return jwt.sign({ scope: CALL_SCOPE, companyId: String(session.companyId), callSid: String(session.callSid) }, secret, { algorithm: 'HS256', expiresIn: 120 });
+}
 const KNOWLEDGE_TIMEOUT_MS = 2500;
 const SLOW_TOOL_MS = 700;
 const FALLBACK_HINT = "Outil indisponible : dis simplement que tu ne peux pas vérifier tout de suite et propose de faire rappeler l'appelant (create_request).";
@@ -48,7 +61,7 @@ function buildInboundTools(session) {
   return tools;
 }
 
-const ORCH_TOOLS = new Set(['lookup_caller', 'create_request', 'find_slots', 'book_appointment', 'transfer_to_human', 'end_call']);
+const ORCH_TOOLS = new Set(['lookup_caller', 'create_request', 'find_slots', 'book_appointment', 'transfer_to_human', 'end_call', 'start_bench_recording']);
 
 async function withTimeout(promiseFactory, ms) {
   const controller = new AbortController();
@@ -61,13 +74,13 @@ async function withTimeout(promiseFactory, ms) {
 }
 
 /** Appel d'un outil de l'orchestrateur avec le jeton d'appel. Ne lève jamais : renvoie un résultat de repli. */
-async function callOrchestratorTool(name, args, session, { fetchImpl = global.fetch, timeoutMs = TOOL_TIMEOUT_MS } = {}) {
+async function callOrchestratorTool(name, args, session, { fetchImpl = global.fetch, timeoutMs = name === 'transfer_to_human' ? TRANSFER_TIMEOUT_MS : TOOL_TIMEOUT_MS } = {}) {
   const body = { ...(args || {}) };
   delete body.companyId;
   try {
     const res = await withTimeout((signal) => fetchImpl(`${session.orchestratorUrl}/internal/ai-inbound/tools/${encodeURIComponent(name)}`, {
       method: 'POST', signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.callToken}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${callToken(session)}` },
       body: JSON.stringify(body),
     }), timeoutMs);
     let payload = null;
@@ -92,4 +105,4 @@ async function executeInboundTool(name, args, session, opts = {}) {
   return { ok: false, error: `unknown tool ${name}` };
 }
 
-module.exports = { buildInboundTools, executeInboundTool, callOrchestratorTool, TOOL_TIMEOUT_MS, KNOWLEDGE_TIMEOUT_MS, SLOW_TOOL_MS, FALLBACK_HINT };
+module.exports = { buildInboundTools, executeInboundTool, callOrchestratorTool, callToken, TRANSFER_TIMEOUT_MS, TOOL_TIMEOUT_MS, KNOWLEDGE_TIMEOUT_MS, SLOW_TOOL_MS, FALLBACK_HINT };

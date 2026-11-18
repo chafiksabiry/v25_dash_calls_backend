@@ -163,6 +163,8 @@ class OpenAIRealtimeService {
           instructions ||
           'You are a professional outbound sales voice agent for HARX. Speak French unless the lead uses another language. Be concise and natural.',
         output_modalities: ['audio'],
+        // Modèles realtime à raisonnement (gpt-realtime-2.x) : effort au plus bas par défaut, sinon latence et coût augmentent.
+        ...(/^gpt-realtime-2/.test(String(this.model)) ? { reasoning: { effort: process.env.OPENAI_REALTIME_REASONING_EFFORT || 'minimal' } } : {}),
         tools: tools || [],
         tool_choice: 'auto',
         audio: {

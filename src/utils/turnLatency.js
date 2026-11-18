@@ -29,6 +29,7 @@ class TurnLatencyMeter {
     this.callerSpoke = false; // un tour de l'appelant attend une réponse
     this.lastVoicedAt = null;
     this.agentSpeaking = false;
+    this.overlap = false; // l'appelant a parlé pendant que l'IA parlait : tour non mesuré
   }
 
   /** Trame entrante (appelant). */
@@ -36,9 +37,11 @@ class TurnLatencyMeter {
     if (frameRms(base64Pcmu) >= this.threshold) {
       this.voicedRun += 1;
       if (this.voicedRun >= this.minVoicedFrames) {
+        // Parole de l'appelant pendant que l'IA parle (barge-in, chevauchement) : le tour suivant n'est pas mesuré, il fausserait la latence.
+        if (this.agentSpeaking) this.overlap = true;
         this.callerSpoke = true;
         this.lastVoicedAt = at;
-        this.agentSpeaking = false; // l'appelant reprend la parole (barge-in)
+        this.agentSpeaking = false;
       }
     } else {
       this.voicedRun = 0;
@@ -49,8 +52,10 @@ class TurnLatencyMeter {
   onOutbound(at = this.now()) {
     if (this.callerSpoke && this.lastVoicedAt !== null && !this.agentSpeaking) {
       const ms = at - this.lastVoicedAt;
-      if (ms >= 0 && ms < 60000) this.turns.push(ms);
+      if (!this.overlap && ms >= 0 && ms < 60000) this.turns.push(ms);
+      else if (this.overlap) this.skipped = (this.skipped || 0) + 1;
       this.callerSpoke = false;
+      this.overlap = false;
     }
     this.agentSpeaking = true;
   }
@@ -62,10 +67,10 @@ class TurnLatencyMeter {
 
   stats() {
     const s = [...this.turns].sort((a, b) => a - b);
-    if (!s.length) return { turns: [], medianMs: null, p95Ms: null };
+    if (!s.length) return { turns: [], medianMs: null, p95Ms: null, skippedOverlaps: this.skipped || 0 };
     const median = s.length % 2 ? s[(s.length - 1) / 2] : Math.round((s[s.length / 2 - 1] + s[s.length / 2]) / 2);
     const p95 = s[Math.min(s.length - 1, Math.ceil(0.95 * s.length) - 1)];
-    return { turns: [...this.turns], medianMs: median, p95Ms: p95 };
+    return { turns: [...this.turns], medianMs: median, p95Ms: p95, skippedOverlaps: this.skipped || 0 };
   }
 }
 

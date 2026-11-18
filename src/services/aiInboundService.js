@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { OpenAIRealtimeService } = require('./integrations/openaiRealtimeService');
 const { GeminiLiveService, defaultModelForBackend, resolveLiveBackend } = require('./integrations/geminiLiveService');
 const { registerStreamSession, unregisterStreamSession, createStreamToken } = require('./aiOutboundCallService');
-const { buildInboundTools, executeInboundTool, SLOW_TOOL_MS } = require('./aiInboundTools');
+const { buildInboundTools, executeInboundTool, callToken, SLOW_TOOL_MS } = require('./aiInboundTools');
 const { emptyUsage, addOpenAiUsage, addGeminiUsage, estimateCost } = require('./aiUsageCost');
 const { TurnLatencyMeter } = require('../utils/turnLatency');
 
@@ -38,7 +38,6 @@ function validateRequest(b) {
   const ok = b && typeof b === 'object'
     && /^CA[0-9a-fA-F]{32}$/.test(String(b.callSid || ''))
     && /^[0-9a-fA-F]{24}$/.test(String(b.companyId || ''))
-    && typeof b.callToken === 'string' && b.callToken.length > 20
     && Number.isFinite(Number(b.maxCallSeconds)) && Number(b.maxCallSeconds) >= 180 && Number(b.maxCallSeconds) <= 900
     && b.announcement && typeof b.announcement.text === 'string' && ANNOUNCEMENT_MARKERS[String(b.language || '').startsWith('en') ? 'en' : 'fr'].test(b.announcement.text)
     && /^https?:\/\//.test(String(b.orchestratorUrl || ''));
@@ -106,6 +105,7 @@ function buildInboundInstructions(s, { caller = null, now = Date.now() } = {}) {
     a.appointment ? "- Rendez-vous : appelle find_slots, propose au plus deux créneaux, fais confirmer explicitement le jour, l'heure et le nom, puis appelle book_appointment. Jamais de RDV sans confirmation." : '- Tu ne prends pas de rendez-vous : propose une demande de rappel.',
     "- Interdit : modifier ou annuler un rendez-vous existant, encaisser un paiement, donner des informations personnelles d'autres personnes.",
     s.level === 'total' ? "- Personne n'est disponible en direct : pour toute demande que tu ne peux pas traiter, propose un rappel ou un message." : '',
+    s.trigger === 'all_busy' ? "- Tu décroches parce que l'équipe est déjà en ligne (appel simultané) : dis-le simplement, traite ce que tu peux, sinon propose un message ou un rappel ; un transfert peut ne pas aboutir." : '',
     '',
     '## Fin et durée',
     `- L'appel dure au plus ${Math.round(Number(s.maxCallSeconds) / 60)} minutes. Si le système t'indique qu'il reste une minute : résume la demande en une phrase, propose un rappel (create_request) si elle n'est pas traitée, puis conclus.`,
@@ -200,9 +200,12 @@ async function createInboundSession(body, { env = process.env, publicWsBase, cre
     addressForm: body.addressForm === 'tu' ? 'tu' : 'vous', tone: body.tone, companyName: clip(body.companyName, 80), instructions: String(body.instructions || ''),
     knowledgeBase: body.knowledgeBase || { enabled: true, gigId: null }, actions: body.actions || {}, transferTargets: Array.isArray(body.transferTargets) ? body.transferTargets.slice(0, 10) : [],
     maxCallSeconds: Number(body.maxCallSeconds), announcement: { mode: body.announcement.mode === 'twiml' ? 'twiml' : 'engine', text: body.announcement.text },
-    callToken: body.callToken, timeZone: body.timeZone || 'Europe/Paris',
+    callSid: body.callSid, record: body.record === true, timeZone: body.timeZone || 'Europe/Paris',
     orchestratorUrl: String(env.COMPORCHESTRATOR_API_URL || body.orchestratorUrl).replace(/\/+$/, ''),
   };
+  // Gemini Live : connexion limitée à ~10 min par Google (goAway), session audio à 15 min. Pilote : appel plafonné à 9 min avec Gemini
+  // (AI_INBOUND_GEMINI_MAX_SECONDS) ; goAway reçu plus tôt : conclusion anticipée (voir wireSession). Pas de reprise de session dans le pilote.
+  const geminiCap = Math.min(570, Math.max(180, int(env.AI_INBOUND_GEMINI_MAX_SECONDS, 540)));
   const budget = Math.min(9000, Math.max(1000, int(env.AI_INBOUND_CONNECT_BUDGET_MS, 4500)));
   const started = now();
   // Identification de l'appelant (une requête en base côté orchestrateur, 800 ms au plus) : son nom va dans les consignes.
@@ -232,6 +235,7 @@ async function createInboundSession(body, { env = process.env, publicWsBase, cre
   if (!engine) throw new SessionError(503, 'engine_unavailable', `Aucun moteur disponible (${lastErr?.message || 'délai'})`);
   // Pas de reconnexion silencieuse en cours d'appel : le contexte serait perdu. Une coupure passe par le repli (répondeur).
   engine.maxReconnects = 0;
+  if (cfg.provider === 'gemini') s.maxCallSeconds = Math.min(s.maxCallSeconds, geminiCap);
 
   const sessionId = crypto.randomUUID();
   const streamToken = createStreamToken();
@@ -251,7 +255,7 @@ async function createInboundSession(body, { env = process.env, publicWsBase, cre
   ctx.timers.push(timers.setTimeout(() => { if (!ctx.streamStartedAt && !ctx.finished) finishSession(ctx, 'caller_hangup'); }, 30000));
   const wsBase = String(env.PUBLIC_BASE_URL || env.BASE_URL || publicWsBase || '').replace(/^http/, 'ws').replace(/\/$/, '');
   console.log('[AiInbound] session prête', { callSid: s.callSid, provider: cfg.provider, model: cfg.model, fallbackUsed: ctx.fallbackUsed, ms: now() - started });
-  return { sessionId, streamUrl: `${wsBase}/ai-voice-stream/${streamToken}`, provider: cfg.provider, model: cfg.model, fallbackUsed: ctx.fallbackUsed };
+  return { sessionId, streamUrl: `${wsBase}/ai-voice-stream/${streamToken}`, provider: cfg.provider, model: cfg.model, fallbackUsed: ctx.fallbackUsed, maxCallSeconds: s.maxCallSeconds };
 }
 
 function sendText(ctx, text) {
@@ -285,6 +289,7 @@ function onAgentTurnEnd(ctx) {
     if (ANNOUNCEMENT_MARKERS[shortLang(ctx.s.language)].test(turnText)) {
       ctx.announcement.verified = true;
       ctx.holdInput = false;
+      startBenchRecording(ctx);
     } else if (ctx.announcement.attempts < 2) {
       sendText(ctx, openingPrompt(ctx.s, { retry: true }));
     } else {
@@ -295,11 +300,36 @@ function onAgentTurnEnd(ctx) {
   }
 }
 
+/** Banc d'écoute : l'enregistrement ne démarre qu'APRÈS l'annonce (et sa phrase de consentement). */
+function startBenchRecording(ctx) {
+  if (!ctx.s.record || ctx.benchStarted) return;
+  ctx.benchStarted = true;
+  executeInboundTool('start_bench_recording', {}, ctx.s, { fetchImpl: ctx.fetchImpl }).catch(() => undefined);
+}
+
+/** Durée Google « 12s » / { seconds } → millisecondes. */
+function durationMs(v) {
+  if (typeof v === 'string') { const m = v.match(/^([\d.]+)s$/); return m ? Math.round(Number(m[1]) * 1000) : null; }
+  if (v && typeof v === 'object') return Math.round((Number(v.seconds) || 0) * 1000 + (Number(v.nanos) || 0) / 1e6);
+  return null;
+}
+
 function wireSession(ctx) {
   const rt = ctx.realtime;
   const gemini = ctx.provider === 'gemini';
+  rt.on('onGoAway', (ga) => {
+    if (ctx.finished || ctx.goAway) return;
+    ctx.goAway = true;
+    const left = durationMs(ga && (ga.timeLeft || ga.time_left));
+    sendText(ctx, "[SYSTÈME] L'appel doit se terminer dans quelques secondes. Résume la demande en une phrase, propose un rappel (create_request) si elle n'est pas traitée, puis dis au revoir.");
+    ctx.timers.push(ctx.timersApi.setTimeout(() => finishSession(ctx, 'max_duration'), Math.max(0, (left ?? 10000) - 2000)));
+  });
   rt.on('onToolCall', async ({ name, args }) => {
     const startedAt = ctx.now();
+    // Outil interne (banc d'écoute) : jamais déclenché par le modèle.
+    if (name === 'start_bench_recording') return { ok: false, error: `unknown tool ${name}` };
+    // Transfert en cours : un arrêt du flux pendant la bascule est un transfert, jamais un raccrochage de l'appelant.
+    if (name === 'transfer_to_human') ctx.transferring = true;
     const spokeBefore = startedAt - ctx.lastOutboundAt < 2000;
     const result = await executeInboundTool(name, args, ctx.s, { fetchImpl: ctx.fetchImpl });
     const latencyMs = ctx.now() - startedAt;
@@ -312,7 +342,7 @@ function wireSession(ctx) {
       // Laisse l'au revoir se jouer, puis clôture (compte rendu AVANT la fermeture du flux).
       ctx.timers.push(ctx.timersApi.setTimeout(() => finishSession(ctx, 'agent_end'), int(ctx.env.AI_INBOUND_END_DRAIN_MS, 2500)));
     }
-    if (name === 'transfer_to_human' && result.ok && result.transferring) ctx.transferring = true;
+    if (name === 'transfer_to_human') ctx.transferring = Boolean(result.ok && result.transferring);
     return result;
   });
   rt.on('onUsage', (u) => { if (gemini) addGeminiUsage(ctx.usage, u); else addOpenAiUsage(ctx.usage, u); });
@@ -342,6 +372,7 @@ function wireSession(ctx) {
     if (ctx.streamStartedAt) return;
     ctx.streamStartedAt = ctx.now();
     sendText(ctx, openingPrompt(ctx.s));
+    if (ctx.s.announcement.mode === 'twiml') startBenchRecording(ctx); // annonce déjà dite par Twilio avant le flux
     const max = ctx.s.maxCallSeconds * 1000;
     ctx.timers.push(ctx.timersApi.setTimeout(() => {
       if (!ctx.finished) sendText(ctx, "[SYSTÈME] Il reste une minute d'appel. Résume la demande en une phrase, propose un rappel (create_request) si elle n'est pas traitée, puis conclus poliment.");
@@ -380,7 +411,7 @@ async function postReport(ctx, report) {
   try {
     const res = await ctx.fetchImpl(`${ctx.s.orchestratorUrl}/internal/ai-inbound/calls/${encodeURIComponent(ctx.s.callSid)}/report`, {
       method: 'POST', signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.s.callToken}` }, body: JSON.stringify(report),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${callToken(ctx.s)}` }, body: JSON.stringify(report),
     });
     if (!res.ok) console.error('[AiInbound] compte rendu refusé', res.status, ctx.s.callSid);
   } catch (err) {

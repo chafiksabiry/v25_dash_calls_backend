@@ -153,6 +153,8 @@ class GeminiLiveService {
       onSpeechStopped: null,
       // `usageMetadata` (jetons d'entrée relus à chaque tour, sortie, cache) : mesure du coût réel dont la part de contexte.
       onUsage: null,
+      // goAway : la connexion va être fermée par Google (durée de vie ~10 min) ; `timeLeft` dit dans combien de temps.
+      onGoAway: null,
     };
   }
 
@@ -615,7 +617,9 @@ class GeminiLiveService {
     const content = event.serverContent || event.server_content;
     if (!content) {
       if (event.goAway || event.go_away) {
-        this.logger.warn('[GeminiLive] goAway', event.goAway || event.go_away);
+        const ga = event.goAway || event.go_away;
+        this.logger.warn('[GeminiLive] goAway', ga);
+        if (this.handlers.onGoAway) this.handlers.onGoAway(ga);
       }
       return;
     }

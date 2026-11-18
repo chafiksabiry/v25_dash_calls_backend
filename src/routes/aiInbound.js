@@ -15,8 +15,9 @@ function authenticateAiInbound(req, res, next) {
   const h = req.headers && req.headers.authorization;
   const token = h && h.startsWith('Bearer ') ? h.slice(7).trim() : '';
   try {
-    const d = jwt.verify(token, secret, { algorithms: ['HS256'] });
-    if (typeof d.exp !== 'number' || d.scope !== SCOPE || d.userId || d.id) throw new Error('bad token');
+    // Durée de vie bornée : 120 s au plus (maxAge sur `iat`, et exp - iat ≤ 120), comme les autres jetons de service.
+    const d = jwt.verify(token, secret, { algorithms: ['HS256'], maxAge: '120s' });
+    if (typeof d.exp !== 'number' || typeof d.iat !== 'number' || d.exp - d.iat > 120 || d.scope !== SCOPE || d.userId || d.id) throw new Error('bad token');
     return next();
   } catch (_e) {
     return res.status(401).json({ success: false, code: 'invalid_service_token', message: 'Jeton de service invalide ou expiré.' });

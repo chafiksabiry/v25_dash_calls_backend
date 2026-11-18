@@ -24,7 +24,7 @@ const body = (over = {}) => ({
   callSid: SID, companyId: A, from: '+33612345678', to: '+33140000000', level: 'partial', trigger: 'outside_hours', language: 'fr-FR', languages: ['fr-FR', 'en-GB'],
   voice: 'female', addressForm: 'vous', tone: 'professional', companyName: 'Cabinet Martin', instructions: 'Nous sommes un cabinet de kinésithérapie.',
   knowledgeBase: { enabled: true, gigId: null }, actions: { appointment: true, request: true, transfer: true }, transferTargets: [{ id: 'e1', name: 'Mme Martin' }],
-  maxCallSeconds: 480, announcement: { mode: 'engine', text: ANN }, callToken: 'call-token-xxxxxxxxxxxxxxxxxxxx', orchestratorUrl: 'https://orch.test/api', timeZone: 'Europe/Paris', ...over,
+  maxCallSeconds: 480, announcement: { mode: 'engine', text: ANN }, orchestratorUrl: 'https://orch.test/api', timeZone: 'Europe/Paris', ...over,
 });
 
 class FakeEngine {
@@ -63,6 +63,9 @@ describe('API interne : jeton de service ai-inbound', () => {
     expect(run(`Bearer ${jwt.sign({ scope: 'ai-inbound' }, 'test-secret')}`).res.code).toBe(401);
     expect(run(`Bearer ${jwt.sign({ scope: 'ai-inbound' }, 'autre', { expiresIn: 60 })}`).res.code).toBe(401);
     expect(run(`Bearer ${jwt.sign({ scope: 'ai-inbound' }, 'test-secret', { expiresIn: 60 })}`).next).toHaveBeenCalled();
+    expect(run(`Bearer ${jwt.sign({ scope: 'ai-inbound' }, 'test-secret', { expiresIn: 600 })}`).res.code).toBe(401);
+    const old = Math.floor(Date.now() / 1000) - 300;
+    expect(run(`Bearer ${jwt.sign({ scope: 'ai-inbound', iat: old, exp: old + 100 + 300 }, 'test-secret')}`).res.code).toBe(401);
   });
 });
 
@@ -125,6 +128,10 @@ describe('consignes d’accueil et voix naturelle', () => {
     for (const re of [/Phrases courtes et orales/, /Jamais de liste lue/, /Reformule/, /marques d'écoute/, /Ne répète jamais mécaniquement/, /arrête-toi immédiatement/]) expect(t).toMatch(re);
   });
   test('phrase d’attente avant un outil lent', () => { expect(ins()).toMatch(/Je regarde ça pour vous/); });
+  test('déclencheur « tous occupés » (appel simultané dans la capacité de la ligne) : consigne adaptée', () => {
+    expect(ins({ trigger: 'all_busy' })).toMatch(/l'équipe est déjà en ligne/);
+    expect(ins()).not.toMatch(/l'équipe est déjà en ligne/);
+  });
   test('vouvoiement par défaut, tutoiement réglable, langues et accent', () => {
     expect(ins()).toMatch(/Vouvoie toujours/);
     expect(ins({ addressForm: 'tu' })).toMatch(/Tutoie l'appelant/);
@@ -216,15 +223,17 @@ describe('latence par tour', () => {
 describe('outils : entreprise de la session uniquement, délais courts, phrase d’attente', () => {
   test('outil orch : jeton d’appel, companyId du modèle supprimé', async () => {
     const calls = [];
-    const out = await tools.executeInboundTool('create_request', { reason: 'x', companyId: 'autre' }, { orchestratorUrl: 'https://orch.test/api', callToken: 'TOK' }, { fetchImpl: okFetch(calls) });
+    const out = await tools.executeInboundTool('create_request', { reason: 'x', companyId: 'autre' }, { orchestratorUrl: 'https://orch.test/api', companyId: A, callSid: SID }, { fetchImpl: okFetch(calls) });
     expect(out.ok).toBe(true);
     expect(calls[0].url).toBe('https://orch.test/api/internal/ai-inbound/tools/create_request');
-    expect(calls[0].init.headers.Authorization).toBe('Bearer TOK');
+    const t = jwt.verify(calls[0].init.headers.Authorization.replace('Bearer ', ''), 'test-secret');
+    expect(t).toMatchObject({ scope: 'ai-inbound-call', companyId: A, callSid: SID });
+    expect(t.exp - t.iat).toBeLessThanOrEqual(120);
     expect(JSON.parse(calls[0].init.body)).toEqual({ reason: 'x' });
   });
   test('délai dépassé : réponse de repli, jamais d’exception', async () => {
     const slow = jest.fn((url, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('a'), { name: 'AbortError' })))));
-    const out = await tools.executeInboundTool('find_slots', {}, { orchestratorUrl: 'https://o/api', callToken: 't' }, { fetchImpl: slow, timeoutMs: 20 });
+    const out = await tools.executeInboundTool('find_slots', {}, { orchestratorUrl: 'https://o/api', companyId: A, callSid: SID }, { fetchImpl: slow, timeoutMs: 20 });
     expect(out).toMatchObject({ ok: false, error: 'timeout' });
     expect(out.fallback).toMatch(/propose de faire rappeler/);
   });
@@ -333,5 +342,75 @@ describe('mesure du coût réel', () => {
     expect(r.cost).toHaveProperty('usd');
     expect(r.latency).toHaveProperty('turns');
     expect(new Date(r.endedAt) - new Date(r.startedAt)).toBe(30000);
+  });
+});
+
+describe('revue : transfert, banc d’écoute, Gemini goAway, latence, OpenAI', () => {
+  test('transfert : délai de l’outil couvrant la pause et la bascule Twilio (8 s)', async () => {
+    expect(tools.TRANSFER_TIMEOUT_MS).toBeGreaterThanOrEqual(8000);
+    let signalAborted = null;
+    const fetchImpl = jest.fn((url, init) => new Promise((resolve) => setTimeout(() => { signalAborted = init.signal.aborted; resolve({ ok: true, status: 200, json: async () => ({ data: { transferring: true } }) }); }, 3500)));
+    const out = await tools.executeInboundTool('transfer_to_human', { entryId: 'e1', reason: 'x' }, { orchestratorUrl: 'https://o/api', companyId: A, callSid: SID }, { fetchImpl });
+    expect(signalAborted).toBe(false); expect(out).toMatchObject({ ok: true, transferring: true });
+  }, 10000);
+  test('flux arrêté pendant la bascule : compte rendu « transferred », jamais « caller_hangup »', async () => {
+    let release;
+    const fetchImpl = jest.fn((url) => (url.includes('transfer_to_human') ? new Promise((r) => { release = () => r({ ok: true, status: 200, json: async () => ({ data: { transferring: true } }) }); }) : okFetch()(url)));
+    const { ctx, engine } = await make({ fetchImpl });
+    ctx.onStreamStart('MZ');
+    const pending = engine.handlers.onToolCall[0]({ name: 'transfer_to_human', args: { entryId: 'e1', reason: 'x' } });
+    await ctx.onStreamStop('stop');
+    expect(ctx.lastReport.endReason).toBe('transferred');
+    release(); await pending;
+  });
+  test('le modèle ne peut pas déclencher l’enregistrement du banc', async () => {
+    const { engine } = await make();
+    expect(await engine.handlers.onToolCall[0]({ name: 'start_bench_recording', args: {} })).toMatchObject({ ok: false });
+  });
+  test('banc d’écoute : enregistrement demandé à l’orchestrateur seulement APRÈS l’annonce (consentement)', async () => {
+    const calls = [];
+    const { ctx, engine } = await make({ fetchImpl: okFetch(calls), over: { record: true } });
+    ctx.onStreamStart('MZ');
+    expect(calls.some((c) => c.url.endsWith('/start_bench_recording'))).toBe(false);
+    engine.emit('onTranscript', { type: 'gemini.output_transcription', cumulative: true, text: ANN });
+    engine.emit('onSpeechStopped');
+    await new Promise((r) => setImmediate(r));
+    expect(calls.filter((c) => c.url.endsWith('/start_bench_recording'))).toHaveLength(1);
+  });
+  test('Gemini : appel plafonné sous la durée de connexion (~10 min) ; goAway → conclusion anticipée', async () => {
+    jest.useFakeTimers();
+    const calls = [];
+    const { out, ctx, engine } = await make({ fetchImpl: okFetch(calls), over: { maxCallSeconds: 900 } });
+    expect(out.maxCallSeconds).toBe(540);
+    ctx.onStreamStart('MZ');
+    engine.emit('onGoAway', { timeLeft: '10s' });
+    expect(engine.texts().some((t) => /se terminer dans quelques secondes/.test(t))).toBe(true);
+    jest.advanceTimersByTime(8000);
+    await Promise.resolve(); await Promise.resolve();
+    expect(JSON.parse(calls.find((c) => c.url.includes('/report')).init.body).endReason).toBe('max_duration');
+  });
+  test('OpenAI repli : pas de plafond Gemini', async () => {
+    expect((await make({ fail: ['gemini'], over: { maxCallSeconds: 900 } })).out.maxCallSeconds).toBe(900);
+  });
+  test('latence : tour ignoré quand l’appelant a parlé pendant que l’IA parlait', () => {
+    const loud = Buffer.alloc(160, linearToMulaw(8000)).toString('base64');
+    let t = 0; const m = new TurnLatencyMeter({ now: () => t });
+    t = 100; m.onOutbound(); // l'IA parle
+    for (let i = 0; i < 5; i += 1) { t += 20; m.onInbound(loud); } // l'appelant parle par-dessus
+    t += 700; m.onOutbound();
+    m.onAgentTurnEnd();
+    for (let i = 0; i < 5; i += 1) { t += 20; m.onInbound(loud); }
+    t += 650; m.onOutbound();
+    expect(m.stats()).toMatchObject({ turns: [650], skippedOverlaps: 1 });
+  });
+  test('OpenAI gpt-realtime-2.x : effort de raisonnement minimal par défaut ; prix texte de sortie 24 $', () => {
+    const o = new OpenAIRealtimeService({ apiKey: 'k', model: 'gpt-realtime-2.1', logger: { log() {}, warn() {}, error() {} } });
+    const sent = []; o.send = (p) => sent.push(p);
+    o._configureSession({ instructions: 'x', tools: [], voice: 'marin' });
+    expect(sent[0].session.reasoning).toEqual({ effort: 'minimal' });
+    const old = new OpenAIRealtimeService({ apiKey: 'k', model: 'gpt-4o-realtime-preview', logger: { log() {} } }); const s2 = []; old.send = (p) => s2.push(p);
+    old._configureSession({ instructions: 'x', tools: [], voice: 'alloy' });
+    expect(s2[0].session.reasoning).toBeUndefined();
+    expect(require('../services/aiUsageCost').priceTable({}).openai.textOut).toBe(24);
   });
 });

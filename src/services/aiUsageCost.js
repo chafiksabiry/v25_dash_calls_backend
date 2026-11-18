@@ -3,7 +3,8 @@
  * puis coût estimé avec une grille de prix (dollars par million de jetons) réglable par variables d'environnement.
  * Les jetons bruts sont journalisés et envoyés sur la fiche : le coût peut être recalculé si les prix changent.
  *
- * Prix relevés le 18/11/2026 (étude, section 2) pour l'audio ; les prix « texte » sont des HYPOTHÈSES à confirmer (variables *_TEXT_*).
+ * Prix relevés le 18/11/2026 (étude, section 2) pour l'audio ; gpt-realtime-2.1 texte relevé (4 $ / 24 $) ; les autres prix « texte » sont des
+ * HYPOTHÈSES à confirmer (variables *_TEXT_*).
  * Gemini : la « part de contexte » = jetons d'entrée relus à chaque tour au-delà de l'audio nouveau de l'appelant (25 jetons/s).
  */
 const PRICES_VERSION = '2026-11-18';
@@ -21,7 +22,7 @@ function priceTable(env = process.env) {
     },
     openai: {
       audioIn: num(env.AI_PRICE_OPENAI_AUDIO_IN_USD, 32), audioOut: num(env.AI_PRICE_OPENAI_AUDIO_OUT_USD, 64),
-      textIn: num(env.AI_PRICE_OPENAI_TEXT_IN_USD, 4), textOut: num(env.AI_PRICE_OPENAI_TEXT_OUT_USD, 16), cached: num(env.AI_PRICE_OPENAI_CACHED_USD, 0.4),
+      textIn: num(env.AI_PRICE_OPENAI_TEXT_IN_USD, 4), textOut: num(env.AI_PRICE_OPENAI_TEXT_OUT_USD, 24), cached: num(env.AI_PRICE_OPENAI_CACHED_USD, 0.4),
     },
   };
 }
