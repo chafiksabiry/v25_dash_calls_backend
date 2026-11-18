@@ -44,7 +44,7 @@ let clock;
 const make = async ({ fail = [], env = ENV, over = {}, fetchImpl = okFetch() } = {}) => {
   const engines = [];
   const out = await svc.createInboundSession(body(over), {
-    env, fetchImpl, now: () => clock,
+    env, fetchImpl, now: () => clock, learningGenerate: async () => ({ text: '{}' }),
     createEngine: (cfg) => { const e = new FakeEngine(cfg, { fail: fail.includes(cfg.provider) }); engines.push(e); return e; },
   });
   const ctx = svc.sessions.get(out.sessionId);
