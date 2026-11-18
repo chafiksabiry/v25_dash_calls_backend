@@ -5,6 +5,7 @@ const { config, assertRequiredEnv } = require('./config/env');
 // Aucun secret de repli : sans JWT_SECRET (ou sans adresse MongoDB) le service refuse de démarrer.
 try {
   assertRequiredEnv();
+  console.log(`🔐 Configuration : JWT_SECRET présent ; adresse MongoDB lue dans ${config.MONGODB_URI_SOURCE}.`);
 } catch (error) {
   console.error(`❌ ${error.message}`);
   process.exit(1);

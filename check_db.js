@@ -1,8 +1,10 @@
 const mongoose = require('mongoose');
 
-const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+require('dotenv').config();
+const { config, MONGO_URI_VARS } = require('./src/config/env');
+const uri = config.MONGODB_URI;
 if (!uri) {
-    console.error('MONGO_URI (ou MONGODB_URI) est requis.');
+    console.error(`Adresse MongoDB requise (${MONGO_URI_VARS.join(', ')}).`);
     process.exit(1);
 }
 
