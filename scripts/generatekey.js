@@ -3,7 +3,14 @@ require('dotenv').config();
 
 // Variables nécessaires
 const applicationSecret = process.env.OVH_APPLICATION_SECRET;
-const consumerKey = '10b0ff940492f37a012605512e54cc85';
+const consumerKey = process.env.OVH_CONSUMER_KEY;
+const billingAccount = process.env.OVH_BILLING_ACCOUNT;
+const serviceName = process.env.OVH_SERVICE_NAME;
+const missing = ['OVH_APPLICATION_KEY', 'OVH_APPLICATION_SECRET', 'OVH_CONSUMER_KEY', 'OVH_BILLING_ACCOUNT', 'OVH_SERVICE_NAME'].filter((k) => !process.env[k]);
+if (missing.length) {
+  console.error(`Variable(s) OVH absente(s) : ${missing.join(', ')}`);
+  process.exit(1);
+}
 const httpMethod = 'GET'; // ou POST, PUT, etc.
 const apiEndpoint = 'https://eu.api.ovh.com';
 const requestUrl = '/1.0/me';
@@ -24,12 +31,12 @@ const crypto = require('crypto');
 require('dotenv').config();
 
 // Configuration OVH
- const applicationKey = '951ed23a2d85dc98';
-const applicationSecret = 'f084e28c889418c3093aed237a8b7198';
-const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
+ const applicationKey = process.env.OVH_APPLICATION_KEY;
+const applicationSecret = process.env.OVH_APPLICATION_SECRET;
+const consumerKey = process.env.OVH_CONSUMER_KEY;
 const httpMethod = 'GET';
 const apiEndpoint = 'https://eu.api.ovh.com';
-const requestUrl = '/1.0/telephony/sc899836-ovh-1/line/0033183643948/records';
+const requestUrl = `/1.0/telephony/${billingAccount}/line/${serviceName}/records`;
 const body = ''; // GET n'a pas de body
 const timestamp = Math.floor(Date.now() / 1000); // Timestamp UNIX
 
@@ -61,11 +68,11 @@ console.log('X-Ovh-Signature:', signature);
 
 
  
- /* const applicationKey = '951ed23a2d85dc98';
-const applicationSecret = 'f084e28c889418c3093aed237a8b7198';
-const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
+ /* const applicationKey = process.env.OVH_APPLICATION_KEY;
+const applicationSecret = process.env.OVH_APPLICATION_SECRET;
+const consumerKey = process.env.OVH_CONSUMER_KEY;
       const billingAccount ='sc899836-ovh-1';
-      const serviceName = '0033183643948'; 
+      const serviceName = process.env.OVH_SERVICE_NAME; 
       const apiEndpoint = 'https://eu.api.ovh.com';
       const requestUrl = `/1.0/telephony/${billingAccount}/line/${serviceName}/click2Call`;
       const httpMethod = 'POST';

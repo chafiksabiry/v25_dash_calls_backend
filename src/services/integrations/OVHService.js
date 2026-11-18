@@ -7,13 +7,24 @@ const { promisify } = require('util');
 
 class OVHService {
   constructor(applicationKey, applicationSecret, consumerKey, endpoint = 'ovh-eu') {
-    this.applicationKey = '951ed23a2d85dc98';
-    this.applicationSecret = 'f084e28c889418c3093aed237a8b7198';
-    this.consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
-    this.billingAccount = 'sc899836-ovh-1';
-    this.serviceName = '003256944960'; // Le numéro OVH utilisé comme appelant
+    this.applicationKey = applicationKey || process.env.OVH_APPLICATION_KEY || process.env.OVH_APP_KEY || '';
+    this.applicationSecret = applicationSecret || process.env.OVH_APPLICATION_SECRET || process.env.OVH_APP_SECRET || '';
+    this.consumerKey = consumerKey || process.env.OVH_CONSUMER_KEY || '';
+    this.billingAccount = process.env.OVH_BILLING_ACCOUNT || '';
+    this.serviceName = process.env.OVH_SERVICE_NAME || process.env.OVH_DEFAULT_NUMBER || ''; // Le numéro OVH utilisé comme appelant
     this.endpoint = 'ovh-eu';
     this.client = null;
+  }
+
+  /** Identifiants OVH : variables d'environnement uniquement (aucune valeur dans le dépôt). Erreur claire si l'une manque. */
+  assertConfigured() {
+    const missing = [];
+    if (!this.applicationKey) missing.push('OVH_APPLICATION_KEY (ou OVH_APP_KEY)');
+    if (!this.applicationSecret) missing.push('OVH_APPLICATION_SECRET (ou OVH_APP_SECRET)');
+    if (!this.consumerKey) missing.push('OVH_CONSUMER_KEY');
+    if (!this.billingAccount) missing.push('OVH_BILLING_ACCOUNT');
+    if (!this.serviceName) missing.push('OVH_SERVICE_NAME (ou OVH_DEFAULT_NUMBER)');
+    if (missing.length) throw new Error(`Intégration OVH non configurée : variable(s) ${missing.join(', ')} absente(s).`);
   }
 
 /*   async initializeClient() {
@@ -23,14 +34,15 @@ class OVHService {
     }
 console.log("before client initiation");
     this.client = ovh({
-      appKey: '951ed23a2d85dc98',
-      appSecret: 'f084e28c889418c3093aed237a8b7198',
-      consumerKey: 'f0571ddbe535f8b38c02274b577165cf',
+      appKey: this.applicationKey,
+      appSecret: this.applicationSecret,
+      consumerKey: this.consumerKey,
       endpoint: 'eu.api.ovh.com'
     });
     console.log("this.client",this.client);
   } */
     async initializeClient() {
+      this.assertConfigured();
       try {
         console.log("we are in the initializeClient");
     
@@ -43,9 +55,9 @@ console.log("before client initiation");
     
         // Initialisation du client OVH
         this.client = ovh({
-          appKey: '951ed23a2d85dc98',
-          appSecret: 'f084e28c889418c3093aed237a8b7198',
-          consumerKey: 'f0571ddbe535f8b38c02274b577165cf',
+          appKey: this.applicationKey,
+          appSecret: this.applicationSecret,
+          consumerKey: this.consumerKey,
           endpoint: 'ovh-eu',
           debug: true  
         });
@@ -211,11 +223,11 @@ console.log("before client initiation");
       console.log("👉 Démarrage de makeCall");
     
       // Configuration OVH
-      const applicationKey = '951ed23a2d85dc98';
-const applicationSecret = 'f084e28c889418c3093aed237a8b7198';
-const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
+      const applicationKey = process.env.OVH_APPLICATION_KEY;
+const applicationSecret = process.env.OVH_APPLICATION_SECRET;
+const consumerKey = process.env.OVH_CONSUMER_KEY;
       const billingAccount ='sc899836-ovh-1';
-      const serviceName = '0033183643948'; 
+      const serviceName = process.env.OVH_SERVICE_NAME; 
       const apiEndpoint = 'https://eu.api.ovh.com';
       const requestUrl = `/1.0/telephony/${billingAccount}/line/${serviceName}/click2Call`;
       const httpMethod = 'POST';
@@ -255,6 +267,7 @@ const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
       }
     }  */
       async makeCall(to, from) {
+        this.assertConfigured();
         console.log("👉 Démarrage de makeCall");
     
         if (!this.client) {
@@ -296,7 +309,7 @@ const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
           try {
             // Configuration OVH
             const billingAccount = 'sc899836-ovh-1';
-            const serviceName = '003256944960'; // Numéro OVH utilisé comme appelant
+            const serviceName = process.env.OVH_SERVICE_NAME; // Numéro OVH utilisé comme appelant
             const requestUrl = `/telephony/${billingAccount}/line/${serviceName}/click2Call`;
             const body = {
               "calledNumber": to,
@@ -326,7 +339,7 @@ const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
           }
         
           const billingAccount = 'sc899836-ovh-1';
-          const serviceName = '0033183643948'; // Numéro OVH utilisé comme appelant
+          const serviceName = process.env.OVH_SERVICE_NAME; // Numéro OVH utilisé comme appelant
           const requestUrl = `/telephony/${billingAccount}/line/${serviceName}/click2Call`;
           const body = {
             "calledNumber": to,
@@ -356,7 +369,7 @@ const consumerKey = 'f0571ddbe535f8b38c02274b577165cf';
             }
           
             const billingAccount = 'sc899836-ovh-1';
-            const serviceName = '0033183643948';
+            const serviceName = process.env.OVH_SERVICE_NAME;
             const requestUrl = `/telephony/${billingAccount}/line/${serviceName}/click2Call`;
             const body = {
               "calledNumber": to,
