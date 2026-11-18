@@ -1,12 +1,14 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
 const { getGig, updateGigVoiceAssistant } = require('../controllers/gigs');
+const access = require('../middleware/callsAccess');
 
 const router = express.Router();
 
-// Company telephony UI calls this without dash_calls JWT (same as /api/calls/ai-outbound).
-router.put('/:id/voice-assistant', updateGigVoiceAssistant);
-router.get('/:id/voice-assistant', async (req, res) => {
+// Assistant vocal d'un gig : avec un jeton, l'appelant doit appartenir à l'entreprise du gig. Groupe compat : l'application
+// entreprise historique (comporchestrator_front) appelle encore sans jeton (voir CALLS_LEGACY_ANON).
+router.put('/:id/voice-assistant', access.compatAuth, access.guardGigCompany('id'), updateGigVoiceAssistant);
+router.get('/:id/voice-assistant', access.compatAuth, access.guardGigCompany('id'), async (req, res) => {
   try {
     const mongoose = require('mongoose');
     const gigIdStr = String(req.params.id);

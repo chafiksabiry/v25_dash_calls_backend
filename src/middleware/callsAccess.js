@@ -255,6 +255,96 @@ async function guardCreateCall(req, res, next) {
   }
 }
 
+
+/** Recherche brute par identifiant (chaîne ou ObjectId, comme le reste du service). */
+async function findRaw(collection, id, projection) {
+  const raw = String(id || '');
+  if (!raw) return null;
+  const or = [{ _id: raw }];
+  if (mongoose.Types.ObjectId.isValid(raw)) or.push({ _id: new mongoose.Types.ObjectId(raw) });
+  return mongoose.connection.db.collection(collection).findOne({ $or: or }, { projection });
+}
+
+const idOf = (v) => (v && (v.$oid || v._id || v)) ? String(v.$oid || v._id || v) : null;
+
+/** Entreprise d'un gig (champ companyId du gig). null si gig ou entreprise inconnus. */
+async function companyOfGig(gigId) {
+  const gig = await findRaw('gigs', gigId, { companyId: 1 });
+  return gig ? idOf(gig.companyId) : null;
+}
+
+/** Entreprise d'un prospect : son companyId, à défaut celui de son gig. `undefined` si le prospect n'existe pas. */
+async function companyOfLead(leadId) {
+  const lead = await findRaw('leads', leadId, { companyId: 1, gigId: 1 });
+  if (!lead) return undefined;
+  return idOf(lead.companyId) || (lead.gigId ? await companyOfGig(idOf(lead.gigId)) : null);
+}
+
+/**
+ * Prospect d'une entreprise (appel IA sortant) : avec un jeton, l'appelant doit appartenir à l'entreprise du prospect ;
+ * l'entreprise vérifiée remplace alors celle du corps ou de l'en-tête x-company-id (forgeables).
+ * Prospect inconnu : la suite (contrôleur) répond 404.
+ */
+function guardLeadCompany(pick = (req) => (req.body && req.body.leadId) || req.params.leadId) {
+  return async (req, res, next) => {
+    if (!req.auth) return next(); // compat sans jeton : voir compatAuth
+    const leadId = pick(req);
+    if (!leadId) return deny(res, 400, 'leadId is required');
+    try {
+      const companyId = await companyOfLead(leadId);
+      if (companyId === undefined) return next();
+      if (!companyId) return deny(res, 403, 'Not allowed for this lead');
+      await assertCompanyAccess(req, companyId);
+      if (req.body && typeof req.body === 'object') req.body.companyId = companyId;
+      req.verifiedCompanyId = companyId;
+      return next();
+    } catch (error) {
+      return sendScopeError(res, error);
+    }
+  };
+}
+
+/** Gig d'une entreprise (:id dans l'URL) : avec un jeton, l'appelant doit appartenir à l'entreprise du gig. */
+function guardGigCompany(param = 'id') {
+  return async (req, res, next) => {
+    if (!req.auth) return next();
+    const gigId = req.params[param];
+    if (!gigId) return deny(res, 400, 'gigId is required');
+    try {
+      const gig = await findRaw('gigs', gigId, { companyId: 1 });
+      if (!gig) return deny(res, 404, 'Gig not found');
+      const companyId = idOf(gig.companyId);
+      if (!companyId) return deny(res, 403, 'Not allowed for this gig');
+      await assertCompanyAccess(req, companyId);
+      return next();
+    } catch (error) {
+      return sendScopeError(res, error);
+    }
+  };
+}
+
+/**
+ * Raccrochage d'un appel IA sortant : avec un jeton, si l'appel est connu (callId, ou SID / call_control_id), il doit
+ * appartenir à l'entreprise de l'appelant.
+ */
+async function guardAiOutboundCall(req, res, next) {
+  if (!req.auth) return next();
+  const { callId, callControlId } = req.body || {};
+  try {
+    const { Call } = require('../models/Call');
+    let call = null;
+    if (callId && OBJECT_ID.test(String(callId))) call = await Call.findById(callId).select('companyId').lean();
+    if (!call && callControlId) {
+      call = await Call.findOne({ $or: [{ sid: String(callControlId) }, { call_id: String(callControlId) }] }).select('companyId').lean();
+    }
+    if (!call) return next();
+    if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
+    return deny(res, 403, 'Not allowed for this call');
+  } catch (error) {
+    return sendScopeError(res, error);
+  }
+}
+
 module.exports = {
   strictAuth,
   compatAuth,
@@ -266,6 +356,11 @@ module.exports = {
   guardCallId,
   guardCenterCallBody,
   guardCreateCall,
+  guardLeadCompany,
+  guardGigCompany,
+  guardAiOutboundCall,
+  companyOfLead,
+  companyOfGig,
   requireAuth,
   legacyAnon,
 };
