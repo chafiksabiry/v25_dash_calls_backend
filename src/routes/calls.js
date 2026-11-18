@@ -106,7 +106,8 @@ router.get('/status/:callSid', access.compatAuth, callController.trackCallStatus
 router.post('/hangup/:callSid', access.compatAuth, callController.hangUpCall);
 // Aucun appelant connu : jeton exigé.
 router.post('/end', access.strictAuth, callController.endCall);
-router.post('/fetch-recording', access.compatAuth, callController.fetchRecording);
+// URL limitée aux enregistrements Twilio du compte ; appel connu = entreprise ou agent de l'appelant ; réponse filtrée (recordingAccess).
+router.post('/fetch-recording', access.compatAuth, access.guardFetchRecording, callController.fetchRecording);
 router.post('/call-details', access.compatAuth, callController.getCallDetails);
 router.post('/recording/start', access.compatAuth, callController.startRecording);
 router.post('/recording/stop', access.compatAuth, callController.stopRecording);

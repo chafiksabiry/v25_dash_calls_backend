@@ -1,6 +1,6 @@
 /**
- * Écoute des enregistrements d'appels (décision du 18/11/2026) : l'URL d'un enregistrement n'est renvoyée qu'au titulaire
- * PROUVÉ du centre (session `isOwner === true`, hors agent et hors contact client) ou à une personne dont les droits
+ * Écoute des enregistrements d'appels (décision du 18/11/2026) : l'URL d'un enregistrement n'est renvoyée qu'à une session
+ * `isOwner === true` (hors agent et hors contact client ; voir la réserve plus bas) ou à une personne dont les droits
  * contiennent `calls.listen === true`. Tous les autres reçoivent `recording_url` et `recording_url_cloudinary` à null
  * (le statut d'enregistrement reste visible : l'appel « a » un enregistrement, la personne ne peut pas l'écouter).
  *
@@ -9,6 +9,13 @@
  *
  * Source des droits : `GET /api/company-members/me` du service d'inscription (le jeton ne porte ni rôle ni droits),
  * lu via companyScope.callerSession (même cache court que le contrôle d'entreprise).
+ *
+ * Attention, « isOwner: true » n'est pas réservé au titulaire d'une entreprise : /me renvoie aussi `isOwner: true` et tous
+ * les droits (donc `calls.listen`) pour tout compte SANS CompanyMembership ni entreprise possédée (reps freelances,
+ * anciens comptes), avec `companyId: null`. Ce filtre ne leur ouvre donc rien par lui-même : ce sont les gardes de
+ * callsAccess qui bornent ce qu'ils lisent. Sans entreprise, assertCompanyAccess et requireCallerCompany les refusent ;
+ * il ne leur reste que leurs propres appels (userId = le leur, ou agentId = leur profil agent, guardCallsList /
+ * guardAgentParam / guardCallId), où écouter leurs propres enregistrements est voulu.
  */
 const { callerSession } = require('../middleware/companyScope');
 

@@ -5,8 +5,8 @@ class AnalyticsService {
     this.repository = new AnalyticsRepository();
   }
 
-  async getOverview() {
-    const { calls, agents, leads } = await this.repository.getOverviewData();
+  async getOverview(companyId) {
+    const { calls, agents, leads } = await this.repository.getOverviewData(companyId);
 
     return {
       calls: {
@@ -34,16 +34,16 @@ class AnalyticsService {
     };
   }
 
-  async getCallMetrics() {
-    return this.repository.getCallMetrics();
+  async getCallMetrics(companyId) {
+    return this.repository.getCallMetrics(companyId);
   }
 
-  async getAgentMetrics() {
-    return this.repository.getAgentMetrics();
+  async getAgentMetrics(companyId) {
+    return this.repository.getAgentMetrics(companyId);
   }
 
-  async getQualityMetrics() {
-    const calls = await this.repository.getQualityMetrics();
+  async getQualityMetrics(companyId) {
+    const calls = await this.repository.getQualityMetrics(companyId);
     
     return {
       avg_score: calls.reduce((acc, call) => acc + (call.quality_score || 0), 0) / calls.length || 0,

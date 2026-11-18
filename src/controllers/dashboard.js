@@ -1,4 +1,5 @@
 const { DashboardService } = require('../services/DashboardService');
+const { applyRecordingAccess } = require('../utils/recordingAccess');
 
 const dashboardService = new DashboardService();
 
@@ -7,7 +8,7 @@ const dashboardService = new DashboardService();
 // @access  Private
 exports.getStats = async (req, res) => {
   try {
-    const data = await dashboardService.getStats();
+    const data = await dashboardService.getStats(req.callerCompanyId);
 
     res.status(200).json({
       success: true,
@@ -26,7 +27,7 @@ exports.getStats = async (req, res) => {
 // @access  Private
 exports.getLiveCalls = async (req, res) => {
   try {
-    const data = await dashboardService.getLiveCalls();
+    const data = await applyRecordingAccess(req, await dashboardService.getLiveCalls(req.callerCompanyId));
 
     res.status(200).json({
       success: true,
@@ -45,7 +46,7 @@ exports.getLiveCalls = async (req, res) => {
 // @access  Private
 exports.getTopGigs = async (req, res) => {
   try {
-    const data = await dashboardService.getTopGigs();
+    const data = await dashboardService.getTopGigs(req.callerCompanyId);
 
     res.status(200).json({
       success: true,
@@ -64,7 +65,7 @@ exports.getTopGigs = async (req, res) => {
 // @access  Private
 exports.getTopReps = async (req, res) => {
   try {
-    const data = await dashboardService.getTopReps();
+    const data = await dashboardService.getTopReps(req.callerCompanyId);
 
     res.status(200).json({
       success: true,

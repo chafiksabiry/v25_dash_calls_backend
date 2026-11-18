@@ -1,14 +1,22 @@
 process.env.JWT_SECRET = 'test-secret';
 process.env.REGISTRATION_BACKEND_URL = 'https://reg.example';
 
-const mockCall = { find: jest.fn(), findById: jest.fn(), findOne: jest.fn(), findOneAndUpdate: jest.fn() };
+process.env.TWILIO_ACCOUNT_SID = `AC${'1'.repeat(32)}`;
+
+const mockCall = { find: jest.fn(), findById: jest.fn(), findOne: jest.fn(), findOneAndUpdate: jest.fn(), distinct: jest.fn() };
 const mockIntent = { find: jest.fn() };
+const mockTwilio = { fetchTwilioRecording: jest.fn() };
+const mockQalqul = { storeCallsInDBatEndingCall: jest.fn() };
+const mockAgentModel = { find: jest.fn() };
+const mockLeadModel = { find: jest.fn() };
 jest.mock('../models/Call', () => ({ Call: mockCall }));
+jest.mock('../models/Agent', () => ({ Agent: mockAgentModel, findOne: () => ({ select: () => ({ lean: async () => null }) }) }));
+jest.mock('../models/Lead', () => ({ Lead: mockLeadModel }));
 jest.mock('../models/CallRecordingIntent', () => mockIntent);
 jest.mock('../services/vertexai.service', () => ({}));
-jest.mock('../services/integrations/twilio', () => ({}));
+jest.mock('../services/integrations/twilio', () => mockTwilio);
 jest.mock('../services/integrations/telnyxService', () => ({}));
-jest.mock('../services/integrations/qaqlulService', () => ({}));
+jest.mock('../services/integrations/qaqlulService', () => mockQalqul);
 jest.mock('../services/integrations/ovh', () => ({}));
 jest.mock('../services/CallService', () => ({ CallService: function CallService() {} }));
 
@@ -35,6 +43,9 @@ const SESSIONS = {
   'owner-string': { isOwner: 'true', companyId: COMPANY, permissions: {} },
   // Un agent n'est jamais « titulaire » même si isOwner était renvoyé par erreur.
   'agent-flagged-owner': { isOwner: true, isAgent: true, companyId: COMPANY, permissions: { 'calls.listen': false } },
+  // Rep freelance / ancien compte : /me dit isOwner + tous les droits, mais aucune entreprise.
+  freelance: { isOwner: true, companyId: null, permissions: { 'calls.listen': true } },
+  other: { isOwner: true, companyId: 'bbbbbbbbbbbbbbbbbbbbbbb2', permissions: { 'calls.listen': true } },
 };
 
 const token = (userId) => jwt.sign({ userId }, 'test-secret');
@@ -54,6 +65,7 @@ beforeAll(() => { realFetch = global.fetch; });
 beforeEach(() => {
   clearCompanyCache();
   Object.values(mockCall).forEach((f) => f.mockReset());
+  [mockTwilio.fetchTwilioRecording, mockQalqul.storeCallsInDBatEndingCall, mockAgentModel.find, mockLeadModel.find].forEach((f) => f.mockReset());
   mockIntent.find.mockReset();
   mockIntent.find.mockImplementation(() => ({ select: () => ({ lean: async () => [] }) }));
   global.fetch = jest.fn(async (url) => {
@@ -215,5 +227,152 @@ describe('chaîne complète (routes + contrôle d’entreprise + filtre)', () =>
     expect(r.status).toBe(200);
     expect(r.body.data[0].recording_url).toBeNull();
     expect(r.body.data[0].recording_url_cloudinary).toBeNull();
+  });
+});
+
+describe('réponses d’écriture et d’analyse filtrées', () => {
+  test('POST /:id/analyze (appel court déjà transcrit) : secrétaire null, titulaire URL', async () => {
+    const c = require('../controllers/calls');
+    const fields = { ...doc().toJSON(), duration: 10, ai_call_status: 'too_short', transcript: [{ speaker: 'Agent', text: 'Allô' }] };
+    mockCall.findById.mockImplementation(() => ({ populate: async () => ({ ...fields, toJSON: () => ({ ...fields }) }) }));
+    let res = makeRes();
+    await c.analyzeCall(reqFor('secretary', { params: { id: CALL_ID }, body: {} }), res);
+    expect(res.body.alreadyAnalyzed).toBe(true);
+    expect(res.body.data.recording_url).toBeNull();
+    expect(res.body.data.recording_url_cloudinary).toBeNull();
+    res = makeRes();
+    await c.analyzeCall(reqFor('owner', { params: { id: CALL_ID }, body: {} }), res);
+    expect(res.body.data.recording_url_cloudinary).toBe(CLOUD);
+  });
+  test('POST /store-call-in-db-at-end-call : réponse filtrée, l’écriture a bien lieu', async () => {
+    const c = require('../controllers/calls');
+    mockQalqul.storeCallsInDBatEndingCall.mockResolvedValue({ sid: 'CA1', recording_url: TWILIO, recording_url_cloudinary: CLOUD });
+    const res = makeRes();
+    await c.storeCallsInDBatEndingCall({ body: { phoneNumber: '+33100000000', callSid: 'CA1' }, callsLegacy: true }, res);
+    expect(mockQalqul.storeCallsInDBatEndingCall).toHaveBeenCalledWith('+33100000000', 'CA1');
+    expect(res.body.data).toMatchObject({ sid: 'CA1', recording_url: null, recording_url_cloudinary: null });
+  });
+  test('POST /center-call : jeton de service inchangé, utilisateur sans droit filtré', async () => {
+    const c = require('../controllers/calls');
+    const body = { sid: 'CA2', companyId: COMPANY, handledBy: { userId: 'eeeeeeeeeeeeeeeeeeeeeee1', name: 'Léa' } };
+    mockCall.findOneAndUpdate.mockResolvedValue(doc({ sid: 'CA2' }));
+    let res = makeRes();
+    await c.saveCenterCall({ body, callsService: { scope: 'center-data' } }, res);
+    expect(res.body.data.toJSON().recording_url).toBe(TWILIO);
+    res = makeRes();
+    await c.saveCenterCall(reqFor('secretary', { body }), res);
+    expect(res.body.data.recording_url).toBeNull();
+  });
+});
+
+describe('POST /fetch-recording', () => {
+  const ACC = process.env.TWILIO_ACCOUNT_SID;
+  const RE = `RE${'a'.repeat(32)}`;
+  const good = `https://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE}.mp3`;
+  let server; let port;
+  const post = (body, auth) => new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const r = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/calls/fetch-recording', headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: `Bearer ${auth}` } : {}) } }, (res) => {
+      let raw = ''; res.on('data', (c) => { raw += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : null }));
+    });
+    r.on('error', reject); r.write(data); r.end();
+  });
+  beforeEach(async () => {
+    delete process.env.CALLS_REQUIRE_AUTH; delete process.env.CALLS_LEGACY_ANON; delete process.env.COMPANY_SCOPE_MODE;
+    const app = express();
+    app.use(express.json());
+    app.use('/api/calls', require('../routes/calls'));
+    await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); });
+    port = server.address().port;
+    mockTwilio.fetchTwilioRecording.mockResolvedValue(CLOUD);
+    mockCall.findOne.mockImplementation(() => ({ select: () => ({ lean: async () => null }) }));
+  });
+  afterEach(async () => { await new Promise((r) => server.close(r)); });
+
+  test('URL hors enregistrement Twilio du compte : 400, aucun téléchargement', async () => {
+    const bad = [
+      'https://evil.example/2010-04-01/Accounts/x/Recordings/y',
+      `https://api.twilio.com/2010-04-01/Accounts/AC${'2'.repeat(32)}/Recordings/${RE}.mp3`,
+      `http://api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE}.mp3`,
+      `${good}?x=1`,
+      `https://user:pw@api.twilio.com/2010-04-01/Accounts/${ACC}/Recordings/${RE}.mp3`,
+      `https://api.twilio.com.evil.example/2010-04-01/Accounts/${ACC}/Recordings/${RE}.mp3`,
+      `https://api.twilio.com/2010-04-01/Accounts/${ACC}/Calls/CA1`,
+    ];
+    for (const recordingUrl of bad) {
+      expect((await post({ recordingUrl, userId: 'u' }, token('owner'))).status).toBe(400);
+    }
+    expect(mockTwilio.fetchTwilioRecording).not.toHaveBeenCalled();
+  });
+  test('enregistrement d’un appel d’une autre entreprise : 403', async () => {
+    mockCall.findOne.mockImplementation(() => ({ select: () => ({ lean: async () => ({ companyId: COMPANY, agent: null }) }) }));
+    expect((await post({ recordingUrl: good, userId: 'u' }, token('other'))).status).toBe(403);
+    expect(mockTwilio.fetchTwilioRecording).not.toHaveBeenCalled();
+  });
+  test('appel encore inconnu : téléchargé ; URL renvoyée au titulaire, null pour la secrétaire et l’anonyme', async () => {
+    let r = await post({ recordingUrl: good, userId: 'u' }, token('owner'));
+    expect(r.status).toBe(200);
+    expect(r.body.url).toBe(CLOUD);
+    r = await post({ recordingUrl: good, userId: 'u' }, token('secretary'));
+    expect(r.status).toBe(200);
+    expect(r.body.url).toBeNull();
+    r = await post({ recordingUrl: good, userId: 'u' });
+    expect(r.status).toBe(200);
+    expect(r.body.url).toBeNull();
+    expect(mockTwilio.fetchTwilioRecording).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('/api/analytics et /api/dashboard cantonnés à l’entreprise de l’appelant', () => {
+  let server; let port;
+  const get = (path, auth) => new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port, method: 'GET', path, headers: auth ? { Authorization: `Bearer ${auth}` } : {} }, (res) => {
+      let raw = ''; res.on('data', (c) => { raw += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: raw ? JSON.parse(raw) : null }));
+    });
+    r.on('error', reject); r.end();
+  });
+  const chain = (rows) => { const p = { populate: () => p, select: () => p, sort: () => p, limit: () => p, then: (ok, ko) => Promise.resolve(rows).then(ok, ko) }; return p; };
+  beforeEach(async () => {
+    const app = express();
+    app.use('/api/analytics', require('../routes/analytics'));
+    app.use('/api/dashboard', require('../routes/dashboard'));
+    await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); });
+    port = server.address().port;
+    mockCall.find.mockImplementation(() => chain([doc()]));
+    mockCall.distinct.mockResolvedValue([]);
+    mockAgentModel.find.mockImplementation(() => chain([]));
+    mockLeadModel.find.mockImplementation(() => chain([]));
+  });
+  afterEach(async () => { await new Promise((r) => server.close(r)); });
+
+  test('sans jeton 401 ; compte sans entreprise (rep freelance) 403 ; aucune lecture de la base', async () => {
+    expect((await get('/api/analytics/calls')).status).toBe(401);
+    expect((await get('/api/dashboard/live-calls')).status).toBe(401);
+    expect((await get('/api/analytics/calls', token('freelance'))).status).toBe(403);
+    expect((await get('/api/dashboard/live-calls', token('freelance'))).status).toBe(403);
+    expect(mockCall.find).not.toHaveBeenCalled();
+  });
+  test('analytics/calls et live-calls : filtre companyId de l’appelant (paramètre client ignoré), URL selon le droit', async () => {
+    let r = await get(`/api/analytics/calls?companyId=bbbbbbbbbbbbbbbbbbbbbbb2`, token('secretary'));
+    expect(r.status).toBe(200);
+    expect(mockCall.find).toHaveBeenLastCalledWith({ companyId: COMPANY });
+    expect(r.body.data[0].recording_url).toBeNull();
+    expect(r.body.data[0].recording_url_cloudinary).toBeNull();
+
+    r = await get('/api/dashboard/live-calls', token('owner'));
+    expect(r.status).toBe(200);
+    expect(mockCall.find).toHaveBeenLastCalledWith({ companyId: COMPANY, status: 'active' });
+    expect(r.body.data[0].recording_url_cloudinary).toBe(CLOUD);
+  });
+  test('overview, quality, stats, top-reps : lectures limitées à l’entreprise', async () => {
+    for (const path of ['/api/analytics/overview', '/api/analytics/quality', '/api/analytics/agents', '/api/dashboard/stats', '/api/dashboard/top-reps', '/api/dashboard/top-gigs']) {
+      expect((await get(path, token('owner'))).status).toBe(200);
+    }
+    for (const [q] of mockCall.find.mock.calls) expect(q.companyId).toBe(COMPANY);
+    for (const [, q] of mockCall.distinct.mock.calls) expect(q.companyId).toBe(COMPANY);
+    for (const [q] of mockLeadModel.find.mock.calls) expect(q).toEqual({ companyId: COMPANY });
+    for (const [q] of mockAgentModel.find.mock.calls) expect(q).toEqual({ _id: { $in: [] } });
   });
 });

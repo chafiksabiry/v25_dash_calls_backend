@@ -1,4 +1,5 @@
 const { AnalyticsService } = require('../services/AnalyticsService');
+const { applyRecordingAccess } = require('../utils/recordingAccess');
 
 const analyticsService = new AnalyticsService();
 
@@ -7,7 +8,7 @@ const analyticsService = new AnalyticsService();
 // @access  Private
 exports.getOverview = async (req, res) => {
   try {
-    const data = await analyticsService.getOverview();
+    const data = await analyticsService.getOverview(req.callerCompanyId);
 
     res.status(200).json({
       success: true,
@@ -26,7 +27,7 @@ exports.getOverview = async (req, res) => {
 // @access  Private
 exports.getCallMetrics = async (req, res) => {
   try {
-    const data = await analyticsService.getCallMetrics();
+    const data = await applyRecordingAccess(req, await analyticsService.getCallMetrics(req.callerCompanyId));
 
     res.status(200).json({
       success: true,
@@ -45,7 +46,7 @@ exports.getCallMetrics = async (req, res) => {
 // @access  Private
 exports.getAgentMetrics = async (req, res) => {
   try {
-    const data = await analyticsService.getAgentMetrics();
+    const data = await analyticsService.getAgentMetrics(req.callerCompanyId);
 
     res.status(200).json({
       success: true,
@@ -64,7 +65,7 @@ exports.getAgentMetrics = async (req, res) => {
 // @access  Private
 exports.getQualityMetrics = async (req, res) => {
   try {
-    const data = await analyticsService.getQualityMetrics();
+    const data = await analyticsService.getQualityMetrics(req.callerCompanyId);
 
     res.status(200).json({
       success: true,

@@ -8,7 +8,7 @@ const fetch = require('node-fetch');
 const mongoose = require('mongoose');
 const { buildCenterCall } = require('../utils/centerCall');
 const { withRecordingStatus } = require('../utils/recordingStatus');
-const { applyRecordingAccess } = require('../utils/recordingAccess');
+const { applyRecordingAccess, callerCanListen } = require('../utils/recordingAccess');
 const { serviceAuthHeaders, ESCROW_RECONCILE_SCOPE, CALL_ANALYSIS_NOTIFY_SCOPE } = require('../services/orchestratorServiceAuth');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
@@ -1185,7 +1185,7 @@ exports.saveCenterCall = async (req, res) => {
   try {
     const { sid, ...fields } = doc;
     const saved = await Call.findOneAndUpdate({ sid }, { $set: fields, $setOnInsert: { sid } }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    res.status(200).json({ success: true, data: saved });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, saved) });
     // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
     require('../services/callEndedNotifier').notifyCallEndedInBackground(saved);
   } catch (error) {
@@ -1319,7 +1319,7 @@ exports.saveCallToDB = async (req, res) => {
       runAnalysisInBackground(callDetails._id);
     }
 
-    res.json(callDetails);
+    res.json(await applyRecordingAccess(req, callDetails));
     // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
     if (callDetails && callDetails._id) require('../services/callEndedNotifier').notifyCallEndedInBackground(callDetails);
   } catch (error) {
@@ -1604,7 +1604,7 @@ exports.finalizeTelnyxCall = async (req, res) => {
       runAnalysisInBackground(callDetails._id);
     }
 
-    return res.json(callDetails);
+    return res.json(await applyRecordingAccess(req, callDetails));
   } catch (error) {
     console.error('Error in finalizeTelnyxCall:', error);
     return res.status(500).json({
@@ -1694,7 +1694,8 @@ exports.fetchRecording = async (req, res) => {
     if (!recording) {
       return res.status(500).json({ message: 'Error fetching the recording' });
     }
-    res.json({ url: recording });
+    // L'URL Cloudinary renvoyée est un enregistrement : même règle d'écoute que les appels (null sinon ; /store-call l'archive alors lui-même).
+    res.json({ url: (await callerCanListen(req)) ? recording : null });
   } catch (error) {
     console.error('Error fetching recording:', error);
     res.status(500).json({ message: 'Error fetching the recording' });
@@ -1721,7 +1722,7 @@ exports.storeCallsInDBatStartingCall = async (req, res) => {
   const { storeCall } = req.body;
   try {
     const callDetails = await qalqulService.storeCallsInDBatStartingCall(storeCall);
-    res.status(200).json({ success: true, data: callDetails });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, callDetails) });
   } catch (error) {
     console.error('Error storing call:', error);
     res.status(500).json({ success: false, message: 'Failed to store call details', error: error.message });
@@ -1738,7 +1739,7 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
       runAnalysisInBackground(callDetails._id);
     }
 
-    res.status(200).json({ success: true, data: callDetails });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, callDetails) });
   } catch (error) {
     console.error('Error storing call:', error);
     res.status(500).json({ success: false, message: 'Failed to store call details', error: error.message });
@@ -2227,7 +2228,7 @@ exports.analyzeCall = async (req, res) => {
         transcript: call.transcript,
         validByAI: false,
         ai_call_status: 'too_short',
-        data: call,
+        data: await applyRecordingAccess(req, call),
       });
     }
 
@@ -2437,7 +2438,7 @@ exports.analyzeCall = async (req, res) => {
         message: refusalReason,
         validByAI: false,
         callOutcome,
-        data: updated
+        data: await applyRecordingAccess(req, updated)
       });
     }
 
@@ -2544,7 +2545,7 @@ exports.analyzeCall = async (req, res) => {
         message: shortMsgFr,
         validByAI: shortValidByAI,
         ai_call_status: 'too_short',
-        data: updated,
+        data: await applyRecordingAccess(req, updated),
       });
     }
 
