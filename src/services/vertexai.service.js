@@ -36,8 +36,11 @@ const MULTI_REGION_ENDPOINTS = {
   us: 'aiplatform.us.rep.googleapis.com',
   global: 'aiplatform.googleapis.com',
 };
-// Modèles retirés par Google : un appel renverrait 404. On retombe alors sur le modèle par défaut.
-const RETIRED_MODEL_PATTERNS = [/^gemini-1\.5-/, /^gemini-2\.0-/, /^gemini-2\.5-flash-lite(?:$|-)/];
+// Modèles retirés par Google (page « Model versions and lifecycle ») : un appel renverrait 404. On retombe alors sur le modèle par défaut.
+// gemini-2.5-flash, gemini-2.5-flash-lite et gemini-2.5-pro sont retirés depuis le 20/10/2026. Les modèles gemini-live-* ne sont pas concernés.
+const RETIRED_MODEL_PATTERNS = [/^gemini-1\.5-/, /^gemini-2\.0-/, /^gemini-2\.5-(?:flash|pro)/];
+// Modèles servis uniquement en `global` et en multi-régions `us` / `eu` (jamais dans une région classique comme us-central1).
+const MULTI_REGION_ONLY_MODEL_PATTERNS = [/^gemini-3(?:\.\d+)?-flash(?:-lite)?(?:$|-)/];
 
 const cleanEnv = (value) => String(value || '').replace(/"/g, '').trim();
 
@@ -52,15 +55,25 @@ const resolveVertexModel = (env = process.env, logger = console) => {
   return requested;
 };
 
-/** Emplacement Vertex et point d'accès : `eu` par défaut ; une région classique (ex. europe-west4) garde le point d'accès régional du SDK. */
-const resolveVertexLocation = (env = process.env) => {
-  const location = cleanEnv(env.GOOGLE_CLOUD_LOCATION).toLowerCase() || DEFAULT_VERTEX_LOCATION;
+/**
+ * Emplacement Vertex et point d'accès de l'analyse des appels.
+ * VERTEX_AI_LOCATION (propre à l'analyse) est prioritaire sur GOOGLE_CLOUD_LOCATION (partagée, lue aussi par geminiLiveService) ; `eu` par défaut.
+ * Une région classique garde le point d'accès régional du SDK, sauf si le modèle n'y est pas servi : on utilise alors `eu`, avec un avertissement.
+ */
+const resolveVertexLocation = (env = process.env, model = resolveVertexModel(env), logger = console) => {
+  const source = cleanEnv(env.VERTEX_AI_LOCATION) ? 'VERTEX_AI_LOCATION' : 'GOOGLE_CLOUD_LOCATION';
+  let location = cleanEnv(env[source]).toLowerCase() || DEFAULT_VERTEX_LOCATION;
+  const multiRegionOnly = MULTI_REGION_ONLY_MODEL_PATTERNS.some((re) => re.test(String(model).toLowerCase()));
+  if (multiRegionOnly && !MULTI_REGION_ENDPOINTS[location]) {
+    logger.warn(`⚠️ [VertexAIService] ${source}="${location}" : le modèle ${model} n'est pas servi dans cette région (seulement global, us, eu). Utilisation de ${DEFAULT_VERTEX_LOCATION}.`);
+    location = DEFAULT_VERTEX_LOCATION;
+  }
   return { location, apiEndpoint: MULTI_REGION_ENDPOINTS[location] };
 };
 
 /** Options du constructeur VertexAI (apiEndpoint seulement pour `eu`, `us` et `global`). */
-const vertexClientOptions = (googleAuthOptions, env = process.env) => {
-  const { location, apiEndpoint } = resolveVertexLocation(env);
+const vertexClientOptions = (googleAuthOptions, env = process.env, model = resolveVertexModel(env), logger = console) => {
+  const { location, apiEndpoint } = resolveVertexLocation(env, model, logger);
   return {
     project: projectID,
     location,
@@ -138,8 +151,8 @@ const initializeServices = async () => {
       scopes: ['https://www.googleapis.com/auth/cloud-platform']
     };
 
-    const vertexOptions = vertexClientOptions(vertexAuthOptions);
     const modelName = resolveVertexModel();
+    const vertexOptions = vertexClientOptions(vertexAuthOptions, process.env, modelName);
     console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${vertexOptions.location}, endpoint: ${vertexOptions.apiEndpoint || 'régional (SDK)'}`);
     vertexAI = new VertexAI(vertexOptions);
 

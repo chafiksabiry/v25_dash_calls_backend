@@ -8,8 +8,9 @@ const AUTH = { scopes: ['https://www.googleapis.com/auth/cloud-platform'] };
 
 /** Appelle generateContent avec un faux fetch et un faux jeton : renvoie l'URL et le corps envoyés, sans appeler Google. */
 async function captureRequest(env, request = 'bonjour') {
-  const options = vertex.vertexClientOptions(AUTH, env);
-  const model = new VertexAI(options).getGenerativeModel({ model: vertex.resolveVertexModel(env, silent) });
+  const modelName = vertex.resolveVertexModel(env, silent);
+  const options = vertex.vertexClientOptions(AUTH, env, modelName, silent);
+  const model = new VertexAI(options).getGenerativeModel({ model: modelName });
   model.googleAuth = { getAccessToken: async () => 'faux-jeton' };
   const calls = [];
   const realFetch = global.fetch;
@@ -29,7 +30,7 @@ async function captureRequest(env, request = 'bonjour') {
 describe('vertexai.service : modèle et emplacement servis', () => {
   test('par défaut : gemini-3.1-flash-lite en multi-région UE (aiplatform.eu.rep.googleapis.com)', async () => {
     expect(vertex.resolveVertexModel({}, silent)).toBe('gemini-3.1-flash-lite');
-    expect(vertex.vertexClientOptions(AUTH, {})).toMatchObject({ location: 'eu', apiEndpoint: 'aiplatform.eu.rep.googleapis.com', googleAuthOptions: AUTH });
+    expect(vertex.vertexClientOptions(AUTH, {}, undefined, silent)).toMatchObject({ location: 'eu', apiEndpoint: 'aiplatform.eu.rep.googleapis.com', googleAuthOptions: AUTH });
     const { url } = await captureRequest({ GOOGLE_CLOUD_PROJECT: 'ignoré-car-lu-au-chargement' });
     expect(url).toMatch(/^https:\/\/aiplatform\.eu\.rep\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/eu\/publishers\/google\/models\/gemini-3\.1-flash-lite:generateContent$/);
   });
@@ -41,10 +42,34 @@ describe('vertexai.service : modèle et emplacement servis', () => {
       .toMatch(/^https:\/\/aiplatform\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/global\/publishers\/google\/models\/gemini-3\.1-flash-lite:generateContent$/);
   });
 
-  test('région classique : pas d’apiEndpoint, point d’accès régional du SDK (comportement inchangé)', async () => {
-    expect(vertex.vertexClientOptions(AUTH, { GOOGLE_CLOUD_LOCATION: 'europe-west4' }).apiEndpoint).toBeUndefined();
-    const { url } = await captureRequest({ GOOGLE_CLOUD_LOCATION: 'europe-west4', VERTEX_AI_MODEL: 'gemini-2.5-flash' });
-    expect(url).toMatch(/^https:\/\/europe-west4-aiplatform\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/europe-west4\/publishers\/google\/models\/gemini-2\.5-flash:generateContent$/);
+  test('région classique avec un modèle qui y est servi : pas d’apiEndpoint, point d’accès régional du SDK (comportement inchangé)', async () => {
+    const env = { GOOGLE_CLOUD_LOCATION: 'europe-west4', VERTEX_AI_MODEL: 'modele-regional-test' };
+    expect(vertex.vertexClientOptions(AUTH, env, 'modele-regional-test', silent).apiEndpoint).toBeUndefined();
+    const { url } = await captureRequest(env);
+    expect(url).toMatch(/^https:\/\/europe-west4-aiplatform\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/europe-west4\/publishers\/google\/models\/modele-regional-test:generateContent$/);
+  });
+
+  test.each([
+    [{ GOOGLE_CLOUD_LOCATION: 'us-central1' }, 'GOOGLE_CLOUD_LOCATION'],
+    [{ GOOGLE_CLOUD_LOCATION: 'us-central1', VERTEX_AI_MODEL: 'gemini-3.5-flash-lite' }, 'GOOGLE_CLOUD_LOCATION'],
+    [{ GOOGLE_CLOUD_LOCATION: 'us', VERTEX_AI_LOCATION: 'europe-west1', VERTEX_AI_MODEL: 'gemini-3-flash' }, 'VERTEX_AI_LOCATION'],
+  ])('modèle multi-région seulement dans une région classique (%j) : avertissement et repli sur eu', async (env, source) => {
+    const logger = { warn: jest.fn() };
+    const model = vertex.resolveVertexModel(env, logger);
+    expect(vertex.resolveVertexLocation(env, model, logger)).toEqual({ location: 'eu', apiEndpoint: 'aiplatform.eu.rep.googleapis.com' });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain(source);
+    expect(logger.warn.mock.calls[0][0]).toContain(model);
+    const { url } = await captureRequest(env);
+    expect(url).toMatch(/^https:\/\/aiplatform\.eu\.rep\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/eu\/publishers\/google\/models\/gemini-3[^/]*:generateContent$/);
+  });
+
+  test('VERTEX_AI_LOCATION est prioritaire sur GOOGLE_CLOUD_LOCATION', async () => {
+    const logger = { warn: jest.fn() };
+    const env = { GOOGLE_CLOUD_LOCATION: 'us-central1', VERTEX_AI_LOCATION: 'us' };
+    expect(vertex.resolveVertexLocation(env, 'gemini-3.1-flash-lite', logger)).toEqual({ location: 'us', apiEndpoint: 'aiplatform.us.rep.googleapis.com' });
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect((await captureRequest(env)).url).toMatch(/^https:\/\/aiplatform\.us\.rep\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/us\//);
   });
 
   test('VERTEX_AI_MODEL servi : utilisé tel quel', () => {
@@ -54,7 +79,7 @@ describe('vertexai.service : modèle et emplacement servis', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  test.each(['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-flash', 'gemini-1.5-pro-002', 'gemini-2.0-flash-001', 'Gemini-2.0-Flash-Lite'])(
+  test.each(['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro-002', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite', 'Gemini-2.0-Flash-Lite'])(
     'VERTEX_AI_MODEL retiré (%s) : avertissement et repli sur le modèle par défaut',
     async (retired) => {
       const logger = { warn: jest.fn() };
@@ -66,9 +91,9 @@ describe('vertexai.service : modèle et emplacement servis', () => {
     },
   );
 
-  test('modèle hors liste des retraits connus (gemini-2.5-flash) : non remplacé', () => {
+  test('gemini-live-2.5-flash-native-audio n’est pas considéré comme retiré', () => {
     const logger = { warn: jest.fn() };
-    expect(vertex.resolveVertexModel({ VERTEX_AI_MODEL: 'gemini-2.5-flash' }, logger)).toBe('gemini-2.5-flash');
+    expect(vertex.resolveVertexModel({ VERTEX_AI_MODEL: 'gemini-live-2.5-flash-native-audio' }, logger)).toBe('gemini-live-2.5-flash-native-audio');
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
