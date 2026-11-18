@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const {
   telnyxPcmuBase64ToGeminiPcm16Base64,
   geminiPcm16Base64ToTelnyxPcmuFrames,
+  pcmuToPcm16,
 } = require('../../utils/telephonyAudioCodec');
 
 /**
@@ -114,6 +115,9 @@ class GeminiLiveService {
       'harx-technologies-inc',
     location = process.env.GEMINI_LIVE_LOCATION || process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
     logger = console,
+    // 8000 : l'audio µ-law 8 kHz de la téléphonie est seulement décodé (une seule conversion, pas de rééchantillonnage) ;
+    // Gemini Live accepte tout débit annoncé dans le type MIME. 16000 : comportement historique (appels sortants).
+    inputSampleRate = 16000,
   } = {}) {
     this.backend = backend === 'google' ? 'google' : 'vertex';
     this.apiKey = apiKey || null;
@@ -122,6 +126,7 @@ class GeminiLiveService {
     this.model = (model || defaultModelForBackend(this.backend)).replace(/^models\//, '');
     this.voice = this._resolveVoice(voice);
     this.logger = logger;
+    this.inputSampleRate = Number(inputSampleRate) === 8000 ? 8000 : 16000;
 
     if (this.backend === 'google' && !this.apiKey) {
       throw new Error('GOOGLE_API_KEY (or GEMINI_API_KEY) is not configured for Gemini Live (google)');
@@ -146,6 +151,10 @@ class GeminiLiveService {
       onClose: null,
       onSpeechStarted: null,
       onSpeechStopped: null,
+      // `usageMetadata` (jetons d'entrée relus à chaque tour, sortie, cache) : mesure du coût réel dont la part de contexte.
+      onUsage: null,
+      // goAway : la connexion va être fermée par Google (durée de vie ~10 min) ; `timeLeft` dit dans combien de temps.
+      onGoAway: null,
     };
   }
 
@@ -210,11 +219,11 @@ class GeminiLiveService {
     return [{ functionDeclarations: declarations }];
   }
 
-  async connect({ instructions, tools = [], voice } = {}) {
+  async connect({ instructions, tools = [], voice, vad, languageCode, connectTimeoutMs = 25000 } = {}) {
     if (this.ws && this.connected && this._setupDone) return;
     if (this._fatal) throw new Error('Gemini Live session marked fatal');
 
-    this._connectArgs = { instructions, tools, voice };
+    this._connectArgs = { instructions, tools, voice, vad, languageCode, connectTimeoutMs };
     if (voice) this.voice = this._resolveVoice(voice);
 
     this.logger.log('[GeminiLive] session connecting', {
@@ -247,7 +256,7 @@ class GeminiLiveService {
           /* ignore */
         }
         reject(new Error('Gemini Live connect timeout'));
-      }, 25000);
+      }, connectTimeoutMs);
 
       const finishOk = () => {
         if (settled) return;
@@ -270,7 +279,7 @@ class GeminiLiveService {
         this.reconnectAttempts = 0;
         this._sessionCreatedAt = Date.now();
         this.logger.log('[GeminiLive] websocket connected', { backend: this.backend });
-        this._sendSetup({ instructions, tools });
+        this._sendSetup({ instructions, tools, vad, languageCode });
       });
 
       ws.on('message', (raw) => {
@@ -325,7 +334,11 @@ class GeminiLiveService {
     });
   }
 
-  _sendSetup({ instructions, tools }) {
+  /**
+   * `vad` (facultatif) : détection de fin de parole réglée pour la latence ({ silenceDurationMs, prefixPaddingMs, startSensitivity, endSensitivity }) ;
+   * `languageCode` (facultatif) : langue / accent de la voix (fr-FR, en-GB, en-US). Absents : configuration historique inchangée.
+   */
+  _sendSetup({ instructions, tools, vad, languageCode }) {
     const systemText =
       instructions ||
       'You are a professional outbound sales voice agent for HARX. Speak French unless the lead uses another language. Be concise and natural.';
@@ -352,6 +365,17 @@ class GeminiLiveService {
         input_audio_transcription: {},
         output_audio_transcription: {},
       };
+      if (languageCode) setup.generation_config.speech_config.language_code = languageCode;
+      if (vad) {
+        setup.realtime_input_config = {
+          automatic_activity_detection: {
+            ...(vad.startSensitivity ? { start_of_speech_sensitivity: vad.startSensitivity } : {}),
+            ...(vad.endSensitivity ? { end_of_speech_sensitivity: vad.endSensitivity } : {}),
+            ...(Number.isFinite(vad.prefixPaddingMs) ? { prefix_padding_ms: vad.prefixPaddingMs } : {}),
+            ...(Number.isFinite(vad.silenceDurationMs) ? { silence_duration_ms: vad.silenceDurationMs } : {}),
+          },
+        };
+      }
       if (geminiTools) {
         setup.tools = geminiTools.map((t) => ({
           function_declarations: t.functionDeclarations,
@@ -379,6 +403,17 @@ class GeminiLiveService {
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };
+    if (languageCode) setup.generationConfig.speechConfig.languageCode = languageCode;
+    if (vad) {
+      setup.realtimeInputConfig = {
+        automaticActivityDetection: {
+          ...(vad.startSensitivity ? { startOfSpeechSensitivity: vad.startSensitivity } : {}),
+          ...(vad.endSensitivity ? { endOfSpeechSensitivity: vad.endSensitivity } : {}),
+          ...(Number.isFinite(vad.prefixPaddingMs) ? { prefixPaddingMs: vad.prefixPaddingMs } : {}),
+          ...(Number.isFinite(vad.silenceDurationMs) ? { silenceDurationMs: vad.silenceDurationMs } : {}),
+        },
+      };
+    }
     if (geminiTools) setup.tools = geminiTools;
     this._rawSend({ setup });
   }
@@ -456,10 +491,16 @@ class GeminiLiveService {
   appendInputAudio(base64Pcmu) {
     if (!base64Pcmu || !this._setupDone) return;
     try {
-      const pcmB64 = telnyxPcmuBase64ToGeminiPcm16Base64(base64Pcmu);
+      let pcmB64;
+      if (this.inputSampleRate === 8000) {
+        const pcm8 = pcmuToPcm16(Buffer.from(base64Pcmu, 'base64'));
+        pcmB64 = Buffer.from(pcm8.buffer, pcm8.byteOffset, pcm8.byteLength).toString('base64');
+      } else {
+        pcmB64 = telnyxPcmuBase64ToGeminiPcm16Base64(base64Pcmu);
+      }
       this.sendRealtimeInput({
         audio: {
-          mimeType: 'audio/pcm;rate=16000',
+          mimeType: `audio/pcm;rate=${this.inputSampleRate}`,
           data: pcmB64,
         },
       });
@@ -523,6 +564,15 @@ class GeminiLiveService {
       return;
     }
 
+    const usageMeta = event.usageMetadata || event.usage_metadata;
+    if (usageMeta && this.handlers.onUsage) {
+      try {
+        this.handlers.onUsage(usageMeta);
+      } catch (err) {
+        this.logger.warn('[GeminiLive] usage handler error', err?.message || err);
+      }
+    }
+
     if (event.error) {
       this.logger.error('[GeminiLive] API error', event.error);
       if (this.handlers.onError) this.handlers.onError(event.error);
@@ -567,7 +617,9 @@ class GeminiLiveService {
     const content = event.serverContent || event.server_content;
     if (!content) {
       if (event.goAway || event.go_away) {
-        this.logger.warn('[GeminiLive] goAway', event.goAway || event.go_away);
+        const ga = event.goAway || event.go_away;
+        this.logger.warn('[GeminiLive] goAway', ga);
+        if (this.handlers.onGoAway) this.handlers.onGoAway(ga);
       }
       return;
     }

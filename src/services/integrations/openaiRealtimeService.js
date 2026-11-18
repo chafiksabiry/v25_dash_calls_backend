@@ -1,7 +1,9 @@
 const WebSocket = require('ws');
 
 // GA Realtime models (beta header retired). Override via OPENAI_REALTIME_MODEL.
-const DEFAULT_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
+// `gpt-realtime` est marqué « Deprecated » par OpenAI (relevé du 18/11/2026) : défaut remplacé par `gpt-realtime-2.1`, même forme de session GA.
+const CURRENT_REALTIME_MODEL = 'gpt-realtime-2.1';
+const DEFAULT_MODEL = process.env.OPENAI_REALTIME_MODEL || CURRENT_REALTIME_MODEL;
 const DEFAULT_VOICE = process.env.OPENAI_VOICE || 'alloy';
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
 
@@ -38,6 +40,9 @@ class OpenAIRealtimeService {
       onClose: null,
       onSpeechStarted: null,
       onSpeechStopped: null,
+      // Usage renvoyé par `response.done` (jetons audio / texte / cache) : mesure du coût réel par appel.
+      onUsage: null,
+      onResponseDone: null,
     };
     this._sessionCreatedAt = null;
     this._connectArgs = null;
@@ -61,11 +66,11 @@ class OpenAIRealtimeService {
     return this;
   }
 
-  async connect({ instructions, tools = [], voice } = {}) {
+  async connect({ instructions, tools = [], voice, turnDetection, connectTimeoutMs = 15000 } = {}) {
     if (this.ws && this.connected) return;
     if (this._fatal) throw new Error('OpenAI Realtime session marked fatal');
 
-    this._connectArgs = { instructions, tools, voice };
+    this._connectArgs = { instructions, tools, voice, turnDetection, connectTimeoutMs };
     const url = `${REALTIME_URL}?model=${encodeURIComponent(this.model)}`;
     this.logger.log('[OpenAIRealtime] session connecting (GA)', { model: this.model });
 
@@ -80,7 +85,7 @@ class OpenAIRealtimeService {
       const timer = setTimeout(() => {
         ws.terminate();
         reject(new Error('OpenAI Realtime connect timeout'));
-      }, 15000);
+      }, connectTimeoutMs);
 
       ws.on('open', () => {
         clearTimeout(timer);
@@ -94,6 +99,7 @@ class OpenAIRealtimeService {
           instructions,
           tools,
           voice: voice || this.voice,
+          turnDetection,
         });
         resolve();
       });
@@ -145,7 +151,8 @@ class OpenAIRealtimeService {
     });
   }
 
-  _configureSession({ instructions, tools, voice }) {
+  /** `turnDetection` (facultatif) remplace la détection de fin de parole par défaut (appels entrants : réglée pour la latence). */
+  _configureSession({ instructions, tools, voice, turnDetection }) {
     // GA session shape — nested audio + session.type required
     this.send({
       type: 'session.update',
@@ -156,13 +163,15 @@ class OpenAIRealtimeService {
           instructions ||
           'You are a professional outbound sales voice agent for HARX. Speak French unless the lead uses another language. Be concise and natural.',
         output_modalities: ['audio'],
+        // Modèles realtime à raisonnement (gpt-realtime-2.x) : effort au plus bas par défaut, sinon latence et coût augmentent.
+        ...(/^gpt-realtime-2/.test(String(this.model)) ? { reasoning: { effort: process.env.OPENAI_REALTIME_REASONING_EFFORT || 'minimal' } } : {}),
         tools: tools || [],
         tool_choice: 'auto',
         audio: {
           input: {
             format: { type: 'audio/pcmu' },
             transcription: { model: 'gpt-4o-mini-transcribe' },
-            turn_detection: {
+            turn_detection: turnDetection || {
               type: 'server_vad',
               threshold: 0.5,
               prefix_padding_ms: 300,
@@ -265,6 +274,10 @@ class OpenAIRealtimeService {
       case 'conversation.item.input_audio_transcription.completed':
         if (this.handlers.onTranscript) this.handlers.onTranscript(event);
         break;
+      case 'response.done':
+        if (event.response && event.response.usage && this.handlers.onUsage) this.handlers.onUsage(event.response.usage);
+        if (this.handlers.onResponseDone) this.handlers.onResponseDone(event);
+        break;
       case 'response.function_call_arguments.done': {
         const callId = event.call_id;
         const name = event.name;
@@ -323,4 +336,4 @@ class OpenAIRealtimeService {
   }
 }
 
-module.exports = { OpenAIRealtimeService, DEFAULT_MODEL, DEFAULT_VOICE };
+module.exports = { OpenAIRealtimeService, DEFAULT_MODEL, DEFAULT_VOICE, CURRENT_REALTIME_MODEL };
