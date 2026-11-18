@@ -25,8 +25,49 @@ let jsonGenerativeModel = null;
 let storage = null;
 
 const projectID = (process.env.GOOGLE_CLOUD_PROJECT || process.env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
-const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
-const modelName = process.env.VERTEX_AI_MODEL || 'gemini-1.5-flash';
+// Gemini 3.1 Flash-Lite (GA) : servi uniquement en `global` et en multi-régions `us` / `eu`, jamais en `us-central1`.
+// Source : https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
+const DEFAULT_VERTEX_MODEL = 'gemini-3.1-flash-lite';
+const DEFAULT_VERTEX_LOCATION = 'eu';
+// Points d'accès des emplacements non régionaux (même modèle que learningVertexClient dans aiInboundLearning.js).
+// Sans `apiEndpoint`, @google-cloud/vertexai construit `${location}-aiplatform.googleapis.com`, qui n'existe pas pour ces emplacements.
+const MULTI_REGION_ENDPOINTS = {
+  eu: 'aiplatform.eu.rep.googleapis.com',
+  us: 'aiplatform.us.rep.googleapis.com',
+  global: 'aiplatform.googleapis.com',
+};
+// Modèles retirés par Google : un appel renverrait 404. On retombe alors sur le modèle par défaut.
+const RETIRED_MODEL_PATTERNS = [/^gemini-1\.5-/, /^gemini-2\.0-/, /^gemini-2\.5-flash-lite(?:$|-)/];
+
+const cleanEnv = (value) => String(value || '').replace(/"/g, '').trim();
+
+/** Modèle Vertex : VERTEX_AI_MODEL s'il est servi, sinon le modèle par défaut (avertissement si le modèle demandé est retiré). */
+const resolveVertexModel = (env = process.env, logger = console) => {
+  const requested = cleanEnv(env.VERTEX_AI_MODEL);
+  if (!requested) return DEFAULT_VERTEX_MODEL;
+  if (RETIRED_MODEL_PATTERNS.some((re) => re.test(requested.toLowerCase()))) {
+    logger.warn(`⚠️ [VertexAIService] VERTEX_AI_MODEL="${requested}" est un modèle retiré par Google : utilisation de ${DEFAULT_VERTEX_MODEL}.`);
+    return DEFAULT_VERTEX_MODEL;
+  }
+  return requested;
+};
+
+/** Emplacement Vertex et point d'accès : `eu` par défaut ; une région classique (ex. europe-west4) garde le point d'accès régional du SDK. */
+const resolveVertexLocation = (env = process.env) => {
+  const location = cleanEnv(env.GOOGLE_CLOUD_LOCATION).toLowerCase() || DEFAULT_VERTEX_LOCATION;
+  return { location, apiEndpoint: MULTI_REGION_ENDPOINTS[location] };
+};
+
+/** Options du constructeur VertexAI (apiEndpoint seulement pour `eu`, `us` et `global`). */
+const vertexClientOptions = (googleAuthOptions, env = process.env) => {
+  const { location, apiEndpoint } = resolveVertexLocation(env);
+  return {
+    project: projectID,
+    location,
+    ...(apiEndpoint ? { apiEndpoint } : {}),
+    googleAuthOptions,
+  };
+};
 const bucketName = 'harx-audios-test';
 
 let vertexCredentialsPath = null;
@@ -97,8 +138,10 @@ const initializeServices = async () => {
       scopes: ['https://www.googleapis.com/auth/cloud-platform']
     };
 
-    console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${location}`);
-    vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
+    const vertexOptions = vertexClientOptions(vertexAuthOptions);
+    const modelName = resolveVertexModel();
+    console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${vertexOptions.location}, endpoint: ${vertexOptions.apiEndpoint || 'régional (SDK)'}`);
+    vertexAI = new VertexAI(vertexOptions);
 
     // Standard Model for Text/Chat
     generativeModel = vertexAI.getGenerativeModel({
@@ -1043,4 +1086,12 @@ Réponds simplement "Compris" pour confirmer que tu as bien intégré ces consig
   }
 }
 
-module.exports = new VertexAIService(); 
+module.exports = new VertexAIService();
+Object.assign(module.exports, {
+  DEFAULT_VERTEX_MODEL,
+  DEFAULT_VERTEX_LOCATION,
+  MULTI_REGION_ENDPOINTS,
+  resolveVertexModel,
+  resolveVertexLocation,
+  vertexClientOptions,
+}); 
