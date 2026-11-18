@@ -38,9 +38,11 @@ const MULTI_REGION_ENDPOINTS = {
 };
 // Modèles retirés par Google (page « Model versions and lifecycle ») : un appel renverrait 404. On retombe alors sur le modèle par défaut.
 // gemini-2.5-flash, gemini-2.5-flash-lite et gemini-2.5-pro sont retirés depuis le 20/10/2026. Les modèles gemini-live-* ne sont pas concernés.
-const RETIRED_MODEL_PATTERNS = [/^gemini-1\.5-/, /^gemini-2\.0-/, /^gemini-2\.5-(?:flash|pro)/];
-// Modèles servis uniquement en `global` et en multi-régions `us` / `eu` (jamais dans une région classique comme us-central1).
-const MULTI_REGION_ONLY_MODEL_PATTERNS = [/^gemini-3(?:\.\d+)?-flash(?:-lite)?(?:$|-)/];
+// Motif ancré : gemini-2.5-flash-image (encore servi) n'est pas concerné. Les familles 1.5 et 2.0 sont retirées en entier.
+const RETIRED_MODEL_PATTERNS = [/^gemini-1\.5-/, /^gemini-2\.0-/, /^gemini-2\.5-(?:flash|flash-lite|pro)(?:$|-(?:preview.*|0\d\d)$)/];
+// Modèle servi uniquement en `global` et en multi-régions `us` / `eu` (jamais dans une région classique comme us-central1).
+// Limité au modèle par défaut : pour un autre modèle (ex. gemini-3.5-flash, servi en europe-west3), la région choisie est respectée.
+const MULTI_REGION_ONLY_MODEL_PATTERNS = [/^gemini-3\.1-flash-lite$/];
 
 const cleanEnv = (value) => String(value || '').replace(/"/g, '').trim();
 

@@ -51,17 +51,30 @@ describe('vertexai.service : modèle et emplacement servis', () => {
 
   test.each([
     [{ GOOGLE_CLOUD_LOCATION: 'us-central1' }, 'GOOGLE_CLOUD_LOCATION'],
-    [{ GOOGLE_CLOUD_LOCATION: 'us-central1', VERTEX_AI_MODEL: 'gemini-3.5-flash-lite' }, 'GOOGLE_CLOUD_LOCATION'],
-    [{ GOOGLE_CLOUD_LOCATION: 'us', VERTEX_AI_LOCATION: 'europe-west1', VERTEX_AI_MODEL: 'gemini-3-flash' }, 'VERTEX_AI_LOCATION'],
+    [{ GOOGLE_CLOUD_LOCATION: 'us-central1', VERTEX_AI_MODEL: 'gemini-2.5-flash-lite' }, 'GOOGLE_CLOUD_LOCATION'],
+    [{ GOOGLE_CLOUD_LOCATION: 'us', VERTEX_AI_LOCATION: 'europe-west1', VERTEX_AI_MODEL: 'gemini-3.1-flash-lite' }, 'VERTEX_AI_LOCATION'],
   ])('modèle multi-région seulement dans une région classique (%j) : avertissement et repli sur eu', async (env, source) => {
     const logger = { warn: jest.fn() };
-    const model = vertex.resolveVertexModel(env, logger);
+    const model = vertex.resolveVertexModel(env, silent);
     expect(vertex.resolveVertexLocation(env, model, logger)).toEqual({ location: 'eu', apiEndpoint: 'aiplatform.eu.rep.googleapis.com' });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toContain(source);
     expect(logger.warn.mock.calls[0][0]).toContain(model);
     const { url } = await captureRequest(env);
-    expect(url).toMatch(/^https:\/\/aiplatform\.eu\.rep\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/eu\/publishers\/google\/models\/gemini-3[^/]*:generateContent$/);
+    expect(url).toMatch(/^https:\/\/aiplatform\.eu\.rep\.googleapis\.com\/v1\/projects\/[^/]+\/locations\/eu\/publishers\/google\/models\/gemini-3\.1-flash-lite:generateContent$/);
+  });
+
+  test.each([
+    ['europe-west3', 'gemini-3.5-flash'],
+    ['northamerica-northeast1', 'gemini-3.8-flash'],
+    ['asia-south1', 'gemini-3.5-flash-lite'],
+  ])('autre modèle gemini-3.x dans une région classique (%s, %s) : région conservée, sans avertissement', async (region, modelName) => {
+    const logger = { warn: jest.fn() };
+    const env = { VERTEX_AI_LOCATION: region, VERTEX_AI_MODEL: modelName };
+    expect(vertex.resolveVertexLocation(env, vertex.resolveVertexModel(env, logger), logger)).toEqual({ location: region, apiEndpoint: undefined });
+    expect(logger.warn).not.toHaveBeenCalled();
+    const { url } = await captureRequest(env);
+    expect(url).toBe(`https://${region}-aiplatform.googleapis.com/v1/projects/${url.split('/projects/')[1].split('/')[0]}/locations/${region}/publishers/google/models/${modelName}:generateContent`);
   });
 
   test('VERTEX_AI_LOCATION est prioritaire sur GOOGLE_CLOUD_LOCATION', async () => {
@@ -79,7 +92,7 @@ describe('vertexai.service : modèle et emplacement servis', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  test.each(['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro-002', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite', 'Gemini-2.0-Flash-Lite'])(
+  test.each(['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-2.5-flash', 'gemini-2.5-flash-001', 'gemini-2.5-pro', 'gemini-2.5-pro-preview-05-06', 'gemini-1.5-flash', 'gemini-1.5-pro-002', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite', 'Gemini-2.0-Flash-Lite'])(
     'VERTEX_AI_MODEL retiré (%s) : avertissement et repli sur le modèle par défaut',
     async (retired) => {
       const logger = { warn: jest.fn() };
@@ -90,6 +103,12 @@ describe('vertexai.service : modèle et emplacement servis', () => {
       expect(url).toMatch(/\/models\/gemini-3\.1-flash-lite:generateContent$/);
     },
   );
+
+  test.each(['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview'])('%s (encore servi) n’est pas remplacé', (name) => {
+    const logger = { warn: jest.fn() };
+    expect(vertex.resolveVertexModel({ VERTEX_AI_MODEL: name }, logger)).toBe(name);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
 
   test('gemini-live-2.5-flash-native-audio n’est pas considéré comme retiré', () => {
     const logger = { warn: jest.fn() };
