@@ -25,7 +25,8 @@ function resolveVoiceProvider() {
 function resolveVoiceModel(voiceAssistant) {
   if (voiceAssistant?.model) return voiceAssistant.model;
   if (resolveVoiceProvider() === 'openai') {
-    return process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime';
+    // `gpt-realtime` est déprécié : identifiant courant par défaut (OPENAI_REALTIME_MODEL garde la main).
+    return process.env.OPENAI_REALTIME_MODEL || require('./integrations/openaiRealtimeService').CURRENT_REALTIME_MODEL;
   }
   const { defaultModelForBackend, resolveLiveBackend } = require('./integrations/geminiLiveService');
   return defaultModelForBackend(resolveLiveBackend());
@@ -64,6 +65,15 @@ function resolveStreamToken(token) {
 
 function getSessionByStreamToken(token) {
   return sessionsByStreamToken.get(token) || null;
+}
+
+/** Sessions d'appels ENTRANTS (agent IA) : même table que le pont audio, pour que /ai-voice-stream/<jeton> les retrouve. */
+function registerStreamSession(token, ctx) {
+  sessionsByStreamToken.set(token, ctx);
+}
+
+function unregisterStreamSession(token) {
+  sessionsByStreamToken.delete(token);
 }
 
 function telnyxHeaders() {
@@ -1208,4 +1218,7 @@ module.exports = {
   getSessionByStreamToken,
   resolveStreamToken,
   activeSessions,
+  registerStreamSession,
+  unregisterStreamSession,
+  createStreamToken,
 };

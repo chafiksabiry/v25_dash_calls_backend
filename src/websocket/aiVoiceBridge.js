@@ -113,6 +113,8 @@ function setupAiVoiceBridge(server) {
         }
       }
       ws.send(JSON.stringify(frame));
+      // Appels entrants (agent IA) : mesure de latence par tour. Absent pour les appels sortants (inchangés).
+      if (typeof ctx.onOutboundMedia === 'function') ctx.onOutboundMedia();
     };
 
     const sendClear = () => {
@@ -202,15 +204,25 @@ function setupAiVoiceBridge(server) {
           encoding: fmt?.encoding,
           sampleRate: fmt?.sampleRate || fmt?.sample_rate,
         });
+        if (typeof ctx.onStreamStart === 'function') {
+          try {
+            ctx.onStreamStart(streamId);
+          } catch (err) {
+            console.warn('[AiVoiceBridge] onStreamStart failed', err?.message || err);
+          }
+        }
         return;
       }
 
       if (event === 'media' && msg.media?.payload) {
         const realtime = ctx.realtime;
-        if (!realtime || !realtime.connected) return;
         const track = msg.media.track || '';
         // Telnyx may label inbound; Twilio often omits track or uses inbound.
         if (track && track !== 'inbound' && track !== 'inbound_track') return;
+        if (typeof ctx.onInboundMedia === 'function') ctx.onInboundMedia(msg.media.payload);
+        // Appels entrants : pendant l'annonce IA obligatoire, la voix de l'appelant n'est pas transmise (annonce non interrompue).
+        if (ctx.holdInput) return;
+        if (!realtime || !realtime.connected) return;
         try {
           mediaIn += 1;
           realtime.appendInputAudio(msg.media.payload);
@@ -225,6 +237,10 @@ function setupAiVoiceBridge(server) {
 
       if (event === 'stop' || event === 'ended') {
         console.log('[AiVoiceBridge] stream stop', callControlId, { mediaIn, mediaOut });
+        if (typeof ctx.onStreamStop === 'function') {
+          Promise.resolve().then(() => ctx.onStreamStop('stop')).catch((err) => console.warn('[AiVoiceBridge] onStreamStop failed', err?.message || err));
+          return;
+        }
         try {
           ctx.realtime?.close();
         } catch {
@@ -243,6 +259,9 @@ function setupAiVoiceBridge(server) {
       });
       if (ctx.mediaStreamWs === ws) ctx.mediaStreamWs = null;
       if (ctx.telnyxStreamWs === ws) ctx.telnyxStreamWs = null;
+      if (typeof ctx.onStreamStop === 'function') {
+        Promise.resolve().then(() => ctx.onStreamStop('close')).catch((err) => console.warn('[AiVoiceBridge] onStreamStop failed', err?.message || err));
+      }
     });
 
     ws.on('error', (err) => {

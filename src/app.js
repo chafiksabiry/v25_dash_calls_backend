@@ -23,6 +23,7 @@ const vertex = require('./routes/vertex');
 const voiceMenu = require('./routes/voiceMenu');
 const internalCenter = require('./routes/internalCenter');
 const clientPortal = require('./routes/clientPortal');
+const aiInbound = require('./routes/aiInbound');
 
 // Ensure models are registered
 require('./models/Call');
@@ -109,6 +110,8 @@ app.use('/api/voice-menu', voiceMenu);
 // Service-à-service (jeton de portée center-data) : appels et contacts d'un centre pour l'orchestrateur.
 app.use('/api/internal-center', internalCenter);
 app.use('/api/client-portal', clientPortal);
+// Pilote agent IA entrant (recette) : création de session par l'orchestrateur (jeton de service `ai-inbound`).
+app.use('/api/internal/ai-inbound', aiInbound);
 
 // Error handler
 //app.use(errorHandler);
