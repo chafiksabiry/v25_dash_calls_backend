@@ -134,6 +134,7 @@ async function loadGigVoiceAssistant(gigId) {
   return gig?.voiceAssistant || null;
 }
 
+const { knowledgeReadHeaders } = require('../utils/knowledgeServiceToken');
 const KNOWLEDGEBASE_API_URL = (
   process.env.KNOWLEDGEBASE_API_URL ||
   'https://v25knowledgebasebackend-production.up.railway.app/api'
@@ -201,7 +202,7 @@ async function loadGigCallScript(gigId) {
   if (!gigId) return null;
   try {
     const url = `${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}?active=true`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: knowledgeReadHeaders() });
     if (!res.ok) {
       console.warn('[AiOutbound] script fetch failed', res.status, url);
       return null;
