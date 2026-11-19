@@ -54,6 +54,7 @@ const {
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
+const { knowledgeReadHeaders } = require('../utils/knowledgeServiceToken');
 const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 const REPSCREATIONWIZARD_API_URL = (process.env.REPSCREATIONWIZARD_API_URL || 'https://v25repscreationwizardbackend-production.up.railway.app/api').replace(/\/$/, '');
 const { notifyCompanyOfFraud } = require('../services/companyNotificationClient');
@@ -1778,7 +1779,7 @@ exports.getAIAssistance = async (req, res) => {
         if (call?.companyId) {
           const kbRes = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/query`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...knowledgeReadHeaders() },
             body: JSON.stringify({
               companyId: String(call.companyId),
               gigId: call.gigId?._id ? String(call.gigId._id) : undefined,
@@ -2563,7 +2564,7 @@ exports.analyzeCall = async (req, res) => {
       const gigId = call.lead?.gigId?._id || call.lead?.gigId;
       if (gigId) {
         console.log(`🔍 [CallController] Fetching script from collection for Gig ${gigId}...`);
-        const scriptRes = await fetch(`${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}`);
+        const scriptRes = await fetch(`${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}`, { headers: knowledgeReadHeaders() });
         if (scriptRes.ok) {
           const scriptData = await scriptRes.json();
           const scripts = scriptData.data || [];
