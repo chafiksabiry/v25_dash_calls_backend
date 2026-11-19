@@ -531,7 +531,13 @@ const makeCall = async (to, userId, fromNumber, { leadId, agentId } = {}) => {
   }
 };
 
-const generateTwimlResponse = async (to, callerIdOverride) => {
+/**
+ * @param {string} to
+ * @param {string} [callerIdOverride]
+ * @param {{ noticeUrl?: string }} [options] noticeUrl : TwiML de l'annonce d'enregistrement, jouée à la
+ *   personne appelée dès qu'elle décroche, avant la mise en relation (<Number url>, « whisper »).
+ */
+const generateTwimlResponse = async (to, callerIdOverride, options = {}) => {
   const twiml = new twilio.twiml.VoiceResponse();
   const callerId = callerIdOverride || process.env.TWILIO_PHONE_NUMBER;
 
@@ -558,11 +564,18 @@ const generateTwimlResponse = async (to, callerIdOverride) => {
     // `<Number>` uses amdStatusCallback. asyncAmdStatusCallback is only
     // valid on the REST Calls API, so Twilio was ignoring it and never
     // reporting a voicemail.
-    dial.number({
+    const numberAttrs = {
       machineDetection: 'DetectMessageEnd',
       amdStatusCallback: amdCallbackUrl,
       amdStatusCallbackMethod: 'POST',
-    }, to);
+    };
+    // Appel enregistré (record-from-answer) : annonce « Cet appel est enregistré. » à la personne appelée.
+    // Le « whisper » est joué avant la mise en relation : il n'apparaît pas dans l'enregistrement du <Dial>.
+    if (options.noticeUrl) {
+      numberAttrs.url = options.noticeUrl;
+      numberAttrs.method = 'POST';
+    }
+    dial.number(numberAttrs, to);
   } else {
     twiml.say("Invalid number");
   }

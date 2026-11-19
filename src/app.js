@@ -105,6 +105,8 @@ app.use('/api/auth', auth);
 app.use('/api/integrations', integrations);
 app.use('/api/leads', leads);
 app.use('/api/agents', agents);
+// Annonce d'enregistrement (TwiML « whisper » des appels des REPS) : appelée par Twilio, contenu fixe, sans données.
+app.all('/api/calls/twilio-recording-notice', require('./controllers/calls').twilioRecordingNotice);
 // Analytics routes are mounted FIRST so /company/:companyId/analytics/...
 // is matched before the legacy /:id pattern inside the calls router.
 app.use('/api/calls', callsAnalytics);
