@@ -54,9 +54,13 @@ function authenticateUser(req, res, next) {
   }
 }
 
-async function callerCompanyId(auth) {
+/**
+ * Session de l'appelant chez le service d'inscription (`GET /api/company-members/me`) : centre, titulaire prouvé, droits.
+ * Mise en cache courte (CACHE_TTL_MS) par utilisateur. Lève une ScopeError 503 si la session est illisible.
+ */
+async function callerSession(auth) {
   const cached = companyByUser.get(auth.userId);
-  if (cached && cached.expires > Date.now()) return cached.companyId;
+  if (cached && cached.expires > Date.now()) return cached.session;
 
   const origin = registrationOrigin();
   if (!origin) throw new ScopeError(503, 'Company lookup is not configured');
@@ -69,15 +73,26 @@ async function callerCompanyId(auth) {
     });
     if (!res.ok) throw new ScopeError(503, 'Company lookup failed');
     const payload = await res.json();
-    const companyId = payload && payload.data && payload.data.companyId ? String(payload.data.companyId) : null;
-    companyByUser.set(auth.userId, { companyId, expires: Date.now() + CACHE_TTL_MS });
-    return companyId;
+    const data = (payload && payload.data) || {};
+    const session = {
+      companyId: data.companyId ? String(data.companyId) : null,
+      isOwner: data.isOwner === true,
+      isAgent: data.isAgent === true,
+      isClient: data.isClient === true,
+      permissions: data.permissions && typeof data.permissions === 'object' ? { ...data.permissions } : {},
+    };
+    companyByUser.set(auth.userId, { session, expires: Date.now() + CACHE_TTL_MS });
+    return session;
   } catch (error) {
     if (error instanceof ScopeError) throw error;
     throw new ScopeError(503, 'Company lookup failed');
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function callerCompanyId(auth) {
+  return (await callerSession(auth)).companyId;
 }
 
 /** Throws a ScopeError unless the authenticated caller belongs to `companyId`. */
@@ -131,4 +146,4 @@ async function clientScope(auth) {
   }
 }
 
-module.exports = { authenticateUser, assertCompanyAccess, callerCompanyId, clientScope, ScopeError, clearCompanyCache };
+module.exports = { authenticateUser, assertCompanyAccess, callerCompanyId, callerSession, clientScope, ScopeError, clearCompanyCache };

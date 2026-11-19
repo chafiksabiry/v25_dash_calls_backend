@@ -221,6 +221,76 @@ function guardCallId(options = {}) {
   };
 }
 
+/**
+ * Lectures agrégées (/api/analytics, /api/dashboard) : l'entreprise est celle de l'appelant (service d'inscription),
+ * jamais un paramètre de la requête. Sans entreprise rattachée : 403.
+ */
+async function requireCallerCompany(req, res, next) {
+  if (!req.auth) return deny(res, 401, 'Authentication required');
+  try {
+    const mine = await callerCompany(req);
+    if (!mine || !OBJECT_ID.test(String(mine))) return deny(res, 403, 'Not allowed for this company');
+    req.callerCompanyId = String(mine);
+    return next();
+  } catch (error) {
+    return sendScopeError(res, error);
+  }
+}
+
+// Sensible à la casse : préfixes AC/RE en majuscules, hexadécimal en minuscules (forme émise par Twilio et stockée en base).
+const TWILIO_RECORDING_PATH = /^\/2010-04-01\/Accounts\/(AC[0-9a-f]{32})\/Recordings\/(RE[0-9a-f]{32})(\.(?:mp3|wav))?$/;
+
+/**
+ * URL d'un enregistrement Twilio DU compte de la plateforme (https://api.twilio.com/2010-04-01/Accounts/<TWILIO_ACCOUNT_SID>/
+ * Recordings/RE…[.mp3|.wav]), sans identifiants, port, requête ni fragment. Renvoie le SID d'enregistrement, ou null.
+ * Les identifiants Twilio de la plateforme ne partent ainsi jamais vers un autre hôte ni vers un autre compte.
+ * `url` est l'URL canonique reconstruite (c'est elle, jamais la chaîne du client, qui est téléchargée).
+ */
+function twilioRecording(raw) {
+  const account = String(process.env.TWILIO_ACCOUNT_SID || '').trim();
+  if (!account || typeof raw !== 'string') return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch (error) {
+    return null;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 'api.twilio.com' || url.port || url.username || url.password || url.search || url.hash) return null;
+  const m = TWILIO_RECORDING_PATH.exec(url.pathname);
+  if (!m || m[1] !== account) return null;
+  return { sid: m[2], url: `https://api.twilio.com/2010-04-01/Accounts/${account}/Recordings/${m[2]}${m[3] || ''}` };
+}
+
+function twilioRecordingSid(raw) {
+  const rec = twilioRecording(raw);
+  return rec ? rec.sid : null;
+}
+
+/**
+ * POST /fetch-recording : l'URL doit être un enregistrement Twilio du compte (400 sinon). Avec un jeton, si un appel connu
+ * porte cet enregistrement, l'appelant doit appartenir à son entreprise ou l'avoir pris (403 sinon). Un enregistrement
+ * encore sans appel en base (l'espace de travail l'envoie avant /store-call) est admis : son SID n'est pas devinable.
+ */
+async function guardFetchRecording(req, res, next) {
+  const rec = twilioRecording(req.body && req.body.recordingUrl);
+  if (!rec) return deny(res, 400, 'recordingUrl must be a Twilio recording of this account');
+  const recordingSid = rec.sid;
+  req.twilioRecordingUrl = rec.url;
+  if (!req.auth) return next();
+  try {
+    const { Call } = require('../models/Call');
+    const base = `https://api.twilio.com/2010-04-01/Accounts/${String(process.env.TWILIO_ACCOUNT_SID).trim()}/Recordings/${recordingSid}`;
+    const call = await Call.findOne({ recording_url: { $in: [base, `${base}.mp3`, `${base}.wav`], $type: 'string' } }).select('companyId agent').lean();
+    if (!call) return next();
+    if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
+    const mine = await ownAgentId(req);
+    if (mine && call.agent && String(call.agent._id || call.agent) === mine) return next();
+    return deny(res, 403, 'Not allowed for this recording');
+  } catch (error) {
+    return sendScopeError(res, error);
+  }
+}
+
 /** Écriture d'un appel de centre : jeton de service, ou utilisateur membre du centre du corps. */
 async function guardCenterCallBody(req, res, next) {
   if (req.callsLegacy || req.callsService) return next();
@@ -450,6 +520,9 @@ module.exports = {
   guardAgentParam,
   guardCallId,
   guardCenterCallBody,
+  requireCallerCompany,
+  guardFetchRecording,
+  twilioRecordingSid,
   guardCreateCall,
   guardLeadCompany,
   guardGigCompany,

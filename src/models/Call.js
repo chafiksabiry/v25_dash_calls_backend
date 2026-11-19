@@ -473,6 +473,12 @@ const callSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
+// POST /calls/fetch-recording retrouve l'appel par l'URL Twilio de son enregistrement (callsAccess.guardFetchRecording).
+// Index partiel : seuls les appels qui ont une URL (chaîne) y figurent ; la requête répète `$type: 'string'` pour pouvoir l'utiliser.
+callSchema.index({ recording_url: 1 }, { partialFilterExpression: { recording_url: { $type: 'string' } } });
+// Lectures cantonnées à une entreprise (/api/analytics, /api/dashboard/live-calls : companyId, et companyId + status).
+callSchema.index({ companyId: 1, status: 1 });
+
 callSchema.virtual('transaction', {
   ref: 'Transaction',
   localField: '_id',

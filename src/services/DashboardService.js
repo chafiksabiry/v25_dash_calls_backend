@@ -5,8 +5,8 @@ class DashboardService {
     this.repository = new DashboardRepository();
   }
 
-  async getStats() {
-    const [calls, agents, leads] = await this.repository.getStats();
+  async getStats(companyId) {
+    const [calls, agents, leads] = await this.repository.getStats(companyId);
 
     return {
       activeGigs: agents.filter(agent => agent.status === 'active').length,
@@ -16,12 +16,12 @@ class DashboardService {
     };
   }
 
-  async getLiveCalls() {
-    return this.repository.getLiveCalls();
+  async getLiveCalls(companyId) {
+    return this.repository.getLiveCalls(companyId);
   }
 
-  async getTopGigs() {
-    const agents = await this.repository.getTopGigs();
+  async getTopGigs(companyId) {
+    const agents = await this.repository.getTopGigs(companyId);
     return agents.map(agent => ({
       name: agent.name,
       success: agent.performance.success_rate,
@@ -30,8 +30,8 @@ class DashboardService {
     }));
   }
 
-  async getTopReps() {
-    const agents = await this.repository.getTopReps();
+  async getTopReps(companyId) {
+    const agents = await this.repository.getTopReps(companyId);
     return agents.map(agent => ({
       name: agent.name,
       rating: agent.rating,
