@@ -18,6 +18,7 @@ const mongoose = require("mongoose");
 const { Call } = require("../models/Call");
 const { withRecordingStatus } = require("../utils/recordingStatus");
 const { computeOperationMeasures } = require("../services/operationMeasures");
+const { leadNameFallbackStage } = require("../utils/leadNameFallback");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mongo expression: derive `callOutcome` for calls that don't have one yet.
@@ -715,29 +716,8 @@ exports.recent = async (req, res) => {
           isTest: { $ifNull: ["$isTest", false] }
         }
       },
-      {
-        // Sans lead (appels du portail du centre) : l'interlocuteur est le numéro appelant (entrant) ou appelé (sortant).
-        $addFields: {
-          leadName: {
-            $cond: [
-              {
-                $and: [
-                  { $eq: ["$leadName", ""] },
-                  { $eq: ["$source", "center_portal"] }
-                ]
-              },
-              {
-                $cond: [
-                  { $regexMatch: { input: { $toLower: { $ifNull: ["$direction", ""] } }, regex: "^inbound" } },
-                  { $ifNull: ["$from", "$to"] },
-                  { $ifNull: ["$to", "$from"] }
-                ]
-              },
-              "$leadName"
-            ]
-          }
-        }
-      }
+      // Sans lead (portail du centre, jambes transférées) : l'interlocuteur est le numéro appelant (entrant) ou appelé (sortant).
+      leadNameFallbackStage()
     ];
 
     const match = buildCompanyScopeMatch(companyId, gigId);
