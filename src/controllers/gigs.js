@@ -1,32 +1,19 @@
 const mongoose = require('mongoose');
 const Gig = require('../models/Gig');
 
-async function persistVoiceAssistant(gigId, voiceAssistant, gigTitle) {
+async function persistVoiceAssistant(gigId, voiceAssistant, gigTitle, _id) {
   const gigIdStr = String(gigId);
-  const _id = mongoose.Types.ObjectId.isValid(gigIdStr)
-    ? new mongoose.Types.ObjectId(gigIdStr)
-    : gigIdStr;
 
-  // Mongo forbids the same path in both $set and $setOnInsert.
+  // Mise à jour du gig existant uniquement : cette route ne crée jamais de gig (repris de la PR #38).
   const $set = {
     voiceAssistant,
     updatedAt: new Date(),
   };
-  const $setOnInsert = {
-    status: 'active',
-    createdAt: new Date(),
-  };
   if (gigTitle) {
     $set.title = gigTitle;
-  } else {
-    $setOnInsert.title = 'Gig';
   }
 
-  await mongoose.connection.db.collection('gigs').updateOne(
-    { _id },
-    { $set, $setOnInsert },
-    { upsert: true }
-  );
+  await mongoose.connection.db.collection('gigs').updateOne({ _id }, { $set });
 
   await mongoose.connection.db.collection('gig_voice_assistants').updateOne(
     { gigId: gigIdStr },
@@ -82,9 +69,11 @@ exports.updateGigVoiceAssistant = async (req, res) => {
             orId.push({ _id: new mongoose.Types.ObjectId(gigIdStr) });
         }
 
-        const existing =
-            (await mongoose.connection.db.collection('gigs').findOne({ $or: orId })) ||
-            (await mongoose.connection.db.collection('gig_voice_assistants').findOne({ gigId: gigIdStr }));
+        const gig = await mongoose.connection.db.collection('gigs').findOne({ $or: orId });
+        if (!gig) {
+            return res.status(404).json({ success: false, error: 'Gig not found' });
+        }
+        const existing = gig;
 
         const prev =
             (existing?.voiceAssistant && typeof existing.voiceAssistant === 'object'
@@ -112,7 +101,7 @@ exports.updateGigVoiceAssistant = async (req, res) => {
             updatedAt: new Date(),
         };
 
-        await persistVoiceAssistant(gigIdStr, voiceAssistant, body.gigTitle);
+        await persistVoiceAssistant(gigIdStr, voiceAssistant, body.gigTitle, gig._id);
         console.log('[VoiceAssistant] saved', { gigId: gigIdStr, enabled: voiceAssistant.enabled });
 
         return res.status(200).json({

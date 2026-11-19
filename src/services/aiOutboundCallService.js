@@ -338,6 +338,22 @@ function resolveOpeningPrompt(voiceAssistant, callScript) {
 }
 
 /**
+ * Le gig du prospect doit appartenir au centre de l'appelant (repris de la PR #38, sans ses défauts stricts).
+ * Centre de référence : celui transmis par la route (vérifié par guardLeadCompany quand un jeton est présent), à défaut
+ * celui du prospect. Refus 403 uniquement si le gig porte un centre différent ; sans centre connu, comportement inchangé.
+ */
+function assertGigOwnership({ companyId, lead, gig }) {
+  const idOf = (v) => (v && (v.$oid || v._id || v) ? String(v.$oid || v._id || v) : null);
+  const expected = idOf(companyId) || idOf(lead && lead.companyId);
+  const gigCompany = idOf(gig && gig.companyId);
+  if (expected && gigCompany && gigCompany !== expected) {
+    const err = new Error('Not allowed for this gig');
+    err.status = 403;
+    throw err;
+  }
+}
+
+/**
  * Start an AI outbound call for one lead (Telnyx Call Control or Twilio Media Streams).
  * Uses any active gig voice line (Twilio or Telnyx).
  */
@@ -375,6 +391,10 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
+  // Appartenance du gig AVANT toute lecture de configuration ou numérotation.
+  const gig = await Gig.findById(resolvedGigId).lean();
+  assertGigOwnership({ companyId, lead, gig });
+
   const voiceAssistant = await loadGigVoiceAssistant(resolvedGigId);
   console.log('[AiOutbound] voiceAssistant check', {
     leadId: String(leadId),
@@ -408,7 +428,6 @@ async function startAiOutboundCall({ leadId, gigId, companyId, req }) {
     throw err;
   }
 
-  const gig = await Gig.findById(resolvedGigId).lean();
   const callScript = await loadGigCallScript(resolvedGigId);
   const base = publicBaseUrl(req);
 
