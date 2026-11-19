@@ -1,6 +1,15 @@
 const express = require('express');
 const cors = require('cors');
-const { config } = require('./config/env');
+const { config, assertRequiredEnv } = require('./config/env');
+
+// Aucun secret de repli : sans JWT_SECRET (ou sans adresse MongoDB) le service refuse de démarrer.
+try {
+  assertRequiredEnv();
+  console.log(`🔐 Configuration : JWT_SECRET présent ; adresse MongoDB lue dans ${config.MONGODB_URI_SOURCE}.`);
+} catch (error) {
+  console.error(`❌ ${error.message}`);
+  process.exit(1);
+}
 const { connectDB } = require('./config/database');
 const { errorHandler } = require('./middleware/error');
 const http = require('http');
@@ -88,8 +97,8 @@ app.use(cors({
 
 app.use(express.urlencoded({ extended: true }));
 
-// Body parser
-app.use(express.json());
+// Body parser. Le corps brut est conservé pour vérifier la signature Ed25519 des webhooks Telnyx (middleware/webhookSignature.js).
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // Mount routers
 app.use('/api/auth', auth);
@@ -97,7 +106,12 @@ app.use('/api/integrations', integrations);
 app.use('/api/leads', leads);
 app.use('/api/agents', agents);
 // Annonce d'enregistrement (TwiML « whisper » des appels des REPS) : appelée par Twilio, contenu fixe, sans données.
-app.all('/api/calls/twilio-recording-notice', require('./controllers/calls').twilioRecordingNotice);
+// Publique, signature X-Twilio-Signature vérifiée comme les autres webhooks Twilio (middleware/webhookSignature.js).
+app.all(
+  '/api/calls/twilio-recording-notice',
+  require('./middleware/webhookSignature').twilioWebhook,
+  require('./controllers/calls').twilioRecordingNotice
+);
 // Analytics routes are mounted FIRST so /company/:companyId/analytics/...
 // is matched before the legacy /:id pattern inside the calls router.
 app.use('/api/calls', callsAnalytics);

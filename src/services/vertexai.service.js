@@ -2,9 +2,6 @@ const { SpeechClient } = require('@google-cloud/speech').v1;
 const { Call } = require('../models/Call');
 const { SpeechClient: SpeechClientV2 } = require('@google-cloud/speech').v2;
 const { VertexAI } = require('@google-cloud/vertexai');
-const fs = require('fs');
-const fsPromises = require('fs').promises;
-const path = require('path');
 const { generatePrompt } = require('../VertexPrompt/contactCenterAssessment');
 const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment');
 const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
@@ -85,71 +82,19 @@ const vertexClientOptions = (googleAuthOptions, env = process.env, model = resol
 };
 const bucketName = 'harx-audios-test';
 
-let vertexCredentialsPath = null;
-let speechCredentialsPath = null;
-let storageCredentialsPath = null;
-
-const setupGCPCredentials = async () => {
-  const tempDir = path.join(__dirname, '../../temp');
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-
-  const prepareCredentials = async (creds, fileName, defaultPath) => {
-    let sanitizedCreds = (creds || '').trim();
-
-    // Remove surrounding quotes if present (common in some env setups)
-    if (sanitizedCreds.startsWith('"') && sanitizedCreds.endsWith('"')) {
-      sanitizedCreds = sanitizedCreds.slice(1, -1).trim();
-    }
-
-    if (sanitizedCreds && sanitizedCreds.startsWith('{')) {
-      try {
-        // Parse and re-stringify to ensure valid JSON and handle escaped characters
-        const credsObj = JSON.parse(sanitizedCreds);
-
-        // Fix private_key newlines (very common issue with env vars)
-        if (credsObj.private_key && typeof credsObj.private_key === 'string') {
-          credsObj.private_key = credsObj.private_key.replace(/\\n/g, '\n');
-        }
-
-        const finalCreds = JSON.stringify(credsObj);
-        const credsPath = path.join(tempDir, fileName);
-        await fsPromises.writeFile(credsPath, finalCreds);
-        console.log(`✅ [VertexAIService] Using ${fileName} from JSON env var (fixed newlines)`);
-        return credsPath;
-      } catch (e) {
-        console.error(`❌ [VertexAIService] Error parsing ${fileName} JSON:`, e.message);
-        return sanitizedCreds; // Fallback to raw string (might be a path or broken JSON)
-      }
-    }
-
-    return sanitizedCreds || path.join(__dirname, defaultPath);
-  };
-
-  // Vertex AI Credentials
-  const vCreds = process.env.VERTEX_AI_CREDENTIALS || process.env.GCP_VERTEX_AI_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-  vertexCredentialsPath = await prepareCredentials(vCreds, 'vertex-credentials.json', "../../config/vertex-service-account.json");
-
-  // Speech-to-Text Credentials
-  const sCreds = process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-  speechCredentialsPath = await prepareCredentials(sCreds, 'speech-credentials.json', "../../config/speech-to-text-service-account.json");
-
-  // Storage Credentials
-  const stCreds = process.env.CLOUD_STORAGE_CREDENTIALS || process.env.GCP_STORAGE_CREDENTIALS || process.env.GCP_CLOUD_STORAGE_CREDENTIALS || vCreds;
-  storageCredentialsPath = await prepareCredentials(stCreds, 'storage-credentials.json', "../../config/cloud-storage-service-account.json");
-
-  console.log('📂 [VertexAIService] Credentials paths resolved.');
-};
+// Identifiants : variables d'environnement JSON uniquement (voir services/gcpCredentials.js), sinon ADC. Aucun fichier de clé.
+const { VERTEX_VARS, SPEECH_VARS, STORAGE_VARS, googleAuthOptions } = require('./gcpCredentials');
 
 const initializeServices = async () => {
   if (vertexAI && speechClient) return;
 
   try {
-    await setupGCPCredentials();
+    const vertexAuth = googleAuthOptions(VERTEX_VARS, 'Vertex AI');
+    const speechAuth = googleAuthOptions(SPEECH_VARS, 'Speech-to-Text');
+    const storageAuth = googleAuthOptions(STORAGE_VARS, 'Cloud Storage');
 
     const vertexAuthOptions = {
-      keyFilename: vertexCredentialsPath,
+      ...(vertexAuth.credentials ? { credentials: vertexAuth.credentials } : {}),
       scopes: ['https://www.googleapis.com/auth/cloud-platform']
     };
 
@@ -177,12 +122,12 @@ const initializeServices = async () => {
       }
     });
 
-    speechClient = new SpeechClient({ keyFilename: speechCredentialsPath });
-    speechClientV2 = new SpeechClientV2({ keyFilename: speechCredentialsPath });
+    speechClient = new SpeechClient(speechAuth);
+    speechClientV2 = new SpeechClientV2(speechAuth);
 
     storage = new Storage({
+      ...storageAuth,
       projectId: projectID,
-      keyFilename: storageCredentialsPath
     });
 
     console.log(`✅ [VertexAIService] GCS initialized.`);

@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
-const uri = 'mongodb://mongo:DiGaBWUZXCkIxlZMuntztBaFJcOlUJIg@maglev.proxy.rlwy.net:40270/harx?authSource=admin';
+require('dotenv').config();
+const { config, MONGO_URI_VARS } = require('./src/config/env');
+const uri = config.MONGODB_URI;
+if (!uri) {
+    console.error(`Adresse MongoDB requise (${MONGO_URI_VARS.join(', ')}).`);
+    process.exit(1);
+}
 
 async function check() {
     try {
