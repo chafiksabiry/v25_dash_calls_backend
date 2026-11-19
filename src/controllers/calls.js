@@ -995,7 +995,17 @@ exports.handleVoice = async (req, res) => {
   }
 
   try {
-    const responseXml = await twilioService.generateTwimlResponse(To, callerId);
+    // Appel enregistré (record-from-answer) : annonce d'enregistrement dans la langue de l'appel.
+    let noticeLang = 'fr';
+    try {
+      const { resolveRecordingNoticeLanguageForGig } = require('../services/aiOutboundCallService');
+      noticeLang = await resolveRecordingNoticeLanguageForGig(leadGigId);
+    } catch (err) {
+      console.warn('[TwilioVoice] notice language fallback fr:', err?.message || err);
+    }
+    const noticeUrl = recordingNoticeUrl(noticeLang);
+    if (!noticeUrl) console.warn('[TwilioVoice] BASE_URL absent : annonce d\'enregistrement non jouée');
+    const responseXml = await twilioService.generateTwimlResponse(To, callerId, { noticeUrl });
     res.type("text/xml");
     res.send(responseXml);
   } catch (error) {
@@ -3425,6 +3435,46 @@ exports.getLoginToken = async (req, res) => {
   }
 };
 
+/** URL de l'annonce : même base publique que /twilio-voice (BASE_URL) ; sans elle, pas d'annonce (undefined). */
+function recordingNoticeUrl(lang, env = process.env) {
+  const publicBase = String(env.BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!publicBase) return undefined;
+  return `${publicBase}/api/calls/twilio-recording-notice?lang=${encodeURIComponent(lang || 'fr')}`;
+}
+exports._recordingNoticeUrl = recordingNoticeUrl;
+
+/**
+ * GET|POST /api/calls/twilio-recording-notice?lang=fr|en|es|ar
+ * TwiML « whisper » joué à la personne appelée par un REP quand elle décroche, avant la mise en relation.
+ */
+exports.twilioRecordingNotice = (req, res) => {
+  const { buildNoticeTwiml } = require('../services/aiOutboundRecordingNotice');
+  res.type('text/xml');
+  return res.status(200).send(buildNoticeTwiml(req.query?.lang || req.body?.lang));
+};
+
+/** Langue : gigId, sinon gig du lead (leadId), sinon français. */
+async function playTelnyxRecordingNotice(callControlId, body) {
+  const { getRecordingNotice } = require('../services/aiOutboundRecordingNotice');
+  const isId = (v) => v != null && mongoose.Types.ObjectId.isValid(String(v)) && /^[0-9a-f]{24}$/i.test(String(v));
+  let gigId = isId(body.gigId) ? String(body.gigId) : null;
+  if (!gigId && isId(body.leadId)) {
+    const { lead } = await resolveActiveLineForLead(String(body.leadId)).catch(() => ({}));
+    if (lead?.gigId) gigId = String(lead.gigId);
+  }
+  let lang = 'fr';
+  if (gigId) {
+    const { resolveRecordingNoticeLanguageForGig } = require('../services/aiOutboundCallService');
+    lang = await resolveRecordingNoticeLanguageForGig(gigId).catch(() => 'fr');
+  }
+  const notice = getRecordingNotice(lang);
+  // L'id reçu est la jambe WebRTC du REP : 'both' pour que la personne appelée entende aussi l'annonce.
+  await telnyxService.speak(callControlId, { payload: notice.text, language: notice.telnyx, targetLegs: 'both' });
+  console.log('[Telnyx] recording notice played', callControlId, notice.language);
+  return { language: notice.language, text: notice.text };
+}
+exports._playTelnyxRecordingNotice = playTelnyxRecordingNotice;
+
 /**
  * POST /api/calls/telnyx/record-start
  * Start Call Control recording for an active WebRTC/Call Control leg.
@@ -3437,7 +3487,14 @@ exports.startTelnyxRecording = async (req, res) => {
     }
     const data = await telnyxService.startCallRecording(callControlId);
     console.log('[Telnyx] record_start ok for', callControlId);
-    return res.json({ success: true, data });
+    // Appel enregistré : annonce « Cet appel est enregistré. » jouée sur l'appel dès le début de l'enregistrement.
+    let notice = null;
+    try {
+      notice = await playTelnyxRecordingNotice(callControlId, req.body || {});
+    } catch (err) {
+      console.warn('[Telnyx] recording notice failed:', err?.message || err);
+    }
+    return res.json({ success: true, data, notice });
   } catch (error) {
     console.error('[Telnyx] record_start failed:', error.message);
     if (error?.response?.data) {
