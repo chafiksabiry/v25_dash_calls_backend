@@ -39,8 +39,7 @@ const callSchema = new mongoose.Schema({
     required: function () {
       return this.provider === 'twilio';
     },
-    unique: true,
-    sparse: true, // Identifiant Twilio / Telnyx call_control_id
+    // Identifiant Twilio / Telnyx call_control_id. Unicité : index partiel déclaré plus bas (sid de type texte seulement).
   },
   parentCallSid: {
     type: String,
@@ -485,6 +484,15 @@ callSchema.virtual('transaction', {
   foreignField: 'call',
   justOne: true
 });
+
+/**
+ * Un appel = un sid. Index UNIQUE PARTIEL (sid de type texte) plutôt qu'unique « sparse » : un index sparse inclut les documents dont
+ * `sid` vaut null (seuls les champs absents en sont exclus), donc plusieurs appels sans sid (Qalqul, brouillons) empêchaient sa création.
+ * Garantit qu'un rappel rejoué (Twilio, orchestrateur : jambes de transfert facturées, upsert sur sid) ne crée jamais deux lignes.
+ * Même nom que l'index historique (`sid_1`) : en base, l'ancien index unique sparse, s'il existe, reste en place (Mongoose signale
+ * le conflit d'options sans rien casser) jusqu'à la bascule manuelle décrite dans scripts/checkCallSidDuplicates.js.
+ */
+callSchema.index({ sid: 1 }, { name: 'sid_1', unique: true, partialFilterExpression: { sid: { $type: 'string' } } });
 
 callSchema.pre("save", function (next) {
   this.updatedAt = new Date();
