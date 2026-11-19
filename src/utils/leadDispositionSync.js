@@ -36,8 +36,20 @@ function dispositionFromCallSignals({ callOutcome, status, answeredBy } = {}) {
   const outcome = String(callOutcome || '').toLowerCase();
   const twilioStatus = String(status || '').toLowerCase();
 
+  // A scored human outcome wins over a Twilio AMD false positive.
+  const humanOutcome = [
+    'callback_requested',
+    'appointment',
+    'not_argumented',
+    'argued_interested',
+    'transaction',
+    'connected_no_sale',
+    'refusal',
+    'not_interested',
+    'already_equipped',
+  ].includes(outcome);
   // 1) Twilio AMD (Answering Machine Detection) → Appelé – Répondeur
-  if (answered.startsWith('machine') || answered === 'fax' || outcome === 'voicemail') {
+  if (!humanOutcome && (answered.startsWith('machine') || answered === 'fax' || outcome === 'voicemail')) {
     return 'called_voicemail';
   }
 

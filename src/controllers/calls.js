@@ -33,7 +33,7 @@ const {
   fraudReviewState,
 } = require('../utils/fraudStats');
 const fraudReviewController = require('./fraudReview');
-const { isCallVoicemail, isVoicemailFromFeedback } = require('../utils/voicemailDetection');
+const { isCallVoicemail, isVoicemailFromFeedback, hasRealProspectExchange, MIN_HUMAN_EXCHANGE_SECONDS } = require('../utils/voicemailDetection');
 const {
   dispositionFromCallSignals,
   syncLeadDisposition,
@@ -157,6 +157,14 @@ async function getAgentMonthToDateEarnings(agentId, excludeCallId) {
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** One human sentence for the status hover. Never a status code. */
+function plainStatusComment(text, fallback) {
+  const raw = String(text || fallback || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const sentence = raw.split(/(?<=[.!?])\s+/)[0] || raw;
+  return sentence.slice(0, 320);
+}
 
 // A call stuck in `processing` longer than this is considered dead (the worker
 // hung or the process restarted mid-analysis). Such locks may be reclaimed so
@@ -1654,35 +1662,47 @@ exports.amdCallback = async (req, res) => {
     return;
   }
 
-  // Mark the call document as voicemail / auto-refused
+  // AMD often fires on the greeting ("allô") and is wrong on a real conversation.
+  // Only lock a short call as voicemail. A long call keeps answeredBy and is
+  // transcribed at the end so a human exchange is not labeled messagerie.
   try {
-    const outcome = isFax ? 'voicemail' : 'voicemail';
     const reason = isFax
       ? 'Fax détecté par Twilio AMD'
       : `Répondeur détecté automatiquement par Twilio AMD (${AnsweredBy})`;
-
-    const updated = await Call.findOneAndUpdate(
-      { $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }] },
-      {
-        $set: {
+    const existing = await Call.findOne({
+      $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }],
+    }).select('duration');
+    const talkSeconds = Number(existing?.duration) || 0;
+    const stampVoicemail = !existing || talkSeconds < MIN_HUMAN_EXCHANGE_SECONDS;
+    const $set = stampVoicemail
+      ? {
           answeredBy: AnsweredBy,
-          callOutcome: outcome,
+          callOutcome: 'voicemail',
           callOutcomeSource: 'system',
           validByAI: false,
           valid: false,
-          transcript: [], // AMD / répondeur — jamais de transcription
+          transcript: [],
           ai_call_status: 'auto_refused',
           ai_refusal_reason: reason,
           updatedAt: new Date(),
         }
-      },
+      : {
+          answeredBy: AnsweredBy,
+          updatedAt: new Date(),
+        };
+
+    const updated = await Call.findOneAndUpdate(
+      { $or: [{ sid: CallSid }, { parentCallSid: CallSid }, { childCalls: CallSid }] },
+      { $set },
       { new: true }
     );
 
-    if (updated) {
+    if (updated && stampVoicemail) {
       console.log(`✅ [AMD] Call ${CallSid} auto-marked as voicemail (doc _id=${updated._id})`);
       const leadId = updated.lead && updated.lead._id ? updated.lead._id : updated.lead;
       await syncLeadDisposition(leadId, 'called_voicemail');
+    } else if (updated) {
+      console.log(`ℹ️ [AMD] Call ${CallSid} kept as a conversation (${talkSeconds}s, answeredBy=${AnsweredBy})`);
     } else {
       // Document may not exist yet if store-call hasn't fired — that's fine,
       // saveCallToDB will pick up isVoicemail from the AMD flag later.
@@ -2148,6 +2168,10 @@ function isUnreachableTelephonyCall(call) {
 
 function isAmdVoicemailCall(call) {
   if (!call) return false;
+  // A long recording is transcribed even if AMD said "machine". Analysis then
+  // decides. A 4-minute human call must not be skipped as messagerie.
+  const duration = Number(call.duration) || 0;
+  if (duration >= MIN_HUMAN_EXCHANGE_SECONDS) return false;
   if (typeof isCallVoicemail === 'function' && isCallVoicemail(call)) return true;
   const answeredBy = String(call.answeredBy || '').toLowerCase();
   if (answeredBy.startsWith('machine') || answeredBy === 'fax' || answeredBy.includes('amd')) {
@@ -2282,6 +2306,8 @@ exports.analyzeCall = async (req, res) => {
           ai_summary: null,
           ai_summary_fr: null,
           ai_summary_en: null,
+          statusComment_fr: null,
+          statusComment_en: null,
           ai_refusal_reason: null,
           callOutcome: null,
           callOutcomeSource: null,
@@ -2530,6 +2556,12 @@ exports.analyzeCall = async (req, res) => {
             ai_summary_en: keepVoicemail
               ? 'Voicemail — no exchange with the prospect. No commission is due.'
               : shortMsgEn,
+            statusComment_fr: keepVoicemail
+              ? 'Répondeur — aucun échange avec le prospect. Aucune commission n\'est due.'
+              : plainStatusComment(shortMsgFr),
+            statusComment_en: keepVoicemail
+              ? 'Voicemail — no exchange with the prospect. No commission is due.'
+              : plainStatusComment(shortMsgEn),
             ai_call_score: {},
             callOutcome: shortCallOutcome,
             callOutcomeSource: 'system',
@@ -2732,10 +2764,15 @@ exports.analyzeCall = async (req, res) => {
     //   When the trigger fires we strip all rubric cards later via
     //   `applyVoicemailAnalysisShape` and force `callOutcome` to 'voicemail'.
     const overallFeedback = String(scores?.overall?.feedback || '').toLowerCase();
+    const prospectSpoke = hasRealProspectExchange({
+      duration: callDurationSec,
+      transcript: transcriptData,
+    });
     const isNonProductiveCall =
-      isVoicemailFromFeedback(overallFeedback) ||
-      isVoicemailFromFeedback(scores?.overall?.feedback_fr || '') ||
-      isVoicemailFromFeedback(scores?.overall?.feedback_en || '');
+      !prospectSpoke &&
+      (isVoicemailFromFeedback(overallFeedback) ||
+        isVoicemailFromFeedback(scores?.overall?.feedback_fr || '') ||
+        isVoicemailFromFeedback(scores?.overall?.feedback_en || ''));
 
     if (isNonProductiveCall) {
       console.log(`📭 [CallController] Call ${id} flagged as non-productive (voicemail).`);
@@ -3075,6 +3112,18 @@ exports.analyzeCall = async (req, res) => {
         'en'
       );
     }
+    const commentSourceFr = isNonProductiveCall
+      ? VOICEMAIL_SUMMARY_FR
+      : isFraudDetected
+        ? (call.ai_call_score?.overall?.feedback_fr || scores?.overall?.feedback_fr)
+        : (scores?.status_comment_fr || scores?.overall?.feedback_fr || call.ai_summary_fr);
+    const commentSourceEn = isNonProductiveCall
+      ? VOICEMAIL_SUMMARY_EN
+      : isFraudDetected
+        ? (call.ai_call_score?.overall?.feedback_en || scores?.overall?.feedback_en)
+        : (scores?.status_comment_en || scores?.overall?.feedback_en || call.ai_summary_en);
+    call.statusComment_fr = plainStatusComment(commentSourceFr, call.ai_summary_fr);
+    call.statusComment_en = plainStatusComment(commentSourceEn, call.ai_summary_en);
     call.flags = {
       fraud:               isNonProductiveCall ? false : isFraudDetected,
       selfCall:            isNonProductiveCall ? false : selfCallFraud.isFraud === true,
@@ -3120,6 +3169,8 @@ exports.analyzeCall = async (req, res) => {
       ai_summary: call.ai_summary || null,
       ai_summary_fr: call.ai_summary_fr || null,
       ai_summary_en: call.ai_summary_en || null,
+      statusComment_fr: call.statusComment_fr || null,
+      statusComment_en: call.statusComment_en || null,
       suggestedDisposition: suggestedDisposition || null,
     };
     if (Array.isArray(transcriptData)) {
