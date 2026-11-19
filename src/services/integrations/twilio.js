@@ -12,6 +12,7 @@ const { dispositionFromCallSignals, syncLeadDisposition, syncLeadFollowUp, resol
 const Transaction = require('../../models/Transaction');
 const path = require("path");
 const fetch = require('node-fetch');
+const { serviceAuthHeaders, ESCROW_RECONCILE_SCOPE } = require('../orchestratorServiceAuth');
 const vertexAIService = require('../vertexai.service');
 
 cloudinary.config({
@@ -446,7 +447,7 @@ const saveCallToDB = async (callSid, agentId, leadId, callData, cloudinaryrecord
           const reconcileTarget = refused?.companyId || companyId;
           if (reconcileTarget) {
             fetch(`${orchestratorUrl}/api/escrow/reconcile/${reconcileTarget}`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }
+              method: 'POST', headers: serviceAuthHeaders(ESCROW_RECONCILE_SCOPE, { 'Content-Type': 'application/json' })
             }).catch(() => {});
           }
         } catch (_) { /* non-blocking */ }
@@ -542,7 +543,13 @@ const makeCall = async (to, userId, fromNumber, { leadId, agentId } = {}) => {
   }
 };
 
-const generateTwimlResponse = async (to, callerIdOverride) => {
+/**
+ * @param {string} to
+ * @param {string} [callerIdOverride]
+ * @param {{ noticeUrl?: string }} [options] noticeUrl : TwiML de l'annonce d'enregistrement, jouée à la
+ *   personne appelée dès qu'elle décroche, avant la mise en relation (<Number url>, « whisper »).
+ */
+const generateTwimlResponse = async (to, callerIdOverride, options = {}) => {
   const twiml = new twilio.twiml.VoiceResponse();
   const callerId = callerIdOverride || process.env.TWILIO_PHONE_NUMBER;
 
@@ -569,11 +576,18 @@ const generateTwimlResponse = async (to, callerIdOverride) => {
     // `<Number>` uses amdStatusCallback. asyncAmdStatusCallback is only
     // valid on the REST Calls API, so Twilio was ignoring it and never
     // reporting a voicemail.
-    dial.number({
+    const numberAttrs = {
       machineDetection: 'DetectMessageEnd',
       amdStatusCallback: amdCallbackUrl,
       amdStatusCallbackMethod: 'POST',
-    }, to);
+    };
+    // Appel enregistré (record-from-answer) : annonce « Cet appel est enregistré. » à la personne appelée.
+    // Le « whisper » est joué avant la mise en relation : il n'apparaît pas dans l'enregistrement du <Dial>.
+    if (options.noticeUrl) {
+      numberAttrs.url = options.noticeUrl;
+      numberAttrs.method = 'POST';
+    }
+    dial.number(numberAttrs, to);
   } else {
     twiml.say("Invalid number");
   }

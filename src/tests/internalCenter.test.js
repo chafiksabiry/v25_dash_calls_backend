@@ -6,7 +6,8 @@ const mockFind = jest.fn();
 const mockGigFindOne = jest.fn();
 const mockInsertMany = jest.fn();
 const chain = (rows) => ({ sort: () => ({ limit: () => ({ select: () => ({ lean: async () => rows }) }) }) });
-jest.mock('../models/Call', () => ({ find: (...a) => mockFind('call', ...a) }));
+jest.mock('../models/Call', () => ({ Call: { find: (...a) => mockFind('call', ...a) } }));
+jest.mock('../models/CallRecordingIntent', () => ({ find: () => ({ select: () => ({ lean: async () => [] }) }) }));
 jest.mock('../models/Lead', () => ({ Lead: { find: (...a) => mockFind('lead', ...a), insertMany: (...a) => mockInsertMany(...a) } }));
 jest.mock('../models/Gig', () => ({ findOne: (...a) => ({ select: () => ({ lean: async () => mockGigFindOne(...a) }) }) }));
 

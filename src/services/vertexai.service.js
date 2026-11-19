@@ -2,9 +2,6 @@ const { SpeechClient } = require('@google-cloud/speech').v1;
 const { Call } = require('../models/Call');
 const { SpeechClient: SpeechClientV2 } = require('@google-cloud/speech').v2;
 const { VertexAI } = require('@google-cloud/vertexai');
-const fs = require('fs');
-const fsPromises = require('fs').promises;
-const path = require('path');
 const { generatePrompt } = require('../VertexPrompt/contactCenterAssessment');
 const { generateLanguagePrompt } = require('../VertexPrompt/languageAssessment');
 const { generateAudioTranscriptionPrompt } = require('../VertexPrompt/audioTranscriptionPrompt');
@@ -25,80 +22,86 @@ let jsonGenerativeModel = null;
 let storage = null;
 
 const projectID = (process.env.GOOGLE_CLOUD_PROJECT || process.env.QAUTH2_PROJECT_ID || 'harx-technologies-inc').replace(/"/g, '');
-const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
-const modelName = process.env.VERTEX_AI_MODEL || 'gemini-1.5-flash';
+// Gemini 3.1 Flash-Lite (GA) : servi uniquement en `global` et en multi-régions `us` / `eu`, jamais en `us-central1`.
+// Source : https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
+const DEFAULT_VERTEX_MODEL = 'gemini-3.1-flash-lite';
+const DEFAULT_VERTEX_LOCATION = 'eu';
+// Points d'accès des emplacements non régionaux (même modèle que learningVertexClient dans aiInboundLearning.js).
+// Sans `apiEndpoint`, @google-cloud/vertexai construit `${location}-aiplatform.googleapis.com`, qui n'existe pas pour ces emplacements.
+const MULTI_REGION_ENDPOINTS = {
+  eu: 'aiplatform.eu.rep.googleapis.com',
+  us: 'aiplatform.us.rep.googleapis.com',
+  global: 'aiplatform.googleapis.com',
+};
+// Modèles retirés par Google (page « Model versions and lifecycle ») : un appel renverrait 404. On retombe alors sur le modèle par défaut.
+// gemini-2.5-flash, gemini-2.5-flash-lite et gemini-2.5-pro sont retirés depuis le 20/10/2026. Les modèles gemini-live-* ne sont pas concernés.
+// Motif ancré : gemini-2.5-flash-image (encore servi) n'est pas concerné. Les familles 1.5 et 2.0 sont retirées en entier.
+const RETIRED_MODEL_PATTERNS = [/^gemini-1\.5-/, /^gemini-2\.0-/, /^gemini-2\.5-(?:flash|flash-lite|pro)(?:$|-(?:preview.*|0\d\d)$)/];
+// Modèle servi uniquement en `global` et en multi-régions `us` / `eu` (jamais dans une région classique comme us-central1).
+// Limité au modèle par défaut : pour un autre modèle (ex. gemini-3.5-flash, servi en europe-west3), la région choisie est respectée.
+const MULTI_REGION_ONLY_MODEL_PATTERNS = [/^gemini-3\.1-flash-lite$/];
+
+const cleanEnv = (value) => String(value || '').replace(/"/g, '').trim();
+
+/** Modèle Vertex : VERTEX_AI_MODEL s'il est servi, sinon le modèle par défaut (avertissement si le modèle demandé est retiré). */
+const resolveVertexModel = (env = process.env, logger = console) => {
+  const requested = cleanEnv(env.VERTEX_AI_MODEL);
+  if (!requested) return DEFAULT_VERTEX_MODEL;
+  if (RETIRED_MODEL_PATTERNS.some((re) => re.test(requested.toLowerCase()))) {
+    logger.warn(`⚠️ [VertexAIService] VERTEX_AI_MODEL="${requested}" est un modèle retiré par Google : utilisation de ${DEFAULT_VERTEX_MODEL}.`);
+    return DEFAULT_VERTEX_MODEL;
+  }
+  return requested;
+};
+
+/**
+ * Emplacement Vertex et point d'accès de l'analyse des appels.
+ * VERTEX_AI_LOCATION (propre à l'analyse) est prioritaire sur GOOGLE_CLOUD_LOCATION (partagée, lue aussi par geminiLiveService) ; `eu` par défaut.
+ * Une région classique garde le point d'accès régional du SDK, sauf si le modèle n'y est pas servi : on utilise alors `eu`, avec un avertissement.
+ */
+const resolveVertexLocation = (env = process.env, model = resolveVertexModel(env), logger = console) => {
+  const source = cleanEnv(env.VERTEX_AI_LOCATION) ? 'VERTEX_AI_LOCATION' : 'GOOGLE_CLOUD_LOCATION';
+  let location = cleanEnv(env[source]).toLowerCase() || DEFAULT_VERTEX_LOCATION;
+  const multiRegionOnly = MULTI_REGION_ONLY_MODEL_PATTERNS.some((re) => re.test(String(model).toLowerCase()));
+  if (multiRegionOnly && !MULTI_REGION_ENDPOINTS[location]) {
+    logger.warn(`⚠️ [VertexAIService] ${source}="${location}" : le modèle ${model} n'est pas servi dans cette région (seulement global, us, eu). Utilisation de ${DEFAULT_VERTEX_LOCATION}.`);
+    location = DEFAULT_VERTEX_LOCATION;
+  }
+  return { location, apiEndpoint: MULTI_REGION_ENDPOINTS[location] };
+};
+
+/** Options du constructeur VertexAI (apiEndpoint seulement pour `eu`, `us` et `global`). */
+const vertexClientOptions = (googleAuthOptions, env = process.env, model = resolveVertexModel(env), logger = console) => {
+  const { location, apiEndpoint } = resolveVertexLocation(env, model, logger);
+  return {
+    project: projectID,
+    location,
+    ...(apiEndpoint ? { apiEndpoint } : {}),
+    googleAuthOptions,
+  };
+};
 const bucketName = 'harx-audios-test';
 
-let vertexCredentialsPath = null;
-let speechCredentialsPath = null;
-let storageCredentialsPath = null;
-
-const setupGCPCredentials = async () => {
-  const tempDir = path.join(__dirname, '../../temp');
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-
-  const prepareCredentials = async (creds, fileName, defaultPath) => {
-    let sanitizedCreds = (creds || '').trim();
-
-    // Remove surrounding quotes if present (common in some env setups)
-    if (sanitizedCreds.startsWith('"') && sanitizedCreds.endsWith('"')) {
-      sanitizedCreds = sanitizedCreds.slice(1, -1).trim();
-    }
-
-    if (sanitizedCreds && sanitizedCreds.startsWith('{')) {
-      try {
-        // Parse and re-stringify to ensure valid JSON and handle escaped characters
-        const credsObj = JSON.parse(sanitizedCreds);
-
-        // Fix private_key newlines (very common issue with env vars)
-        if (credsObj.private_key && typeof credsObj.private_key === 'string') {
-          credsObj.private_key = credsObj.private_key.replace(/\\n/g, '\n');
-        }
-
-        const finalCreds = JSON.stringify(credsObj);
-        const credsPath = path.join(tempDir, fileName);
-        await fsPromises.writeFile(credsPath, finalCreds);
-        console.log(`✅ [VertexAIService] Using ${fileName} from JSON env var (fixed newlines)`);
-        return credsPath;
-      } catch (e) {
-        console.error(`❌ [VertexAIService] Error parsing ${fileName} JSON:`, e.message);
-        return sanitizedCreds; // Fallback to raw string (might be a path or broken JSON)
-      }
-    }
-
-    return sanitizedCreds || path.join(__dirname, defaultPath);
-  };
-
-  // Vertex AI Credentials
-  const vCreds = process.env.VERTEX_AI_CREDENTIALS || process.env.GCP_VERTEX_AI_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-  vertexCredentialsPath = await prepareCredentials(vCreds, 'vertex-credentials.json', "../../config/vertex-service-account.json");
-
-  // Speech-to-Text Credentials
-  const sCreds = process.env.GCP_SPEECH_TO_TEXT_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-  speechCredentialsPath = await prepareCredentials(sCreds, 'speech-credentials.json', "../../config/speech-to-text-service-account.json");
-
-  // Storage Credentials
-  const stCreds = process.env.CLOUD_STORAGE_CREDENTIALS || process.env.GCP_STORAGE_CREDENTIALS || process.env.GCP_CLOUD_STORAGE_CREDENTIALS || vCreds;
-  storageCredentialsPath = await prepareCredentials(stCreds, 'storage-credentials.json', "../../config/cloud-storage-service-account.json");
-
-  console.log('📂 [VertexAIService] Credentials paths resolved.');
-};
+// Identifiants : variables d'environnement JSON uniquement (voir services/gcpCredentials.js), sinon ADC. Aucun fichier de clé.
+const { VERTEX_VARS, SPEECH_VARS, STORAGE_VARS, googleAuthOptions } = require('./gcpCredentials');
 
 const initializeServices = async () => {
   if (vertexAI && speechClient) return;
 
   try {
-    await setupGCPCredentials();
+    const vertexAuth = googleAuthOptions(VERTEX_VARS, 'Vertex AI');
+    const speechAuth = googleAuthOptions(SPEECH_VARS, 'Speech-to-Text');
+    const storageAuth = googleAuthOptions(STORAGE_VARS, 'Cloud Storage');
 
     const vertexAuthOptions = {
-      keyFilename: vertexCredentialsPath,
+      ...(vertexAuth.credentials ? { credentials: vertexAuth.credentials } : {}),
       scopes: ['https://www.googleapis.com/auth/cloud-platform']
     };
 
-    console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${location}`);
-    vertexAI = new VertexAI({ project: projectID, location: location, googleAuthOptions: vertexAuthOptions });
+    const modelName = resolveVertexModel();
+    const vertexOptions = vertexClientOptions(vertexAuthOptions, process.env, modelName);
+    console.log(`🧠 [VertexAIService] Initializing Vertex AI with project: ${projectID}, location: ${vertexOptions.location}, endpoint: ${vertexOptions.apiEndpoint || 'régional (SDK)'}`);
+    vertexAI = new VertexAI(vertexOptions);
 
     // Standard Model for Text/Chat
     generativeModel = vertexAI.getGenerativeModel({
@@ -119,12 +122,12 @@ const initializeServices = async () => {
       }
     });
 
-    speechClient = new SpeechClient({ keyFilename: speechCredentialsPath });
-    speechClientV2 = new SpeechClientV2({ keyFilename: speechCredentialsPath });
+    speechClient = new SpeechClient(speechAuth);
+    speechClientV2 = new SpeechClientV2(speechAuth);
 
     storage = new Storage({
+      ...storageAuth,
       projectId: projectID,
-      keyFilename: storageCredentialsPath
     });
 
     console.log(`✅ [VertexAIService] GCS initialized.`);
@@ -1043,4 +1046,12 @@ Réponds simplement "Compris" pour confirmer que tu as bien intégré ces consig
   }
 }
 
-module.exports = new VertexAIService(); 
+module.exports = new VertexAIService();
+Object.assign(module.exports, {
+  DEFAULT_VERTEX_MODEL,
+  DEFAULT_VERTEX_LOCATION,
+  MULTI_REGION_ENDPOINTS,
+  resolveVertexModel,
+  resolveVertexLocation,
+  vertexClientOptions,
+}); 

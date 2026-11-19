@@ -1,31 +1,48 @@
 const { Call } = require('../models/Call');
 const { Agent } = require('../models/Agent');
 const { Lead } = require('../models/Lead');
+const mongoose = require('mongoose');
+
+/** Lead.companyId est de type Mixed (ObjectId ou texte selon l'origine, voir internalCenter.companyFilter) : pas de conversion automatique. */
+function leadCompanyFilter(companyId) {
+  const id = String(companyId);
+  return mongoose.Types.ObjectId.isValid(id) ? { $in: [new mongoose.Types.ObjectId(id), id] } : id;
+}
+
+/**
+ * Toutes les lectures sont cantonnées à UNE entreprise (celle de l'appelant, vérifiée par callsAccess.requireCallerCompany).
+ * Les agents n'ont pas de champ entreprise : ce sont ceux qui ont pris des appels de l'entreprise.
+ */
+async function companyAgents(companyId) {
+  const ids = await Call.distinct('agent', { companyId, agent: { $ne: null } });
+  return Agent.find({ _id: { $in: ids } });
+}
 
 class AnalyticsRepository {
-  async getOverviewData() {
+  async getOverviewData(companyId) {
     const [calls, agents, leads] = await Promise.all([
-      Call.find(),
-      Agent.find(),
-      Lead.find()
+      Call.find({ companyId }),
+      companyAgents(companyId),
+      Lead.find({ companyId: leadCompanyFilter(companyId) })
     ]);
 
     return { calls, agents, leads };
   }
 
-  async getCallMetrics() {
-    return Call.find()
+  async getCallMetrics(companyId) {
+    return Call.find({ companyId })
       .populate('agent', 'name')
       .populate('lead', 'name company');
   }
 
-  async getAgentMetrics() {
-    return Agent.find().populate('userId', 'name email');
+  async getAgentMetrics(companyId) {
+    const ids = await Call.distinct('agent', { companyId, agent: { $ne: null } });
+    return Agent.find({ _id: { $in: ids } }).populate('userId', 'name email');
   }
 
-  async getQualityMetrics() {
-    return Call.find().select('quality_score');
+  async getQualityMetrics(companyId) {
+    return Call.find({ companyId }).select('quality_score');
   }
 }
 
-module.exports = { AnalyticsRepository };
+module.exports = { AnalyticsRepository, companyAgents, leadCompanyFilter };

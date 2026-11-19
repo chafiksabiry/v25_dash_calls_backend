@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { Call } = require('../models/Call');
 const { readFraudScore } = require('../utils/selfCallVoice');
 const { assertCompanyAccess } = require('../middleware/companyScope');
+const { callerCanListen, applyRecordingAccess } = require('../utils/recordingAccess');
 const {
   buildCompanyFraudMatchQuery,
   isCallFraudDetected,
@@ -56,7 +57,7 @@ const overturnCallFraud = async (req, res) => {
     };
     await call.save();
 
-    res.status(200).json({ success: true, data: call });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, call) });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ success: false, message: error.message });
     console.error('Error in overturnCallFraud:', error);
@@ -96,6 +97,7 @@ const getCompanyFraudCalls = async (req, res) => {
 
     const rows = [];
     const counts = { pending: 0, confirmed: 0, overturned: 0 };
+    const canListen = await callerCanListen(req);
     for (const call of calls) {
       const state = fraudReviewState(call);
       // Overturned calls no longer read as fraud but stay reviewable (a reviewer can change their mind).
@@ -122,7 +124,7 @@ const getCompanyFraudCalls = async (req, res) => {
           fr: rubric.feedback_fr || rubric.feedback || null,
           en: rubric.feedback_en || rubric.feedback || null,
         },
-        recordingUrl: call.recording_url_cloudinary || call.recording_url || null,
+        recordingUrl: canListen ? call.recording_url_cloudinary || call.recording_url || null : null,
         transcriptPreview: (Array.isArray(call.transcript) ? call.transcript : [])
           .slice(0, FRAUD_TRANSCRIPT_PREVIEW_TURNS)
           .map((turn) => ({ speaker: turn.speaker, text: String(turn.text || '').slice(0, 400) })),

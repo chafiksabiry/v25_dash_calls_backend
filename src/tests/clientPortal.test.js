@@ -5,6 +5,7 @@ const mockAggregate = jest.fn();
 const mockFind = jest.fn();
 const mockCount = jest.fn();
 jest.mock('../models/Call', () => ({ Call: { aggregate: (...a) => mockAggregate(...a), find: (...a) => mockFind(...a), countDocuments: (...a) => mockCount(...a) } }));
+jest.mock('../models/CallRecordingIntent', () => ({ find: () => ({ select: () => ({ lean: async () => [] }) }) }));
 jest.mock('../models/Gig', () => ({ find: () => ({ select: async () => [{ _id: 'aaaaaaaaaaaaaaaaaaaaaaa1', title: 'Support Acme' }] }) }));
 
 const jwt = require('jsonwebtoken');
@@ -88,8 +89,8 @@ describe('contenu', () => {
     me(clientMe()); mockFind.mockReturnValue(chain([row]));
     const res = makeRes(); await controller.calls(req(), res);
     const c = res.body.data.calls[0];
-    expect(c.recordingUrl).toBeNull(); expect(c.quality).toBe(81); expect(c.operation).toBe('Support Acme');
-    expect(Object.keys(c).sort()).toEqual(['direction', 'durationSeconds', 'from', 'id', 'operation', 'quality', 'recordingUrl', 'startTime', 'status', 'to']);
+    expect(c.recordingUrl).toBeNull(); expect(c.recordingStatus).toBe('recorded'); expect(c.quality).toBe(81); expect(c.operation).toBe('Support Acme');
+    expect(Object.keys(c).sort()).toEqual(['direction', 'durationSeconds', 'from', 'id', 'operation', 'quality', 'recordingReason', 'recordingReasonAt', 'recordingStatus', 'recordingUrl', 'startTime', 'status', 'to']);
   });
   test('enregistrement renvoyé si autorisé', async () => {
     const d = clientMe({ allowRecordings: true }); d.permissions['calls.listen'] = true; me(d); mockFind.mockReturnValue(chain([row]));

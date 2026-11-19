@@ -103,12 +103,12 @@ function serviceToken() {
   return jwt.sign({ scope: 'kb-agent-search' }, process.env.JWT_SECRET, { expiresIn: '2m' });
 }
 
-async function searchKnowledge(query, { gigId, companyId }) {
+async function searchKnowledge(query, { gigId, companyId, timeoutMs = KNOWLEDGE_SEARCH_TIMEOUT_MS }) {
   const q = String(query || '').trim();
   if (!q) return { ok: false, error: 'query required' };
   if (!companyId) return { ok: false, error: 'no company context for this call' };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), KNOWLEDGE_SEARCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/agent-search`, {
       method: 'POST',
@@ -194,4 +194,4 @@ async function executeVoiceTool(name, args, { defaultLeadId, defaultCallId, gigI
   }
 }
 
-module.exports = { buildRealtimeTools, executeVoiceTool };
+module.exports = { buildRealtimeTools, executeVoiceTool, searchKnowledge };

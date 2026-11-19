@@ -8,6 +8,7 @@
  */
 const mongoose = require('mongoose');
 const { Call } = require('../models/Call');
+const { withRecordingStatus } = require('../utils/recordingStatus');
 const Gig = require('../models/Gig');
 const { clientScope, ScopeError } = require('../middleware/companyScope');
 
@@ -107,7 +108,7 @@ const calls = handle(async (req, scope) => {
   const [total, rows] = await Promise.all([
     Call.countDocuments(match),
     Call.find(match)
-      .select('direction from to startTime duration status gigId quality_score ai_call_score.overall.score recording_url recording_url_cloudinary')
+      .select('sid direction from to startTime duration status gigId quality_score ai_call_score.overall.score recording_url recording_url_cloudinary recordingStatus recordingReason recordingReasonAt')
       .sort({ startTime: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
@@ -115,11 +116,13 @@ const calls = handle(async (req, scope) => {
   ]);
   const gigs = await Gig.find({ _id: { $in: gigIds.map(oid) } }).select('title');
   const titleOf = new Map(gigs.map((g) => [String(g._id), g.title]));
+  const statusOf = new Map((await withRecordingStatus(rows)).map((r, i) => [rows[i], r]));
   return {
     page,
     limit,
     total,
     calls: rows.map((c) => {
+      const { recordingStatus, recordingReason, recordingReasonAt } = statusOf.get(c);
       const q = c.ai_call_score && c.ai_call_score.overall && c.ai_call_score.overall.score;
       const quality = q > 0 ? Math.round(q) : c.quality_score > 0 ? Math.round(c.quality_score) : null;
       return {
@@ -133,6 +136,9 @@ const calls = handle(async (req, scope) => {
         operation: titleOf.get(String(c.gigId)) || 'Opération',
         quality,
         recordingUrl: scope.allowRecordings ? c.recording_url_cloudinary || c.recording_url || null : null,
+        recordingStatus,
+        recordingReason,
+        recordingReasonAt,
       };
     }),
   };

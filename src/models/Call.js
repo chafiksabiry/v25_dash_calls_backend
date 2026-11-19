@@ -39,8 +39,7 @@ const callSchema = new mongoose.Schema({
     required: function () {
       return this.provider === 'twilio';
     },
-    unique: true,
-    sparse: true, // Identifiant Twilio / Telnyx call_control_id
+    // Identifiant Twilio / Telnyx call_control_id. Unicité : index partiel déclaré plus bas (sid de type texte seulement).
   },
   parentCallSid: {
     type: String,
@@ -84,6 +83,13 @@ const callSchema = new mongoose.Schema({
   },
   recording_url: String,
   recording_url_cloudinary: String,
+  // Statut d'enregistrement lisible (décision de l'orchestrateur + rattachement de l'URL). Les appels anciens n'ont pas
+  // ces champs : l'API renvoie alors un statut dérivé à la lecture (voir utils/recordingStatus.js).
+  recordingStatus: { type: String, enum: ['recorded', 'not_recorded', 'pending'], default: undefined },
+  recordingReason: { type: String, enum: ['recorded_planned', 'plan_excludes', 'disabled_by_company', 'not_applicable', 'technical_failure', 'lookup_failed'], default: undefined },
+  recordingReasonAt: { type: Date, default: undefined },
+  // Décisions remplacées (5 dernières) : ancien statut/motif, date de la décision, date du remplacement.
+  recordingHistory: { type: [{ _id: false, recordingStatus: String, recordingReason: String, decidedAt: Date, replacedAt: Date }], default: undefined },
   quality_score: {
     type: Number,
     min: 0,
@@ -469,12 +475,27 @@ const callSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
+// POST /calls/fetch-recording retrouve l'appel par l'URL Twilio de son enregistrement (callsAccess.guardFetchRecording).
+// Index partiel : seuls les appels qui ont une URL (chaîne) y figurent ; la requête répète `$type: 'string'` pour pouvoir l'utiliser.
+callSchema.index({ recording_url: 1 }, { partialFilterExpression: { recording_url: { $type: 'string' } } });
+// Lectures cantonnées à une entreprise (/api/analytics, /api/dashboard/live-calls : companyId, et companyId + status).
+callSchema.index({ companyId: 1, status: 1 });
+
 callSchema.virtual('transaction', {
   ref: 'Transaction',
   localField: '_id',
   foreignField: 'call',
   justOne: true
 });
+
+/**
+ * Un appel = un sid. Index UNIQUE PARTIEL (sid de type texte) plutôt qu'unique « sparse » : un index sparse inclut les documents dont
+ * `sid` vaut null (seuls les champs absents en sont exclus), donc plusieurs appels sans sid (Qalqul, brouillons) empêchaient sa création.
+ * Garantit qu'un rappel rejoué (Twilio, orchestrateur : jambes de transfert facturées, upsert sur sid) ne crée jamais deux lignes.
+ * Même nom que l'index historique (`sid_1`) : en base, l'ancien index unique sparse, s'il existe, reste en place (Mongoose signale
+ * le conflit d'options sans rien casser) jusqu'à la bascule manuelle décrite dans scripts/checkCallSidDuplicates.js.
+ */
+callSchema.index({ sid: 1 }, { name: 'sid_1', unique: true, partialFilterExpression: { sid: { $type: 'string' } } });
 
 callSchema.pre("save", function (next) {
   this.updatedAt = new Date();

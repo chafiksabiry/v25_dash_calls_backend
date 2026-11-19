@@ -42,7 +42,7 @@ describe('attachRecording', () => {
     expect(out.status).toBe(200);
     expect(archive).toHaveBeenCalledWith(`${URL}.mp3`);
     expect(Call.updates).toHaveLength(1);
-    expect(Call.updates[0].update.$set).toEqual({ recording_url: URL, recording_url_cloudinary: 'https://res.cloudinary.com/x/video/upload/v1/V25_Call_Records/a.mp3' });
+    expect(Call.updates[0].update.$set).toMatchObject({ recording_url: URL, recording_url_cloudinary: 'https://res.cloudinary.com/x/video/upload/v1/V25_Call_Records/a.mp3', recordingStatus: 'recorded' });
     expect(Call.updates[0].filter.sid).toBe(SID);
   });
   it('garde l’URL Twilio si la copie Cloudinary échoue', async () => {
@@ -50,7 +50,8 @@ describe('attachRecording', () => {
     const out = await attachRecording({ Call, archive: async () => { throw new Error('cloudinary'); } }, body);
     expect(out.status).toBe(200);
     expect(out.body.archived).toBe(false);
-    expect(Call.updates[0].update.$set).toEqual({ recording_url: URL });
+    expect(Call.updates[0].update.$set).toMatchObject({ recording_url: URL, recordingStatus: 'recorded' });
+    expect(Call.updates[0].update.$set.recording_url_cloudinary).toBeUndefined();
   });
   it('ne crée jamais d’appel : 404 tant que l’appel n’est pas inscrit', async () => {
     const Call = fakeCall(null);
@@ -68,7 +69,7 @@ describe('attachRecording', () => {
     expect(archive).not.toHaveBeenCalled();
   });
   it('est idempotent : même enregistrement déjà rattaché, rien à refaire', async () => {
-    const Call = fakeCall({ sid: SID, companyId: COMPANY, recording_url: URL, recording_url_cloudinary: 'https://res.cloudinary.com/x.mp3' });
+    const Call = fakeCall({ sid: SID, companyId: COMPANY, recording_url: URL, recording_url_cloudinary: 'https://res.cloudinary.com/x.mp3', recordingStatus: 'recorded', recordingReason: 'recorded_planned' });
     const archive = jest.fn();
     const out = await attachRecording({ Call, archive }, body);
     expect(out.status).toBe(200);

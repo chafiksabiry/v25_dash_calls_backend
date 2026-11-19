@@ -5,3 +5,13 @@ recordings/
 .env
 
 /node_modules
+
+# Clés Google Cloud : jamais dans le dépôt (les identifiants passent par les variables d'environnement JSON)
+config/vertex-service-account.json
+config/speechToTextServiceAccount.json
+config/speech-to-text-service-account.json
+config/cloud-storage-service-account.json
+temp/
+*service-account*.json
+*ServiceAccount*.json
+*-credentials.json

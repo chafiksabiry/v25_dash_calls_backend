@@ -41,20 +41,25 @@ function done(res, rows, limit, shape) {
   res.json({ success: true, data: page.map(shape), nextCursor: more ? String(page[page.length - 1]._id) : null });
 }
 
+const pick = ({ recordingStatus, recordingReason, recordingReasonAt }) => ({ recordingStatus, recordingReason, recordingReasonAt });
+
 async function listCalls(req, res) {
   const companyId = oid(req.params.companyId);
   if (!companyId) return fail(res, 400, 'companyId invalide.');
   try {
-    const Call = require('../models/Call');
+    const { Call } = require('../models/Call');
+    const { withRecordingStatus } = require('../utils/recordingStatus');
     const { limit, filter } = pageOf(req);
     filter.companyId = companyFilter(companyId);
     filter.isTest = { $ne: true };
     if (req.query.since && !Number.isNaN(Date.parse(req.query.since))) filter.startTime = { $gte: new Date(req.query.since) };
     const rows = await Call.find(filter).sort({ _id: -1 }).limit(limit + 1)
-      .select('sid direction status from to duration startTime endTime gigId handledBy.name').lean();
-    done(res, rows, limit, (c) => ({
+      .select('sid direction status from to duration startTime endTime gigId handledBy.name recording_url recording_url_cloudinary recordingStatus recordingReason recordingReasonAt').lean();
+    const withStatus = await withRecordingStatus(rows);
+    done(res, rows.map((r, i) => ({ ...r, ...pick(withStatus[i]) })), limit, (c) => ({
       sid: c.sid || String(c._id), direction: c.direction, status: c.status, from: c.from, to: c.to, duration: c.duration,
       startTime: c.startTime, endTime: c.endTime, gigId: c.gigId ? String(c.gigId) : null, handledByName: c.handledBy && c.handledBy.name,
+      recordingStatus: c.recordingStatus, recordingReason: c.recordingReason, recordingReasonAt: c.recordingReasonAt,
     }));
   } catch (e) {
     console.error('internal-center calls:', e.message);

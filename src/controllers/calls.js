@@ -7,6 +7,9 @@ const twilio = require('twilio');
 const fetch = require('node-fetch');
 const mongoose = require('mongoose');
 const { buildCenterCall } = require('../utils/centerCall');
+const { withRecordingStatus } = require('../utils/recordingStatus');
+const { applyRecordingAccess, callerCanListen } = require('../utils/recordingAccess');
+const { serviceAuthHeaders, ESCROW_RECONCILE_SCOPE, CALL_ANALYSIS_NOTIFY_SCOPE } = require('../services/orchestratorServiceAuth');
 const callService = new CallService();
 const qalqulService = require('../services/integrations/qaqlulService');
 const telnyxService = require('../services/integrations/telnyxService');
@@ -52,6 +55,7 @@ const {
 
 const MATCHING_API_URL = (process.env.MATCHING_API_URL || 'https://v25matchingbackend-production.up.railway.app/api').replace(/\/$/, '');
 const TRAINING_API_URL = (process.env.TRAINING_API_URL || 'https://v25platformtrainingbackend-production.up.railway.app').replace(/\/$/, '');
+const { knowledgeReadHeaders } = require('../utils/knowledgeServiceToken');
 const KNOWLEDGEBASE_API_URL = (process.env.KNOWLEDGEBASE_API_URL || 'https://v25knowledgebasebackend-production.up.railway.app/api').replace(/\/$/, '');
 const REPSCREATIONWIZARD_API_URL = (process.env.REPSCREATIONWIZARD_API_URL || 'https://v25repscreationwizardbackend-production.up.railway.app/api').replace(/\/$/, '');
 const { notifyCompanyOfFraud } = require('../services/companyNotificationClient');
@@ -204,7 +208,7 @@ function triggerCompanyReconcile(companyId) {
   if (!companyId) return Promise.resolve();
   const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
   const id = String(companyId);
-  return fetch(`${orchestratorUrl}/api/escrow/reconcile/${id}`, { method: 'POST' })
+  return fetch(`${orchestratorUrl}/api/escrow/reconcile/${id}`, { method: 'POST', headers: serviceAuthHeaders(ESCROW_RECONCILE_SCOPE) })
     .then(res => res.json().catch(() => ({})))
     .then(data => console.log(`✅ Triggered company reconcile for ${id}:`, data))
     .catch(err => {
@@ -479,10 +483,11 @@ exports.getCalls = async (req, res) => {
       });
     }
 
+    const data = await applyRecordingAccess(req, await withRecordingStatus(processedCalls));
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: processedCalls,
+      data,
       ...(companyId
         ? {
             fraudStats: buildCompanyFraudStatsFromCalls(
@@ -527,11 +532,12 @@ exports.getCallsByAgent = async (req, res) => {
       .sort({ createdAt: -1 });
 
     const callObjects = calls.map((call) => call.toObject());
+    const data = await applyRecordingAccess(req, await withRecordingStatus(calls));
 
     res.status(200).json({
       success: true,
       count: calls.length,
-      data: calls,
+      data,
       fraudStats: buildAgentFraudStatsFromCalls(callObjects, agentId),
     });
   } catch (error) {
@@ -617,9 +623,10 @@ exports.getCall = async (req, res) => {
       });
     }
 
+    const [data] = await applyRecordingAccess(req, await withRecordingStatus([call]));
     res.status(200).json({
       success: true,
-      data: call
+      data
     });
   } catch (err) {
     res.status(400).json({
@@ -643,7 +650,7 @@ exports.createCall = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -769,7 +776,7 @@ exports.updateCall = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -811,7 +818,7 @@ exports.endCall = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -844,7 +851,7 @@ exports.addNote = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -877,7 +884,7 @@ exports.updateQualityScore = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: call
+      data: await applyRecordingAccess(req, call)
     });
   } catch (err) {
     res.status(400).json({
@@ -998,7 +1005,17 @@ exports.handleVoice = async (req, res) => {
   }
 
   try {
-    const responseXml = await twilioService.generateTwimlResponse(To, callerId);
+    // Appel enregistré (record-from-answer) : annonce d'enregistrement dans la langue de l'appel.
+    let noticeLang = 'fr';
+    try {
+      const { resolveRecordingNoticeLanguageForGig } = require('../services/aiOutboundCallService');
+      noticeLang = await resolveRecordingNoticeLanguageForGig(leadGigId);
+    } catch (err) {
+      console.warn('[TwilioVoice] notice language fallback fr:', err?.message || err);
+    }
+    const noticeUrl = recordingNoticeUrl(noticeLang);
+    if (!noticeUrl) console.warn('[TwilioVoice] BASE_URL absent : annonce d\'enregistrement non jouée');
+    const responseXml = await twilioService.generateTwimlResponse(To, callerId, { noticeUrl });
     res.type("text/xml");
     res.send(responseXml);
   } catch (error) {
@@ -1187,7 +1204,7 @@ exports.saveCenterCall = async (req, res) => {
   try {
     const { sid, ...fields } = doc;
     const saved = await Call.findOneAndUpdate({ sid }, { $set: fields, $setOnInsert: { sid } }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    res.status(200).json({ success: true, data: saved });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, saved) });
     // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
     require('../services/callEndedNotifier').notifyCallEndedInBackground(saved);
   } catch (error) {
@@ -1204,6 +1221,30 @@ exports.attachCallRecording = async (req, res) => {
   } catch (error) {
     console.error('Error in attachCallRecording:', error);
     return res.status(500).json({ success: false, message: 'Failed to attach recording' });
+  }
+};
+
+// Décision d'enregistrement de l'orchestrateur (idempotent par CallSid/société) : voir utils/recordingStatus.js.
+exports.recordCallRecordingIntent = async (req, res) => {
+  try {
+    const { recordIntent } = require('../utils/recordingStatus');
+    const out = await recordIntent({ Call, Intent: require('../models/CallRecordingIntent') }, req.body);
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error in recordCallRecordingIntent:', error);
+    return res.status(500).json({ success: false, message: 'Failed to record recording decision' });
+  }
+};
+
+// Signalement d'échec d'attache (retries épuisés) : l'appel passe en not_recorded / technical_failure.
+exports.reportCallRecordingFailure = async (req, res) => {
+  try {
+    const { reportRecordingFailure } = require('../utils/recordingStatus');
+    const out = await reportRecordingFailure({ Call, Intent: require('../models/CallRecordingIntent') }, req.body);
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error in reportCallRecordingFailure:', error);
+    return res.status(500).json({ success: false, message: 'Failed to report recording failure' });
   }
 };
 
@@ -1297,7 +1338,7 @@ exports.saveCallToDB = async (req, res) => {
       runAnalysisInBackground(callDetails._id);
     }
 
-    res.json(callDetails);
+    res.json(await applyRecordingAccess(req, callDetails));
     // Journal CRM et webhooks du centre : jamais bloquant pour l'appel.
     if (callDetails && callDetails._id) require('../services/callEndedNotifier').notifyCallEndedInBackground(callDetails);
   } catch (error) {
@@ -1582,7 +1623,7 @@ exports.finalizeTelnyxCall = async (req, res) => {
       runAnalysisInBackground(callDetails._id);
     }
 
-    return res.json(callDetails);
+    return res.json(await applyRecordingAccess(req, callDetails));
   } catch (error) {
     console.error('Error in finalizeTelnyxCall:', error);
     return res.status(500).json({
@@ -1680,11 +1721,14 @@ exports.fetchRecording = async (req, res) => {
   }
 
   try {
-    const recording = await twilioService.fetchTwilioRecording(recordingUrl, userId);
+    // URL canonique reconstruite par callsAccess.guardFetchRecording : jamais la chaîne envoyée par le client.
+    if (!req.twilioRecordingUrl) return res.status(400).json({ message: 'recordingUrl must be a Twilio recording of this account' });
+    const recording = await twilioService.fetchTwilioRecording(req.twilioRecordingUrl, userId);
     if (!recording) {
       return res.status(500).json({ message: 'Error fetching the recording' });
     }
-    res.json({ url: recording });
+    // L'URL Cloudinary renvoyée est un enregistrement : même règle d'écoute que les appels (null sinon ; /store-call l'archive alors lui-même).
+    res.json({ url: (await callerCanListen(req)) ? recording : null });
   } catch (error) {
     console.error('Error fetching recording:', error);
     res.status(500).json({ message: 'Error fetching the recording' });
@@ -1711,7 +1755,7 @@ exports.storeCallsInDBatStartingCall = async (req, res) => {
   const { storeCall } = req.body;
   try {
     const callDetails = await qalqulService.storeCallsInDBatStartingCall(storeCall);
-    res.status(200).json({ success: true, data: callDetails });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, callDetails) });
   } catch (error) {
     console.error('Error storing call:', error);
     res.status(500).json({ success: false, message: 'Failed to store call details', error: error.message });
@@ -1728,7 +1772,7 @@ exports.storeCallsInDBatEndingCall = async (req, res) => {
       runAnalysisInBackground(callDetails._id);
     }
 
-    res.status(200).json({ success: true, data: callDetails });
+    res.status(200).json({ success: true, data: await applyRecordingAccess(req, callDetails) });
   } catch (error) {
     console.error('Error storing call:', error);
     res.status(500).json({ success: false, message: 'Failed to store call details', error: error.message });
@@ -1759,7 +1803,7 @@ exports.getAIAssistance = async (req, res) => {
         if (call?.companyId) {
           const kbRes = await fetch(`${KNOWLEDGEBASE_API_URL}/rag/query`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...knowledgeReadHeaders() },
             body: JSON.stringify({
               companyId: String(call.companyId),
               gigId: call.gigId?._id ? String(call.gigId._id) : undefined,
@@ -1944,7 +1988,7 @@ function notifyRepCallAnalysisComplete(call, overrides = {}) {
 
   fetch(`${orchestratorUrl}/api/escrow/call-analysis-complete`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: serviceAuthHeaders(CALL_ANALYSIS_NOTIFY_SCOPE, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   }).catch((err) => {
     console.error('❌ Failed to broadcast call analysis complete:', err.message);
@@ -2221,7 +2265,7 @@ exports.analyzeCall = async (req, res) => {
         transcript: call.transcript,
         validByAI: false,
         ai_call_status: 'too_short',
-        data: call,
+        data: await applyRecordingAccess(req, call),
       });
     }
 
@@ -2433,7 +2477,7 @@ exports.analyzeCall = async (req, res) => {
         message: refusalReason,
         validByAI: false,
         callOutcome,
-        data: updated
+        data: await applyRecordingAccess(req, updated)
       });
     }
 
@@ -2546,7 +2590,7 @@ exports.analyzeCall = async (req, res) => {
         message: shortMsgFr,
         validByAI: shortValidByAI,
         ai_call_status: 'too_short',
-        data: updated,
+        data: await applyRecordingAccess(req, updated),
       });
     }
 
@@ -2556,7 +2600,7 @@ exports.analyzeCall = async (req, res) => {
       const gigId = call.lead?.gigId?._id || call.lead?.gigId;
       if (gigId) {
         console.log(`🔍 [CallController] Fetching script from collection for Gig ${gigId}...`);
-        const scriptRes = await fetch(`${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}`);
+        const scriptRes = await fetch(`${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}`, { headers: knowledgeReadHeaders() });
         if (scriptRes.ok) {
           const scriptData = await scriptRes.json();
           const scripts = scriptData.data || [];
@@ -3091,7 +3135,7 @@ exports.analyzeCall = async (req, res) => {
     if (isValidByAI && call.companyId) {
       // Trigger reconciliation in orchestrator
       const orchestratorUrl = process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003';
-      fetch(`${orchestratorUrl}/api/escrow/reconcile/${call.companyId}`, { method: 'POST' })
+      fetch(`${orchestratorUrl}/api/escrow/reconcile/${call.companyId}`, { method: 'POST', headers: serviceAuthHeaders(ESCROW_RECONCILE_SCOPE) })
         .then(res => res.json())
         .then(data => console.log(`✅ Triggered reconciliation for company ${call.companyId}:`, data))
         .catch(err => console.error('❌ Failed to trigger reconciliation:', err));
@@ -3296,7 +3340,7 @@ exports.requestAnalysisHelp = async (req, res) => {
       const orchestratorUrl = (process.env.ORCHESTRATOR_API_URL || 'http://localhost:3003').replace(/\/$/, '');
       fetch(`${orchestratorUrl}/api/escrow/call-analysis-help`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: serviceAuthHeaders(CALL_ANALYSIS_NOTIFY_SCOPE, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           companyId: String(companyId),
           callId: String(id),
@@ -3447,6 +3491,46 @@ exports.getLoginToken = async (req, res) => {
   }
 };
 
+/** URL de l'annonce : même base publique que /twilio-voice (BASE_URL) ; sans elle, pas d'annonce (undefined). */
+function recordingNoticeUrl(lang, env = process.env) {
+  const publicBase = String(env.BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!publicBase) return undefined;
+  return `${publicBase}/api/calls/twilio-recording-notice?lang=${encodeURIComponent(lang || 'fr')}`;
+}
+exports._recordingNoticeUrl = recordingNoticeUrl;
+
+/**
+ * GET|POST /api/calls/twilio-recording-notice?lang=fr|en|es|ar
+ * TwiML « whisper » joué à la personne appelée par un REP quand elle décroche, avant la mise en relation.
+ */
+exports.twilioRecordingNotice = (req, res) => {
+  const { buildNoticeTwiml } = require('../services/aiOutboundRecordingNotice');
+  res.type('text/xml');
+  return res.status(200).send(buildNoticeTwiml(req.query?.lang || req.body?.lang));
+};
+
+/** Langue : gigId, sinon gig du lead (leadId), sinon français. */
+async function playTelnyxRecordingNotice(callControlId, body) {
+  const { getRecordingNotice } = require('../services/aiOutboundRecordingNotice');
+  const isId = (v) => v != null && mongoose.Types.ObjectId.isValid(String(v)) && /^[0-9a-f]{24}$/i.test(String(v));
+  let gigId = isId(body.gigId) ? String(body.gigId) : null;
+  if (!gigId && isId(body.leadId)) {
+    const { lead } = await resolveActiveLineForLead(String(body.leadId)).catch(() => ({}));
+    if (lead?.gigId) gigId = String(lead.gigId);
+  }
+  let lang = 'fr';
+  if (gigId) {
+    const { resolveRecordingNoticeLanguageForGig } = require('../services/aiOutboundCallService');
+    lang = await resolveRecordingNoticeLanguageForGig(gigId).catch(() => 'fr');
+  }
+  const notice = getRecordingNotice(lang);
+  // L'id reçu est la jambe WebRTC du REP : 'both' pour que la personne appelée entende aussi l'annonce.
+  await telnyxService.speak(callControlId, { payload: notice.text, language: notice.telnyx, targetLegs: 'both' });
+  console.log('[Telnyx] recording notice played', callControlId, notice.language);
+  return { language: notice.language, text: notice.text };
+}
+exports._playTelnyxRecordingNotice = playTelnyxRecordingNotice;
+
 /**
  * POST /api/calls/telnyx/record-start
  * Start Call Control recording for an active WebRTC/Call Control leg.
@@ -3459,7 +3543,14 @@ exports.startTelnyxRecording = async (req, res) => {
     }
     const data = await telnyxService.startCallRecording(callControlId);
     console.log('[Telnyx] record_start ok for', callControlId);
-    return res.json({ success: true, data });
+    // Appel enregistré : annonce « Cet appel est enregistré. » jouée sur l'appel dès le début de l'enregistrement.
+    let notice = null;
+    try {
+      notice = await playTelnyxRecordingNotice(callControlId, req.body || {});
+    } catch (err) {
+      console.warn('[Telnyx] recording notice failed:', err?.message || err);
+    }
+    return res.json({ success: true, data, notice });
   } catch (error) {
     console.error('[Telnyx] record_start failed:', error.message);
     if (error?.response?.data) {

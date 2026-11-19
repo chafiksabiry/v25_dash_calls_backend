@@ -221,6 +221,76 @@ function guardCallId(options = {}) {
   };
 }
 
+/**
+ * Lectures agrégées (/api/analytics, /api/dashboard) : l'entreprise est celle de l'appelant (service d'inscription),
+ * jamais un paramètre de la requête. Sans entreprise rattachée : 403.
+ */
+async function requireCallerCompany(req, res, next) {
+  if (!req.auth) return deny(res, 401, 'Authentication required');
+  try {
+    const mine = await callerCompany(req);
+    if (!mine || !OBJECT_ID.test(String(mine))) return deny(res, 403, 'Not allowed for this company');
+    req.callerCompanyId = String(mine);
+    return next();
+  } catch (error) {
+    return sendScopeError(res, error);
+  }
+}
+
+// Sensible à la casse : préfixes AC/RE en majuscules, hexadécimal en minuscules (forme émise par Twilio et stockée en base).
+const TWILIO_RECORDING_PATH = /^\/2010-04-01\/Accounts\/(AC[0-9a-f]{32})\/Recordings\/(RE[0-9a-f]{32})(\.(?:mp3|wav))?$/;
+
+/**
+ * URL d'un enregistrement Twilio DU compte de la plateforme (https://api.twilio.com/2010-04-01/Accounts/<TWILIO_ACCOUNT_SID>/
+ * Recordings/RE…[.mp3|.wav]), sans identifiants, port, requête ni fragment. Renvoie le SID d'enregistrement, ou null.
+ * Les identifiants Twilio de la plateforme ne partent ainsi jamais vers un autre hôte ni vers un autre compte.
+ * `url` est l'URL canonique reconstruite (c'est elle, jamais la chaîne du client, qui est téléchargée).
+ */
+function twilioRecording(raw) {
+  const account = String(process.env.TWILIO_ACCOUNT_SID || '').trim();
+  if (!account || typeof raw !== 'string') return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch (error) {
+    return null;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 'api.twilio.com' || url.port || url.username || url.password || url.search || url.hash) return null;
+  const m = TWILIO_RECORDING_PATH.exec(url.pathname);
+  if (!m || m[1] !== account) return null;
+  return { sid: m[2], url: `https://api.twilio.com/2010-04-01/Accounts/${account}/Recordings/${m[2]}${m[3] || ''}` };
+}
+
+function twilioRecordingSid(raw) {
+  const rec = twilioRecording(raw);
+  return rec ? rec.sid : null;
+}
+
+/**
+ * POST /fetch-recording : l'URL doit être un enregistrement Twilio du compte (400 sinon). Avec un jeton, si un appel connu
+ * porte cet enregistrement, l'appelant doit appartenir à son entreprise ou l'avoir pris (403 sinon). Un enregistrement
+ * encore sans appel en base (l'espace de travail l'envoie avant /store-call) est admis : son SID n'est pas devinable.
+ */
+async function guardFetchRecording(req, res, next) {
+  const rec = twilioRecording(req.body && req.body.recordingUrl);
+  if (!rec) return deny(res, 400, 'recordingUrl must be a Twilio recording of this account');
+  const recordingSid = rec.sid;
+  req.twilioRecordingUrl = rec.url;
+  if (!req.auth) return next();
+  try {
+    const { Call } = require('../models/Call');
+    const base = `https://api.twilio.com/2010-04-01/Accounts/${String(process.env.TWILIO_ACCOUNT_SID).trim()}/Recordings/${recordingSid}`;
+    const call = await Call.findOne({ recording_url: { $in: [base, `${base}.mp3`, `${base}.wav`], $type: 'string' } }).select('companyId agent').lean();
+    if (!call) return next();
+    if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
+    const mine = await ownAgentId(req);
+    if (mine && call.agent && String(call.agent._id || call.agent) === mine) return next();
+    return deny(res, 403, 'Not allowed for this recording');
+  } catch (error) {
+    return sendScopeError(res, error);
+  }
+}
+
 /** Écriture d'un appel de centre : jeton de service, ou utilisateur membre du centre du corps. */
 async function guardCenterCallBody(req, res, next) {
   if (req.callsLegacy || req.callsService) return next();
@@ -255,6 +325,191 @@ async function guardCreateCall(req, res, next) {
   }
 }
 
+
+/** Recherche brute par identifiant (chaîne ou ObjectId, comme le reste du service). */
+async function findRaw(collection, id, projection) {
+  const raw = String(id || '');
+  if (!raw) return null;
+  const or = [{ _id: raw }];
+  if (mongoose.Types.ObjectId.isValid(raw)) or.push({ _id: new mongoose.Types.ObjectId(raw) });
+  return mongoose.connection.db.collection(collection).findOne({ $or: or }, { projection });
+}
+
+const idOf = (v) => (v && (v.$oid || v._id || v)) ? String(v.$oid || v._id || v) : null;
+
+/** Entreprise d'un gig (champ companyId du gig). null si gig ou entreprise inconnus. */
+async function companyOfGig(gigId) {
+  const gig = await findRaw('gigs', gigId, { companyId: 1 });
+  return gig ? idOf(gig.companyId) : null;
+}
+
+/** Entreprise d'un prospect : son companyId, à défaut celui de son gig. `undefined` si le prospect n'existe pas. */
+async function companyOfLead(leadId) {
+  const lead = await findRaw('leads', leadId, { companyId: 1, gigId: 1 });
+  if (!lead) return undefined;
+  return idOf(lead.companyId) || (lead.gigId ? await companyOfGig(idOf(lead.gigId)) : null);
+}
+
+/**
+ * Prospect d'une entreprise (appel IA sortant) : avec un jeton, l'appelant doit appartenir à l'entreprise du prospect ;
+ * l'entreprise vérifiée remplace alors celle du corps ou de l'en-tête x-company-id (forgeables).
+ * Prospect inconnu : la suite (contrôleur) répond 404.
+ */
+function guardLeadCompany(pick = (req) => (req.body && req.body.leadId) || req.params.leadId) {
+  return async (req, res, next) => {
+    if (!req.auth) return next(); // compat sans jeton : voir compatAuth
+    const leadId = pick(req);
+    if (!leadId) return deny(res, 400, 'leadId is required');
+    try {
+      const companyId = await companyOfLead(leadId);
+      if (companyId === undefined) return next();
+      if (!companyId) return deny(res, 403, 'Not allowed for this lead');
+      await assertCompanyAccess(req, companyId);
+      if (req.body && typeof req.body === 'object') req.body.companyId = companyId;
+      req.verifiedCompanyId = companyId;
+      return next();
+    } catch (error) {
+      return sendScopeError(res, error);
+    }
+  };
+}
+
+/** Gig d'une entreprise (:id dans l'URL) : avec un jeton, l'appelant doit appartenir à l'entreprise du gig. */
+function guardGigCompany(param = 'id') {
+  return async (req, res, next) => {
+    if (!req.auth) return next();
+    const gigId = req.params[param];
+    if (!gigId) return deny(res, 400, 'gigId is required');
+    try {
+      const gig = await findRaw('gigs', gigId, { companyId: 1 });
+      if (!gig) return deny(res, 404, 'Gig not found');
+      const companyId = idOf(gig.companyId);
+      if (!companyId) return deny(res, 403, 'Not allowed for this gig');
+      await assertCompanyAccess(req, companyId);
+      return next();
+    } catch (error) {
+      return sendScopeError(res, error);
+    }
+  };
+}
+
+/**
+ * Raccrochage d'un appel IA sortant : avec un jeton, l'appel (callId, ou SID / call_control_id) doit être connu (404 sinon)
+ * et appartenir à l'entreprise de l'appelant.
+ */
+async function guardAiOutboundCall(req, res, next) {
+  if (!req.auth) return next();
+  const { callId, callControlId } = req.body || {};
+  try {
+    const { Call } = require('../models/Call');
+    let call = null;
+    if (callId && OBJECT_ID.test(String(callId))) call = await Call.findById(callId).select('companyId').lean();
+    if (!call && callControlId) {
+      call = await Call.findOne({ $or: [{ sid: String(callControlId) }, { call_id: String(callControlId) }] }).select('companyId').lean();
+    }
+    if (!call) return deny(res, 404, 'Call not found');
+    if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
+    return deny(res, 403, 'Not allowed for this call');
+  } catch (error) {
+    return sendScopeError(res, error);
+  }
+}
+
+const ENROLL_TTL_MS = 60 * 1000;
+const enrollCache = new Map();
+
+function matchingOrigin() {
+  const explicit = process.env.MATCHING_API_URL;
+  const railway = process.env.RAILWAY_SERVICE_V25_MATCHING_BACKEND_URL;
+  const raw = (explicit || (railway ? (/^https?:\/\//i.test(railway) ? railway : `https://${railway}`) : '')).replace(/\/+$/, '');
+  return raw && !/\/api$/.test(raw) ? `${raw}/api` : raw;
+}
+
+/** Le profil rep est-il inscrit (enrolled) au gig ? Même source que l'éligibilité des appels (service de matching). */
+async function agentEnrolledInGig(agentId, gigId) {
+  const key = `${agentId}:${gigId}`;
+  const cached = enrollCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.ok;
+  const origin = matchingOrigin();
+  if (!origin) {
+    console.warn('[callsAccess] MATCHING_API_URL absent : inscription du rep au gig non vérifiable, accès admis');
+    return true;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const r = await fetch(`${origin}/gig-agents/agents/${encodeURIComponent(agentId)}/gigs?status=enrolled`, { signal: controller.signal });
+    if (!r.ok) throw Object.assign(new Error('Enrollment lookup failed'), { status: 503 });
+    const payload = await r.json();
+    const gigs = Array.isArray(payload && payload.gigs) ? payload.gigs : [];
+    const ok = gigs.some((row) => String((row && row.gig && (row.gig._id || row.gig.$oid)) || (row && row.gigId) || '') === String(gigId));
+    enrollCache.set(key, { ok, expires: Date.now() + ENROLL_TTL_MS });
+    return ok;
+  } catch (error) {
+    if (error.status) throw error;
+    throw Object.assign(new Error('Enrollment lookup failed'), { status: 503 });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ressource d'une entreprise désignée par la requête (prospect, gig, entreprise, appel) : avec un jeton, l'appelant doit être
+ * membre de l'entreprise, ou rep inscrit au gig concerné (pour un appel : le rep qui l'a pris).
+ * Sans ressource identifiable dans la requête, ou ressource inconnue (créée ensuite par la route), la requête continue.
+ *
+ * options : leadId(req), gigId(req), companyId(req), callControlId(req) -> valeurs extraites de la requête.
+ */
+function guardResourceCompany(options = {}) {
+  const pick = (fn, req) => (typeof fn === 'function' ? fn(req) : null);
+  return async (req, res, next) => {
+    if (!req.auth) return next();
+    try {
+      const leadId = pick(options.leadId, req);
+      let gigId = pick(options.gigId, req);
+      let companyId = pick(options.companyId, req);
+      if (leadId) {
+        const lead = await findRaw('leads', leadId, { companyId: 1, gigId: 1 });
+        if (lead) {
+          gigId = idOf(lead.gigId) || gigId;
+          companyId = idOf(lead.companyId) || (gigId ? await companyOfGig(gigId) : null);
+          if (!companyId) return deny(res, 403, 'Not allowed for this lead');
+        }
+      }
+      if (gigId && !companyId) companyId = await companyOfGig(gigId);
+      const callControlId = pick(options.callControlId, req);
+      if (!companyId && callControlId) {
+        const { Call } = require('../models/Call');
+        const call = await Call.findOne({ $or: [{ sid: String(callControlId) }, { call_id: String(callControlId) }] })
+          .select('companyId agent gigId')
+          .lean();
+        if (call) {
+          if (call.companyId && (await belongsToCompany(req, call.companyId))) return next();
+          const mine = await ownAgentId(req);
+          if (mine && call.agent && String(call.agent._id || call.agent) === mine) return next();
+          return deny(res, 403, 'Not allowed for this call');
+        }
+      }
+      if (!companyId) return next();
+      if (await belongsToCompany(req, companyId)) return next();
+      const agentId = await ownAgentId(req);
+      if (agentId && gigId && (await agentEnrolledInGig(agentId, gigId))) return next();
+      // Rep sans gig identifiable : l'entreprise seule ne permet pas de vérifier son inscription (admis, journalisé).
+      if (agentId && !gigId) {
+        console.warn(`[callsAccess] rep ${agentId} sur l'entreprise ${companyId} sans gig : inscription non vérifiable`);
+        return next();
+      }
+      return deny(res, 403, 'Not allowed for this company');
+    } catch (error) {
+      return sendScopeError(res, error);
+    }
+  };
+}
+
+function clearEnrollCache() {
+  enrollCache.clear();
+}
+
 module.exports = {
   strictAuth,
   compatAuth,
@@ -265,7 +520,17 @@ module.exports = {
   guardAgentParam,
   guardCallId,
   guardCenterCallBody,
+  requireCallerCompany,
+  guardFetchRecording,
+  twilioRecordingSid,
   guardCreateCall,
+  guardLeadCompany,
+  guardGigCompany,
+  guardAiOutboundCall,
+  guardResourceCompany,
+  clearEnrollCache,
+  companyOfLead,
+  companyOfGig,
   requireAuth,
   legacyAnon,
 };
