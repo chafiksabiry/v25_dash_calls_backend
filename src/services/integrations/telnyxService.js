@@ -226,6 +226,22 @@ exports.startCallRecording = async (callControlId) => {
 };
 
 /**
+ * Call Control speak (texte lu sur l'appel), p. ex. l'annonce d'enregistrement.
+ * target_legs : 'self' (défaut Telnyx : seule la jambe de ce call_control_id entend), 'opposite' ou 'both'.
+ */
+exports.speak = async (callControlId, { payload, language = 'fr-FR', voice = 'female', targetLegs } = {}) => {
+  if (!callControlId) throw new Error('callControlId is required');
+  if (!payload) throw new Error('payload is required');
+  const apiKey = getApiKey();
+  const response = await axios.post(
+    `https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/speak`,
+    { payload, voice, language, ...(targetLegs ? { target_legs: targetLegs } : {}) },
+    { headers: telnyxHeaders(apiKey) }
+  );
+  return response.data?.data || response.data || { ok: true };
+};
+
+/**
  * Look up a public recording URL for a call control id (webhook fallback).
  */
 exports.findRecordingUrl = async (callControlId) => {
