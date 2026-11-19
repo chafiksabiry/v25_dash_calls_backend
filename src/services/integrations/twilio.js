@@ -570,6 +570,7 @@ const generateTwimlResponse = async (to, callerIdOverride, options = {}) => {
       amdStatusCallbackMethod: 'POST',
     };
     // Appel enregistré (record-from-answer) : annonce « Cet appel est enregistré. » à la personne appelée.
+    // Le « whisper » est joué avant la mise en relation : il n'apparaît pas dans l'enregistrement du <Dial>.
     if (options.noticeUrl) {
       numberAttrs.url = options.noticeUrl;
       numberAttrs.method = 'POST';

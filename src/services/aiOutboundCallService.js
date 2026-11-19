@@ -208,7 +208,7 @@ function flattenPlaybookStages(stages) {
 async function loadGigCallScript(gigId) {
   if (!gigId) return null;
   try {
-    const url = `${KNOWLEDGEBASE_API_URL}/scripts/gig/${gigId}?active=true`;
+    const url = `${KNOWLEDGEBASE_API_URL}/scripts/gig/${encodeURIComponent(String(gigId))}?active=true`;
     const res = await fetch(url);
     if (!res.ok) {
       console.warn('[AiOutbound] script fetch failed', res.status, url);
@@ -1289,12 +1289,13 @@ async function handleTwilioAiOutboundRecording(req) {
 /** Langue de l'annonce d'enregistrement pour un appel de REP sur ce gig (même choix que l'agent IA). */
 function resolveRecordingNoticeLanguageForGig(gigId) {
   // eslint-disable-next-line global-require
-  const { resolveGigCallLanguage } = require('./aiOutboundRecordingNotice');
+  const { resolveGigCallLanguage, DEFAULT_LANGUAGE } = require('./aiOutboundRecordingNotice');
+  if (!gigId || !/^[0-9a-f]{24}$/i.test(String(gigId))) return Promise.resolve(DEFAULT_LANGUAGE);
   return resolveGigCallLanguage(gigId, {
     loadScript: loadGigCallScript,
     loadVoiceAssistant: loadGigVoiceAssistant,
     loadGig: async (id) => mongoose.connection.db.collection('gigs').findOne(
-      mongoose.Types.ObjectId.isValid(String(id)) ? { _id: new mongoose.Types.ObjectId(String(id)) } : { _id: String(id) },
+      { _id: new mongoose.Types.ObjectId(String(id)) },
       { projection: { language: 1 } }
     ),
   });

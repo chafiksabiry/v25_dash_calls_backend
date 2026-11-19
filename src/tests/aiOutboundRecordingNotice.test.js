@@ -166,3 +166,11 @@ describe('Telnyx : enregistrement + annonce au décroché, flux IA ensuite', () 
     svc.activeSessions.delete('v3:abc');
   });
 });
+
+describe('Langue de l\'annonce pour un gig de REP', () => {
+  test('gigId invalide : français sans aucune recherche', async () => {
+    await expect(svc.resolveRecordingNoticeLanguageForGig('../x')).resolves.toBe('fr');
+    await expect(svc.resolveRecordingNoticeLanguageForGig(null)).resolves.toBe('fr');
+    expect(fetchCalls).toHaveLength(0);
+  });
+});

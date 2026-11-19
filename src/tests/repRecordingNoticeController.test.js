@@ -47,7 +47,7 @@ describe('Telnyx : annonce jouée dès le début de l\'enregistrement d\'un appe
     await ctrl.startTelnyxRecording({ body: { callControlId: 'v3:rep', leadId: '64b0000000000000000000d1' } }, res);
     expect(mockTelnyx.startCallRecording).toHaveBeenCalledWith('v3:rep');
     expect(mockLang).toHaveBeenCalledWith('64b0000000000000000000e1');
-    expect(mockTelnyx.speak).toHaveBeenCalledWith('v3:rep', { payload: 'This call is recorded.', language: 'en-US' });
+    expect(mockTelnyx.speak).toHaveBeenCalledWith('v3:rep', { payload: 'This call is recorded.', language: 'en-US', targetLegs: 'both' });
     expect(mockTelnyx.startCallRecording.mock.invocationCallOrder[0]).toBeLessThan(mockTelnyx.speak.mock.invocationCallOrder[0]);
     expect(res.body).toMatchObject({ success: true, notice: { language: 'en', text: 'This call is recorded.' } });
   });
@@ -55,7 +55,7 @@ describe('Telnyx : annonce jouée dès le début de l\'enregistrement d\'un appe
   test('sans gig ni lead : annonce en français', async () => {
     const res = makeRes();
     await ctrl.startTelnyxRecording({ body: { callControlId: 'v3:rep' } }, res);
-    expect(mockTelnyx.speak).toHaveBeenCalledWith('v3:rep', { payload: 'Cet appel est enregistré.', language: 'fr-FR' });
+    expect(mockTelnyx.speak).toHaveBeenCalledWith('v3:rep', { payload: 'Cet appel est enregistré.', language: 'fr-FR', targetLegs: 'both' });
   });
 
   test('enregistrement refusé : pas d\'annonce ; annonce en échec : l\'enregistrement reste OK', async () => {
@@ -69,5 +69,21 @@ describe('Telnyx : annonce jouée dès le début de l\'enregistrement d\'un appe
     const ok = makeRes();
     await ctrl.startTelnyxRecording({ body: { callControlId: 'v3:rep', gigId: 'g1' } }, ok);
     expect(ok.body).toMatchObject({ success: true, notice: null });
+  });
+});
+
+describe('Validation et URL de l\'annonce', () => {
+  test('gigId / leadId non ObjectId : ignorés, annonce en français, aucune recherche', async () => {
+    const res = makeRes();
+    await ctrl.startTelnyxRecording({ body: { callControlId: 'v3:rep', gigId: '../../x', leadId: { $ne: null } } }, res);
+    expect(mockLang).not.toHaveBeenCalled();
+    expect(mockLine).not.toHaveBeenCalled();
+    expect(mockTelnyx.speak).toHaveBeenCalledWith('v3:rep', expect.objectContaining({ payload: 'Cet appel est enregistré.' }));
+  });
+
+  test('URL de l\'annonce sur BASE_URL ; sans BASE_URL, pas d\'URL (pas d\'annonce, appel inchangé)', () => {
+    expect(ctrl._recordingNoticeUrl('es', { BASE_URL: 'https://calls.test/' })).toBe('https://calls.test/api/calls/twilio-recording-notice?lang=es');
+    expect(ctrl._recordingNoticeUrl('a&b', { BASE_URL: 'https://calls.test' })).toBe('https://calls.test/api/calls/twilio-recording-notice?lang=a%26b');
+    expect(ctrl._recordingNoticeUrl('fr', { SELF_API_URL: 'http://localhost:3001' })).toBeUndefined();
   });
 });
