@@ -1286,8 +1286,23 @@ async function handleTwilioAiOutboundRecording(req) {
   return { ok: true };
 }
 
+/** Langue de l'annonce d'enregistrement pour un appel de REP sur ce gig (même choix que l'agent IA). */
+function resolveRecordingNoticeLanguageForGig(gigId) {
+  // eslint-disable-next-line global-require
+  const { resolveGigCallLanguage } = require('./aiOutboundRecordingNotice');
+  return resolveGigCallLanguage(gigId, {
+    loadScript: loadGigCallScript,
+    loadVoiceAssistant: loadGigVoiceAssistant,
+    loadGig: async (id) => mongoose.connection.db.collection('gigs').findOne(
+      mongoose.Types.ObjectId.isValid(String(id)) ? { _id: new mongoose.Types.ObjectId(String(id)) } : { _id: String(id) },
+      { projection: { language: 1 } }
+    ),
+  });
+}
+
 module.exports = {
   startAiOutboundCall,
+  resolveRecordingNoticeLanguageForGig,
   NOTICE_SPEAK_TIMEOUT_MS,
   hangupAiOutboundCall,
   handleAiOutboundWebhook,

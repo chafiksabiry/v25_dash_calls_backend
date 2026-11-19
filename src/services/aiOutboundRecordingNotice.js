@@ -48,8 +48,37 @@ function engineNoticeInstruction(language) {
   return `FIRST, before anything else, say EXACTLY these words, word for word: "${text}" Then continue.`;
 }
 
+/** TwiML <Say> de l'annonce (utilisé comme « whisper » <Number url> des appels des REPS). */
+function buildNoticeTwiml(language) {
+  // eslint-disable-next-line global-require
+  const twilio = require('twilio');
+  const vr = new twilio.twiml.VoiceResponse();
+  const notice = getRecordingNotice(language);
+  vr.say(notice.twilio, notice.text);
+  return vr.toString();
+}
+
+/**
+ * Langue d'un appel de gig (même choix que l'agent IA : script actif, assistant vocal, gig ; fr par défaut).
+ * `loaders` = { loadScript, loadVoiceAssistant, loadGig } ; le script est borné dans le temps
+ * pour ne pas retarder la mise en relation. Toute erreur => français.
+ */
+async function resolveGigCallLanguage(gigId, loaders = {}, { timeoutMs = 1500 } = {}) {
+  if (!gigId) return DEFAULT_LANGUAGE;
+  const safe = (fn) => (typeof fn === 'function' ? Promise.resolve().then(() => fn(gigId)).catch(() => null) : Promise.resolve(null));
+  const withTimeout = (p) => Promise.race([p, new Promise((r) => { const t = setTimeout(() => r(null), timeoutMs); if (t.unref) t.unref(); })]);
+  const [callScript, voiceAssistant, gig] = await Promise.all([
+    withTimeout(safe(loaders.loadScript)),
+    withTimeout(safe(loaders.loadVoiceAssistant)),
+    withTimeout(safe(loaders.loadGig)),
+  ]);
+  return resolveCallLanguage({ callScript, voiceAssistant, gig });
+}
+
 module.exports = {
   NOTICES,
+  buildNoticeTwiml,
+  resolveGigCallLanguage,
   DEFAULT_LANGUAGE,
   normalizeNoticeLanguage,
   resolveCallLanguage,

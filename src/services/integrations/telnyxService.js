@@ -225,6 +225,19 @@ exports.startCallRecording = async (callControlId) => {
   return response.data?.data || response.data || { ok: true };
 };
 
+/** Call Control speak (texte lu sur l'appel), p. ex. l'annonce d'enregistrement. */
+exports.speak = async (callControlId, { payload, language = 'fr-FR', voice = 'female' } = {}) => {
+  if (!callControlId) throw new Error('callControlId is required');
+  if (!payload) throw new Error('payload is required');
+  const apiKey = getApiKey();
+  const response = await axios.post(
+    `https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/speak`,
+    { payload, voice, language },
+    { headers: telnyxHeaders(apiKey) }
+  );
+  return response.data?.data || response.data || { ok: true };
+};
+
 /**
  * Look up a public recording URL for a call control id (webhook fallback).
  */
